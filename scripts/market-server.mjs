@@ -156,7 +156,20 @@ const server = createServer(async (req, res) => {
 
     if (req.method === 'OPTIONS') return send(res, 204, '');
 
-    // ---------------- categories ----------------
+    // ---------------- version manifest (core/version.ts) ----------------
+// GET /api/v1/version —— 版本清单；versionCode 大于客户端时提示更新。
+const VERSION_MANIFEST = {
+  version: process.env.MARKET_VERSION ?? '1.0.0',
+  versionCode: Number(process.env.MARKET_VERSION_CODE ?? 1),
+  forceUpdate: false,
+  downloadUrl: process.env.MARKET_DOWNLOAD_URL ?? '',
+  releaseNotes: process.env.MARKET_RELEASE_NOTES ?? '',
+  publishedAt: new Date().toISOString(),
+};
+if (req.method === 'GET' && url.pathname === '/api/v1/version')
+  return send(res, 200, { data: VERSION_MANIFEST, ok: true });
+
+// ---------------- categories ----------------
     if (req.method === 'GET' && url.pathname === '/v1/categories/card')
       return send(res, 200, { categories: CATEGORIES.card.map(([id, label]) => ({ id, label })) });
     if (req.method === 'GET' && url.pathname === '/v1/categories/plugin')
