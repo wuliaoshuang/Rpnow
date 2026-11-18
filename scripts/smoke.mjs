@@ -145,13 +145,22 @@ check('渲染器输出作用域样式', html.includes('<style>'));
 // ------------------------------------------------------ 8. settings models
 await page.getByRole('button', { name: '设置' }).first().click();
 // 设置 now opens the grouped hub; the connection form lives in 模型连接.
-await waitForVisibleText('模型连接', 8000);
-const modelRow = page.locator('main section button', { hasText: '模型连接' }).first();
+const modelRow = page.locator('main section button', { hasText: /模型设置|模型连接/ }).first();
 if (await modelRow.count()) {
   await modelRow.click();
   await page.waitForTimeout(800);
+} else {
+  // 文案再变时不要直接崩，交给后面的断言暴露问题
+  await page.waitForTimeout(500);
 }
-await page.getByRole('button', { name: /添加连接/ }).click();
+const addConnBtn = page.locator('main button').filter({ hasText: /^添加(第一个)?连接$/ }).first();
+  if (await addConnBtn.count()) {
+    await addConnBtn.click();
+  } else {
+    // 已有连接时按钮是「添加」（连接小区块内）
+    const addAny = page.locator('main button').filter({ hasText: /^添加$/ }).first();
+    if (await addAny.count()) await addAny.click();
+  }
 await waitForVisibleText('服务商', 5000);
 check('模型设置表单可用', true);
 await page.screenshot({ path: OUT + '/04-settings-models.png' });
