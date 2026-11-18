@@ -4,7 +4,7 @@ screenshots/
 _ref/
 .agents/
 .claude/
-.agents-tool/*.local
+agent/
 *.local
 *.log
 .DS_Store
