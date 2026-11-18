@@ -1,4 +1,4 @@
-node_modules/
+﻿node_modules/
 dist/
 screenshots/
 _ref/
@@ -11,33 +11,35 @@ agent/
 
 release/
 
-# Android signing key — never commit
+# Android signing key 鈥?never commit
 src-tauri/gen/android/keystore/
 src-tauri/gen/android/app/src/main/jniLibs/
 src-tauri/target/
 src-tauri/gen/android/app/build/
 
-# 本地商店数据（生成物，含用户发布内容）
-market-local/
+# 鏈湴鍟嗗簵鏁版嵁锛堢敓鎴愮墿锛屽惈鐢ㄦ埛鍙戝竷鍐呭锛?market-local/
 
-# 密钥与本地环境
-.env
+# 瀵嗛挜涓庢湰鍦扮幆澧?.env
 .env.*
 *.pem
 *.keystore
 
-# 令牌：任何情况下不入库
-GITHUB_TOKEN
+# 浠ょ墝锛氫换浣曟儏鍐典笅涓嶅叆搴?GITHUB_TOKEN
 token*.txt
 
-# 第三方研究材料与临时打包产物（体积大、非项目源码）
-*.zip
+# 绗笁鏂圭爺绌舵潗鏂欎笌涓存椂鎵撳寘浜х墿锛堜綋绉ぇ銆侀潪椤圭洰婧愮爜锛?*.zip
 zip-b64-length.txt
 tavern-helper-real.zip
 test-st-extension.zip
 test-st-ext.zip
 
-# ��ʷ��֤����
+# 历史验证产物
 th-probe.rpnx
 th-index.js
 th-src-index.js
+
+# 临时探针/日志（防止再次散落）
+_tmp_*
+_tmp_*.cjs
+rel*.log
+*.patch
