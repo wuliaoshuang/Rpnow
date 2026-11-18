@@ -16,6 +16,7 @@ import {
   Database,
   FileText,
   ImagePlus,
+  Info,
   Layout,
   MessageSquare,
   Palette,
@@ -25,6 +26,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { useApp } from '@/state/store.js';
+import { APP_VERSION } from '@/core/version.js';
 import { BUILTIN_THEMES, THEME_MAP } from '@/core/defaults/themes.js';
 import { cn } from '@/lib/utils.js';
 import { vibrate } from '@/lib/haptics';
@@ -41,7 +43,8 @@ export type SettingsSectionId =
   | 'backup'
   | 'persona'
   | 'network'
-  | 'data';
+  | 'data'
+  | 'about';
 
 export const SETTINGS_SECTIONS: Array<{
   id: SettingsSectionId;
@@ -61,6 +64,7 @@ export const SETTINGS_SECTIONS: Array<{
   { id: 'backup', label: '备份', icon: <Database className="size-4" aria-hidden="true" />, group: '数据' },
   { id: 'data', label: '数据管理', icon: <Database className="size-4" aria-hidden="true" />, group: '数据' },
   { id: 'network', label: '网络', icon: <FileText className="size-4" aria-hidden="true" />, group: '数据' },
+  { id: 'about', label: '关于', icon: <Info className="size-4" aria-hidden="true" />, group: '关于' },
 ];
 
 /** Current-value string for a section, or undefined to show nothing. */
@@ -90,6 +94,8 @@ export function useSectionValue(id: SettingsSectionId): string | undefined {
     }
     case 'chat':
       return settings.chat.maxTokens > 0 ? `输出 ${settings.chat.maxTokens}` : '输出无限制';
+    case 'about':
+      return `v${APP_VERSION}`;
     default:
       return undefined;
   }

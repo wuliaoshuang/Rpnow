@@ -81,6 +81,7 @@ import { SettingsHub } from './SettingsHub.js';
 import { SLOT, SlotOutlet } from '@/core/plugin/slots.js';
 import { hapticsSupported, vibratePreview } from '@/lib/haptics';
 import { confirmAction } from '@/components/ui/confirm.js';
+import { APP_VERSION, APP_VERSION_CODE } from '@/core/version.js';
 
 export function SettingsPage({
   /** Current sub-route section; `undefined` = hub directory. */
@@ -91,11 +92,14 @@ export function SettingsPage({
   onOpenPlugins,
   /** Opens sibling content pages (世界书/预设/小说). */
   onOpenRoute,
+  /** Manually check for an app update (About page button). */
+  onCheckUpdate,
 }: {
   section?: string;
   onOpenSection?: (id: string) => void;
   onOpenPlugins?: () => void;
   onOpenRoute?: (route: 'lore' | 'presets' | 'novel' | 'card-store' | 'plugin-store') => void;
+  onCheckUpdate?: () => Promise<void>;
 } = {}) {
   const settings = useApp((s) => s.settings);
   const setSettings = useApp((s) => s.setSettings);
@@ -695,8 +699,70 @@ export function SettingsPage({
             </section>
           </div>
           )}
+
+          {/* ------------------------------------------------------- about */}
+          {section === 'about' && (
+          <AboutSettings onCheckUpdate={onCheckUpdate} />
+          )}
         </>
       </div>
+    </div>
+  );
+}
+
+function AboutSettings({ onCheckUpdate }: { onCheckUpdate?: () => Promise<void> }) {
+  const [checking, setChecking] = useState(false);
+  return (
+    <div className="space-y-4">
+      <section className="space-y-2 rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-4">
+        <div className="flex items-center gap-3">
+          <div className="flex size-12 items-center justify-center rounded-2xl bg-[var(--rp-accent)] text-[20px] font-bold text-[var(--rp-accent-fg)]">
+            R
+          </div>
+          <div>
+            <h3 className="text-[15px] font-semibold">RPNow</h3>
+            <p className="text-[11.5px] text-[var(--rp-fg-subtle)]">本地优先的 AI 角色扮演应用</p>
+          </div>
+        </div>
+        <dl className="space-y-1.5 pt-1 text-[12.5px]">
+          <div className="flex justify-between gap-2">
+            <dt className="text-[var(--rp-fg-muted)]">当前版本</dt>
+            <dd className="font-medium">v{APP_VERSION}（{APP_VERSION_CODE}）</dd>
+          </div>
+          <div className="flex justify-between gap-2">
+            <dt className="text-[var(--rp-fg-muted)]">更新渠道</dt>
+            <dd className="font-medium">服务器发布</dd>
+          </div>
+        </dl>
+        <Button
+          className="w-full rounded-full"
+          disabled={checking}
+          onClick={async () => {
+            setChecking(true);
+            try {
+              await onCheckUpdate?.();
+            } finally {
+              setChecking(false);
+            }
+          }}
+        >
+          {checking ? (
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+          ) : (
+            <RefreshCw className="size-3.5" aria-hidden="true" />
+          )}
+          {checking ? '正在检查…' : '检查更新'}
+        </Button>
+        <p className="text-[11px] leading-relaxed text-[var(--rp-fg-subtle)]">
+          新版本会在服务器上发布，应用启动时会自动检查。强制更新不可跳过，请及时更新到最新版；普通更新可以稍后再说，也可以忽略该版本。
+        </p>
+      </section>
+      <section className="space-y-2 rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-4">
+        <h3 className="text-[13px] font-semibold">关于 RPNow</h3>
+        <p className="text-[12px] leading-relaxed text-[var(--rp-fg-muted)]">
+          RPNow 是一款本地优先、插件化的 AI 角色扮演应用：角色卡、世界书、预设共用一条可检视的提示词流水线，数据保存在本机，角色卡与插件商店由服务器提供。
+        </p>
+      </section>
     </div>
   );
 }

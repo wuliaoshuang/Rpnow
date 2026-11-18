@@ -15,6 +15,8 @@
 export interface NovelCharacter {
   id: string;
   name: string;
+  /** 身份 / 定位，如主角、反派、师父 */
+  role?: string;
   desc: string;
 }
 
@@ -60,6 +62,10 @@ export interface NovelBook {
   id: string;
   title: string;
   worldView: string;
+  /** 故事大纲：主线、分卷、关键转折 */
+  outline?: string;
+  /** 全书目标字数（用于书架进度条），不填则不显示进度 */
+  wordGoal?: number;
   negativePrompt: string;
   isAdultMode: boolean;
   characters: NovelCharacter[];
@@ -83,6 +89,8 @@ export function newBook(partial: Partial<NovelBook> = {}): NovelBook {
     id: partial.id ?? `book_${now}`,
     title: partial.title ?? '无题',
     worldView: partial.worldView ?? '',
+    outline: partial.outline ?? '',
+    wordGoal: partial.wordGoal ?? 0,
     negativePrompt: partial.negativePrompt ?? '',
     isAdultMode: partial.isAdultMode ?? false,
     characters: partial.characters ?? [],
@@ -93,6 +101,18 @@ export function newBook(partial: Partial<NovelBook> = {}): NovelBook {
     ...(partial.reviewModel ? { reviewModel: partial.reviewModel } : {}),
     ...(partial.commentModel ? { commentModel: partial.commentModel } : {}),
   };
+}
+
+/** 全书总字数。 */
+export function totalWords(book: NovelBook): number {
+  return book.chapters.reduce((s, c) => s + c.wordCount, 0);
+}
+
+/** 封面渐变色相：由书名稳定得出，同一本书封面颜色不变。 */
+export function coverHue(title: string): number {
+  let h = 0;
+  for (const ch of title || '无题') h = (h * 31 + ch.codePointAt(0)!) % 360;
+  return h;
 }
 
 export function countWords(text: string): number {
@@ -174,6 +194,7 @@ export function parseGeneratedChapter(text: string, index: number): ParsedChapte
 export function exportBookTxt(book: NovelBook): string {
   const parts: string[] = [`${book.title || '无题'}\n\n`];
   parts.push(`简介/世界观：\n${book.worldView}\n\n`);
+  if ((book.outline ?? '').trim()) parts.push(`大纲：\n${book.outline!.trim()}\n\n`);
   if (book.negativePrompt.trim()) parts.push(`负面提示词：\n${book.negativePrompt}\n\n`);
   parts.push('===========================\n\n');
 
@@ -198,6 +219,26 @@ export function exportBookTxt(book: NovelBook): string {
   return parts.join('');
 }
 
+/** Export a book to Markdown: title / world / outline / chapters / characters / summaries. */
+export function exportBookMd(book: NovelBook): string {
+  const parts: string[] = [`# ${book.title || '无题'}\n\n`];
+  if (book.worldView.trim()) parts.push(`## 世界观\n\n${book.worldView.trim()}\n\n`);
+  if ((book.outline ?? '').trim()) parts.push(`## 大纲\n\n${book.outline!.trim()}\n\n`);
+  if (book.negativePrompt.trim()) parts.push(`## 负面提示词\n\n${book.negativePrompt.trim()}\n\n`);
+  book.chapters.forEach((chapter, i) => {
+    parts.push(`## 第 ${i + 1} 章 ${chapter.title}\n\n${chapter.content}\n\n`);
+    if (chapter.summary.trim()) parts.push(`> 摘要：${chapter.summary.trim()}\n\n`);
+  });
+  if (book.characters.length) {
+    parts.push(`## 角色\n\n`);
+    for (const c of book.characters) {
+      parts.push(`- **${c.name || '未命名'}**${c.role ? `（${c.role}）` : ''}：${c.desc}\n`);
+    }
+    parts.push('\n');
+  }
+  return parts.join('');
+}
+
 /**
  * Parse the exported TXT layout back into a book.
  *
@@ -210,13 +251,15 @@ export function parseBookTxt(text: string, fallbackId: string): NovelBook {
 
   const [head, ...rest] = text.split(mainSep);
   const title = (head.split(/\r?\n/)[0] ?? '').trim() || '导入的小说';
-  const worldMatch = /简介\/世界观：\s*([\s\S]*?)(?:\n\s*负面提示词：|$)/.exec(head);
+  const worldMatch = /简介\/世界观：\s*([\s\S]*?)(?:\n\s*大纲：|\n\s*负面提示词：|$)/.exec(head);
+  const outlineMatch = /大纲：\s*([\s\S]*?)(?:\n\s*负面提示词：|$)/.exec(head);
   const negMatch = /负面提示词：\s*([\s\S]*?)\s*$/.exec(head);
 
   const book = newBook({
     id: fallbackId,
     title,
     worldView: (worldMatch?.[1] ?? '').trim(),
+    outline: (outlineMatch?.[1] ?? '').trim(),
     negativePrompt: (negMatch?.[1] ?? '').trim(),
   });
 
