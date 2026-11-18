@@ -1,0 +1,25 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      RPNow draws edge-to-edge (see MainActivity.enableEdgeToEdge), so the app
+      content extends under the system status bar and navigation bar. The WebView
+      is told about those insets through CSS env(safe-area-inset-*), which WebView
+      only exposes when the view is laid out with fitSystemWindows=false and the
+      theme is translucent rather than opaque.
+
+      Both flags below are required:
+        - windowDrawsSystemBarBackgrounds: let the app draw behind the bars
+        - statusBarColor transparent: otherwise an opaque bar hides content
+      Without them the status bar overlaps the RPNow top bar.
+    -->
+    <style name="Theme.rpnow" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <!-- Do not let the system scrim the transparent bar. -->
+        <item name="android:enforceStatusBarContrast">false</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <item name="android:windowLayoutInDisplayCutoutMode" tools:targetApi="27">shortEdges</item>
+    </style>
+</resources>

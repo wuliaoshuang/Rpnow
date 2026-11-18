@@ -1,0 +1,57 @@
+{
+  "id": "rpnow.tts.mimo",
+  "name": "MiMo TTS 语音朗读",
+  "version": "1.0.0",
+  "description": "用小米 MiMo-TTS 朗读角色回复：自动从消息中提取正文（去除 HTML、Markdown、卡内标签），按句切分连续播放。",
+  "author": "RPNow",
+  "license": "MIT",
+  "homepage": "https://mimo.mi.com/docs/zh-CN/api/audio/tts-post",
+  "apiVersion": 1,
+  "host": "host",
+  "provides": ["tts"],
+  "uses": ["settings"],
+  "optionalUses": [],
+  "priority": 10,
+  "tags": ["tts", "语音", "朗读"],
+  "config": {
+    "type": "object",
+    "properties": {
+      "apiKey": {
+        "type": "string",
+        "title": "MiMo API Key",
+        "description": "在 platform.xiaomimimo.com 控制台获取，通常以 tp- 或 sk- 开头",
+        "format": "password"
+      },
+      "baseURL": {
+        "type": "string",
+        "title": "接口地址",
+        "default": "https://api.xiaomimimo.com/v1",
+        "description": "MiMo 的 TTS 走 Chat Completions 接口，不是 /audio/speech"
+      },
+      "model": {
+        "type": "string",
+        "title": "模型",
+        "default": "mimo-v2.5-tts",
+        "enum": ["mimo-v2.5-tts", "mimo-v2.5-tts-voiceclone", "mimo-v2.5-tts-voicedesign"]
+      },
+      "voice": {
+        "type": "string",
+        "title": "音色",
+        "default": "冰糖",
+        "enum": ["mimo_default", "冰糖", "茉莉", "苏打", "白桦", "Mia", "Chloe", "Milo", "Dean"]
+      },
+      "format": {
+        "type": "string",
+        "title": "音频格式",
+        "default": "wav",
+        "enum": ["wav", "mp3"]
+      },
+      "instruction": {
+        "type": "string",
+        "title": "风格指令",
+        "description": "可选。作为 user 消息发送，用来控制语气与语速，例如：语气温柔、语速偏慢"
+      }
+    },
+    "required": ["apiKey"]
+  }
+}

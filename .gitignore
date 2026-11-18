@@ -1,0 +1,43 @@
+node_modules/
+dist/
+screenshots/
+_ref/
+.agents/
+.claude/
+agent/
+*.local
+*.log
+.DS_Store
+
+release/
+
+# Android signing key — never commit
+src-tauri/gen/android/keystore/
+src-tauri/gen/android/app/src/main/jniLibs/
+src-tauri/target/
+src-tauri/gen/android/app/build/
+
+# 本地商店数据（生成物，含用户发布内容）
+market-local/
+
+# 密钥与本地环境
+.env
+.env.*
+*.pem
+*.keystore
+
+# 令牌：任何情况下不入库
+GITHUB_TOKEN
+token*.txt
+
+# 第三方研究材料与临时打包产物（体积大、非项目源码）
+*.zip
+zip-b64-length.txt
+tavern-helper-real.zip
+test-st-extension.zip
+test-st-ext.zip
+
+# ��ʷ��֤����
+th-probe.rpnx
+th-index.js
+th-src-index.js

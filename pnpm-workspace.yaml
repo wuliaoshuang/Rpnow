@@ -1,0 +1,5 @@
+# pnpm 11 uses `allowBuilds` to approve dependency install scripts.
+# esbuild's postinstall only fetches its prebuilt binary; approving it keeps
+# `pnpm install` exiting 0, which Tauri's beforeBuildCommand depends on.
+allowBuilds:
+  esbuild: true

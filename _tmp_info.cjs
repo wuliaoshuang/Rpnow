@@ -1,0 +1,10 @@
+const fs=require('fs'),path=require('path');
+const OUT=path.join(process.env.TEMP||'C:/Users/shuang/AppData/Local/Temp','dsh-catgod');
+const d=JSON.parse(fs.readFileSync('C:/Users/shuang/Downloads/Meowssiah-2.1.6.json','utf8'));
+const s=d.extensions.tavern_helper.scripts;
+fs.writeFileSync(path.join(OUT,'script0_info.html'),s[0].info||'','utf8');
+const rb=d.extensions.SPreset.RegexBinding;
+console.log('RegexBinding keys:',Object.keys(rb));
+console.log('RegexBinding.regexes count:',(rb.regexes||[]).length);
+console.log('RegexBinding.regexes ids:',(rb.regexes||[]).map(r=>r.id).join('\n  '));
+console.log('info len:',(s[0].info||'').length);
