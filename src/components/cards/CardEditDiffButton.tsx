@@ -103,7 +103,7 @@ export function CardEditDiffButton({ card, onApplied }: { card: RPCard; onApplie
 
   return (
     <>
-      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+      <Button variant="outline" size="sm" className="rounded-full" onClick={() => setOpen(true)}>
         <Sparkles className="size-3.5" aria-hidden="true" /> 智能修改
       </Button>
 

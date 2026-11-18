@@ -255,6 +255,15 @@ export interface RPAppSettings {
      * (50–95). The oldest floors fold into a summary floor.
      */
     compressThresholdPct: number;
+    /**
+     * 聊天建议：AI 回完后给出 3 条可点的接话（用快速模型生成）。默认开；
+     * 老存档里没有这个字段时按开算。
+     */
+    suggestionsEnabled?: boolean;
+    /** 快速模型连接；不填则跟随当前对话的连接。 */
+    fastConnectionId?: string;
+    /** 快速模型；不填则用该连接的默认模型。 */
+    fastModel?: string;
   };
   /** Network. */
   network: {
@@ -349,6 +358,10 @@ export const DEFAULT_SETTINGS: RPAppSettings = {
     contextTokens: 1_000_000,
     /** Auto-compress the context at this share of the window (percent). */
     compressThresholdPct: 80,
+    /** 聊天建议默认开；快速模型默认跟随当前对话的连接与模型。 */
+    suggestionsEnabled: true,
+    fastConnectionId: undefined,
+    fastModel: '',
   },
   network: { proxyUrl: '', proxyEnabled: false },
   plugins: {},

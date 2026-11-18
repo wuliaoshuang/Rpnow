@@ -35,9 +35,17 @@ export type Route =
   | 'lore'
   | 'presets'
   | 'novel'
+  | 'novel-chapters'
+  | 'novel-settings'
+  | 'novel-characters'
+  | 'novel-search'
   | 'plugins'
-  | 'market'
+  | 'card-store'
+  | 'plugin-store'
   | 'settings';
+
+/** Novel book sub-routes (a book's workspace is split into pages, not tabs). */
+export const NOVEL_BOOK_ROUTES: Route[] = ['novel-chapters', 'novel-settings', 'novel-characters', 'novel-search'];
 
 export interface NavItem {
   route: Route;
@@ -68,10 +76,12 @@ export interface AppShellProps {
   onOpenDrawer?: () => void;
   /** This page is a sub-page: show a back chevron instead of the drawer handle. */
   isSubPage?: boolean;
+  /** A sub-page with its own header hides the shell top bar (no double header). */
+  hideTopbar?: boolean;
   onBack?: () => void;
 }
 
-export function AppShell({ route, onNavigate, children, title, topbarActions, aside, isSubPage, onBack }: AppShellProps) {
+export function AppShell({ route, onNavigate, children, title, topbarActions, aside, isSubPage, onBack, hideTopbar }: AppShellProps) {
   const Topbar = useSlot(SLOT.TOPBAR);
   return (
     <div
@@ -88,7 +98,8 @@ export function AppShell({ route, onNavigate, children, title, topbarActions, as
         </div>
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
-          const active = route === item.route;
+          const active =
+            route === item.route || (item.route === 'novel' && NOVEL_BOOK_ROUTES.includes(route));
           return (
             <button
               key={item.route}
@@ -116,7 +127,7 @@ export function AppShell({ route, onNavigate, children, title, topbarActions, as
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* ------------------------------------------------------------- topbar */}
-        {route !== 'chat' && (
+        {route !== 'chat' && !hideTopbar && (
           <>
             {/*
               Top bar. `min-h-14` rather than a fixed `h-14` so the safe-area padding
@@ -154,8 +165,10 @@ export function AppShell({ route, onNavigate, children, title, topbarActions, as
           <h1 className="min-w-0 flex-1 truncate text-center text-[15.5px] font-semibold leading-tight">
             {title ?? 'RPNow'}
           </h1>
-          {/* Right slot: same fixed width as the left, so the centre holds. */}
-          <div className="flex w-24 shrink-0 items-center justify-end gap-1.5">
+          {/* Right slot: same fixed width as the left, so the centre holds — but
+              it may grow to fit its content (the store pages put a 发布内容
+              button here, which is wider than 96px). */}
+          <div className="flex min-w-24 shrink-0 items-center justify-end gap-1.5">
             {topbarActions}
             {Topbar ? <Topbar route={route} onNavigate={onNavigate} /> : null}
           </div>

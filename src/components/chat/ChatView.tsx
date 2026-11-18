@@ -33,6 +33,7 @@ import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/misc';
 
 import { useAgentLoop, useLLM } from '@/hooks/useKernel.js';
+import { useKeyboardInset } from '@/hooks/useKeyboardInset.js';
 import { sendTurn, type ChatContext } from '@/features/chat/orchestrator.js';
 import { MemoryService } from '@/features/memory/service.js';
 import { MAIN_BRANCH } from '@/core/types/chat.js';
@@ -104,7 +105,10 @@ function InsertChip({
       }}
       className={cn(
         'flex h-8 w-8 cursor-pointer items-center justify-center rounded-full text-[12.5px] font-semibold transition-colors',
-        immersive ? 'bg-black/45 text-white/85 backdrop-blur-sm' : 'bg-[var(--rp-bg-sunken)] text-[var(--rp-fg-muted)]',
+        // 沉浸模式跟随主题：浅色主题用浅色磨砂片 + 深色字，深色主题才用黑底白字。
+        immersive
+          ? 'dark:bg-black/45 dark:text-white/85 bg-[var(--rp-bg-elevated)]/85 text-[var(--rp-fg)] backdrop-blur-sm'
+          : 'bg-[var(--rp-bg-sunken)] text-[var(--rp-fg-muted)]',
       )}
     >
       {children}
@@ -159,6 +163,11 @@ export function ChatView({
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
   const [busy, setBusy] = React.useState(false);
   const [draft, setDraft] = React.useState<{ text: string; reasoning: string } | null>(null);
+  /** 聊天建议：AI 回完后给出的 3 条接话（点一下直接发送）。 */
+  const [suggestions, setSuggestions] = React.useState<string[]>([]);
+  /** 建议属于哪条 AI 回复（换回复/换对话就失效）。 */
+  const suggestionsForRef = React.useRef<string | null>(null);
+  const suggestionsAbortRef = React.useRef<AbortController | null>(null);
   // These two are lifted to the app when the caller provides them, so the right
   // side panel can open them after it closes.
   const [inspectorOpenLocal, setInspectorOpenLocal] = React.useState(false);
@@ -248,6 +257,72 @@ export function ChatView({
     setVisibleCount((n) => Math.max(n, PAGE_SIZE));
   }, [chat.id]);
 
+  /** 换对话：旧建议失效，正在生成的建议也停掉。 */
+  React.useEffect(() => {
+    suggestionsAbortRef.current?.abort();
+    suggestionsAbortRef.current = null;
+    suggestionsForRef.current = null;
+    setSuggestions([]);
+  }, [chat.id]);
+
+  /**
+   * 聊天建议：AI 回完（busy 回到 false）且最后一条是 AI 回复时，用快速模型
+   * 给 3 条接话。只在真的聊起来之后给（只有开场白时不给），失败不报错、
+   * 不重试——建议是锦上添花，不能打断聊天。
+   */
+  const lastMsg = chat.messages[chat.messages.length - 1];
+  React.useEffect(() => {
+    if (busy) return;
+    if (!(settings.chat.suggestionsEnabled ?? true)) return;
+    if (!lastMsg || lastMsg.role !== 'assistant' || !lastMsg.content.trim()) return;
+    if (!chat.messages.some((m) => m.role === 'user')) return;
+    if (suggestionsForRef.current === lastMsg.id) return;
+    if (!llm || !connection) return;
+    const fastConn = connections.find((c) => c.id === settings.chat.fastConnectionId) ?? connection;
+    const model = settings.chat.fastModel?.trim() || fastConn.defaultModel || chat.model || connection.defaultModel;
+    if (!model) return;
+    const controller = new AbortController();
+    suggestionsAbortRef.current = controller;
+    suggestionsForRef.current = lastMsg.id;
+    const recent = chat.messages
+      .slice(-8)
+      .map((m) => `${m.role === 'user' ? (persona?.name || '用户') : (card?.data.name || 'AI')}：${m.content}`)
+      .join('\n')
+      .slice(-2000);
+    const promise = llm.completeFrom?.(fastConn, {
+      model,
+      messages: [
+        { role: 'user', content: `下面是一段角色扮演对话的最近记录：\n${recent}\n\n请给出 3 条用户接下来可能想说的话：每条一行，简短口语，不超过 20 个字，只写内容，不要编号、不要引号、不要解释。` },
+      ],
+      maxTokens: 150,
+    });
+    if (!promise) return;
+    void promise
+      .then((res) => {
+        if (controller.signal.aborted) return;
+        const lines = (res?.text ?? '')
+          .split('\n')
+          .map((l) =>
+            l
+              .trim()
+              .replace(/^[0-9]+[、.．\s]+/, '')
+              .replace(/^[-*•\s]+/, '')
+              .replace(/^["“”‘’]+|["“”‘’]+$/g, '')
+              .trim(),
+          )
+          .filter((l) => l.length > 0 && l.length <= 30)
+          .slice(0, 3);
+        if (lines.length) setSuggestions(lines);
+      })
+      .catch(() => {
+        /* 建议生成失败就当没有，不打扰用户 */
+      })
+      .finally(() => {
+        if (suggestionsAbortRef.current === controller) suggestionsAbortRef.current = null;
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy, lastMsg?.id, settings.chat.suggestionsEnabled, chat.id]);
+
   /**
    * ST `chatLoaded` — emitted once the transcript DOM is committed.
    *
@@ -276,35 +351,12 @@ export function ChatView({
 
   // ------------------------------------------------- keyboard helper row
   /**
-   * Detect the on-screen keyboard. There is no reliable cross-platform event;
-   * the visual viewport shrinking against the layout viewport is the standard
-   * heuristic and works in both Chrome and the Android WebView.
-   *
-   * `keyboardInset` is how many px the keyboard covers. The chat shell clamps
-   * itself to the visual viewport so the header cannot be pushed off-screen
-   * when the keyboard opens — the transcript is the part that shrinks.
+   * Detect the on-screen keyboard. Shared hook — see useKeyboardInset.ts.
+   * `keyboardInset` is how many px the keyboard covers; `layoutResized`
+   * says whether the layout viewport itself shrank with the keyboard
+   * (new Chrome + `interactive-widget=resizes-content` in index.html).
    */
-  const [keyboardOpen, setKeyboardOpen] = React.useState(false);
-  const [keyboardInset, setKeyboardInset] = React.useState(0);
-  React.useEffect(() => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const check = () => {
-      // A hardware keyboard keeps the two viewports equal; a soft keyboard
-      // shrinks only the visual one.
-      const inset = Math.max(0, Math.round(window.innerHeight - vv.height));
-      setKeyboardOpen(inset > 120);
-      setKeyboardInset(inset > 120 ? inset : 0);
-    };
-    check();
-    vv.addEventListener('resize', check);
-    // Android can scroll the visual viewport without firing resize.
-    vv.addEventListener('scroll', check);
-    return () => {
-      vv.removeEventListener('resize', check);
-      vv.removeEventListener('scroll', check);
-    };
-  }, []);
+  const { keyboardOpen, keyboardInset, layoutResized } = useKeyboardInset();
 
 /**
    * Pin the newest floor so its action buttons stay reachable.
@@ -469,6 +521,11 @@ export function ChatView({
 
     setBusy(true);
     setDraft({ text: '', reasoning: '' });
+    // 新一轮生成开始：旧建议失效，正在生成的建议也停掉。
+    suggestionsAbortRef.current?.abort();
+    suggestionsAbortRef.current = null;
+    suggestionsForRef.current = null;
+    setSuggestions([]);
     const controller = new AbortController();
     abortRef.current = controller;
     replyBuzzedRef.current = false;
@@ -654,21 +711,24 @@ export function ChatView({
     }
   }
 
-  function send() {
-    const text = input.trim();
+  function send(overrideText?: string) {
+    const text = (overrideText ?? input).trim();
     if ((!text && draftImages.length === 0) || busy) return;
     vibrate('send');
+    // 点建议发送时只发建议本身：输入框里的草稿和已选图片都留着不动。
     const msg: RPChatMessage = {
       id: uid('m'),
       role: 'user',
       content: text,
       createdAt: Date.now(),
-      images: draftImages.length ? draftImages : undefined,
+      images: overrideText ? undefined : draftImages.length ? draftImages : undefined,
     };
     const next = { ...chat, messages: [...chat.messages, msg] };
     onUpdate(next);
-    setInput('');
-    setDraftImages([]);
+    if (!overrideText) {
+      setInput('');
+      setDraftImages([]);
+    }
     stickToBottom.current = true;
     /*
      * Plugin events. ST extensions read the payload as the FLOOR INDEX
@@ -1020,11 +1080,29 @@ export function ChatView({
             src={card.avatar}
             alt=""
             aria-hidden="true"
-            className="pointer-events-none absolute inset-0 size-full object-cover"
+            className="pointer-events-none absolute inset-x-0 top-0 w-full object-cover"
+            style={{
+              // 键盘弹起时布局视口会缩（interactive-widget=resizes-content），
+              // 但立绘不能跟着缩——否则人物会突然变小、裁切也变了，看着像
+              // 背景被缩放了。所以立绘保持键盘没弹起时的满屏高度（外层高
+              // 度＋键盘占的高度），多出来的部分被外层的 overflow-hidden
+              // 裁掉，露出来的上半截和键盘没弹起时一模一样。
+              // 只在布局视口真的缩了时才补高度（layoutResized）；旧版浏览
+              // 器上布局没缩，外层本来就是满屏高，补了反而会撑大。
+              height: layoutResized ? `calc(100% + ${keyboardInset}px)` : '100%',
+            }}
           />
           <div
             aria-hidden="true"
-            className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/55 via-black/45 to-black/70"
+            // 盖在立绘上的遮罩跟随主题：深色主题用黑色渐变（白字可读），
+            // 浅色主题用主题底色（--rp-bg）的浅色渐变（深色字可读），
+            // 颜色始终取自当前主题预设的 token，不写死。
+            className="pointer-events-none absolute inset-x-0 top-0 w-full bg-gradient-to-b dark:from-black/55 dark:via-black/45 dark:to-black/70 from-[var(--rp-bg)]/70 via-[var(--rp-bg)]/55 to-[var(--rp-bg)]/80"
+            style={{
+              // 和立绘同理：遮罩也保持满屏高度，露出来的渐变和键盘没弹起
+              // 时是同一段，不会因为压短而变暗。
+              height: layoutResized ? `calc(100% + ${keyboardInset}px)` : '100%',
+            }}
           />
         </>
       )}
@@ -1038,7 +1116,7 @@ export function ChatView({
         className={cn(
           'pointer-events-none absolute inset-x-0 top-0 z-[1] h-28',
           immersive
-            ? 'bg-gradient-to-b from-black/70 via-black/25 to-transparent'
+            ? 'bg-gradient-to-b dark:from-black/70 dark:via-black/25 from-[var(--rp-bg)]/85 via-[var(--rp-bg)]/40 to-transparent'
             : 'bg-gradient-to-b from-[var(--rp-bg)] via-[var(--rp-bg)]/70 to-transparent',
         )}
       />
@@ -1047,7 +1125,7 @@ export function ChatView({
         className={cn(
           'pointer-events-none absolute inset-x-0 bottom-0 z-[1] h-28',
           immersive
-            ? 'bg-gradient-to-t from-black/70 via-black/25 to-transparent'
+            ? 'bg-gradient-to-t dark:from-black/70 dark:via-black/25 from-[var(--rp-bg)]/85 via-[var(--rp-bg)]/40 to-transparent'
             : 'bg-gradient-to-t from-[var(--rp-bg)] via-[var(--rp-bg)]/70 to-transparent',
         )}
       />
@@ -1056,10 +1134,12 @@ export function ChatView({
       <div
         className="relative flex h-full min-h-0 flex-col"
         style={
-          keyboardInset
+          keyboardInset && !layoutResized
             ? {
-                // Clamp to what is still visible above the keyboard so the header
-                // stays on screen; only the transcript gives up the space.
+                // 旧版浏览器（布局视口不随键盘收缩）才需要这层手动扣减：把 UI
+                // 层夹到键盘上方的可视区里，顶栏不被顶出屏幕，缩的是消息区。
+                // 新版 Chrome 上 viewport meta 已经让布局视口自己缩了，这时
+                // 整个页面本来就只有可视区那么高，再扣一次会把输入框也扣没。
                 height: `calc(100% - ${keyboardInset}px)`,
                 maxHeight: `calc(100dvh - ${keyboardInset}px)`,
               }
@@ -1071,7 +1151,7 @@ export function ChatView({
       <header
         className={cn(
           'relative z-10 flex shrink-0 items-center gap-1.5 px-2 pt-[calc(env(safe-area-inset-top,0px)+0.4rem)] pb-1.5 sm:px-3',
-          immersive ? 'text-white' : 'border-b border-[var(--rp-border)] px-3 py-2 sm:px-4',
+          immersive ? 'dark:text-white text-[var(--rp-fg)]' : 'border-b border-[var(--rp-border)] px-3 py-2 sm:px-4',
         )}
       >
         <button
@@ -1083,7 +1163,7 @@ export function ChatView({
           }}
           className={cn(
             'flex size-10 cursor-pointer items-center justify-center rounded-lg transition-colors',
-            immersive ? 'hover:bg-white/10' : 'hover:bg-[var(--rp-bg-sunken)]',
+            immersive ? 'dark:hover:bg-white/10 hover:bg-[var(--rp-fg)]/10' : 'hover:bg-[var(--rp-bg-sunken)]',
           )}
         >
           <Menu className="size-5" aria-hidden="true" />
@@ -1111,7 +1191,7 @@ export function ChatView({
           }}
           className={cn(
             'flex size-10 cursor-pointer items-center justify-center rounded-lg transition-colors',
-            immersive ? 'hover:bg-white/10' : 'hover:bg-[var(--rp-bg-sunken)]',
+            immersive ? 'dark:hover:bg-white/10 hover:bg-[var(--rp-fg)]/10' : 'hover:bg-[var(--rp-bg-sunken)]',
           )}
         >
           <SlidersHorizontal className="size-5" aria-hidden="true" />
@@ -1280,7 +1360,10 @@ export function ChatView({
           }}
           className={cn(
             'absolute bottom-[7.5rem] right-3 z-20 flex size-9 cursor-pointer items-center justify-center rounded-full',
-            'border border-white/15 bg-black/45 text-white/85 backdrop-blur-md transition-colors hover:bg-black/60 sm:right-5',
+            // 浮在正文上的圆形按钮也跟随主题：浅色用浅色磨砂，深色才用黑底。
+            'border backdrop-blur-md transition-colors sm:right-5',
+            'border-[var(--rp-border)] bg-[var(--rp-bg-elevated)]/90 text-[var(--rp-fg-muted)] hover:bg-[var(--rp-bg-elevated)]',
+            'dark:border-white/15 dark:bg-black/45 dark:text-white/85 dark:hover:bg-black/60',
           )}
         >
           {jumpHint === 'top' ? (
@@ -1293,6 +1376,35 @@ export function ChatView({
 
       {/* Plugins may inject above the composer. */}
       <SlotOutlet slot={SLOT.COMPOSER} componentProps={{ chat, card }} />
+      {/* 聊天建议：AI 回完后给出的接话，点一下直接发送；× 是收起。 */}
+      {suggestions.length > 0 && !busy && (
+        <div className="relative z-10 flex shrink-0 items-center gap-2 px-3 pb-1 pt-2 sm:px-5">
+          <div className="rp-no-scrollbar flex min-w-0 flex-1 gap-2 overflow-x-auto">
+            {suggestions.map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => {
+                  vibrate('tap');
+                  setSuggestions([]);
+                  send(s);
+                }}
+                className="shrink-0 cursor-pointer truncate rounded-full border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] px-3 py-1.5 text-[12.5px] text-[var(--rp-fg)] hover:bg-[var(--rp-bg-sunken)]"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setSuggestions([])}
+            aria-label="隐藏聊天建议"
+            className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-[var(--rp-fg-muted)] hover:bg-[var(--rp-bg-sunken)]"
+          >
+            <X className="size-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
       {/* Composer — Tavo-style: [+ attachment] [pill input] [round send]. */}
       <div
         ref={composerRef}
@@ -1338,7 +1450,7 @@ export function ChatView({
               // change on focus (user preference).
               'flex items-center gap-1.5 rounded-2xl p-1.5 pl-1 transition-colors',
               immersive
-                ? 'bg-black/45 backdrop-blur-md'
+                ? 'dark:bg-black/45 bg-[var(--rp-bg-elevated)]/85 backdrop-blur-md'
                 : 'border border-[var(--rp-border-strong)] bg-[var(--rp-bg-elevated)] shadow-sm',
             )}
           >
@@ -1349,7 +1461,9 @@ export function ChatView({
               aria-expanded={sheetOpen}
               className={cn(
                 'flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors',
-                immersive ? 'text-white/80 hover:bg-white/10' : 'text-[var(--rp-fg-muted)] hover:bg-[var(--rp-bg-sunken)]',
+                immersive
+                  ? 'dark:text-white/80 dark:hover:bg-white/10 text-[var(--rp-fg-muted)] hover:bg-[var(--rp-fg)]/10'
+                  : 'text-[var(--rp-fg-muted)] hover:bg-[var(--rp-bg-sunken)]',
               )}
             >
               <Plus className="size-5" aria-hidden="true" />
@@ -1379,11 +1493,10 @@ export function ChatView({
               aria-label="消息输入框"
               className={cn(
                 'rp-no-scrollbar max-h-[40vh] min-h-[38px] flex-1 resize-none bg-transparent px-2 py-1.5 text-[15px] leading-relaxed outline-none',
-                // Immersive mode puts the composer on translucent black, so the
-                // themed foreground would be near-invisible. Force white text and
-                // a white caret there.
+                // 沉浸模式下输入框坐在半透明底上：深色主题才强制白字白光标；
+                // 浅色主题用主题前景色和主题光标色，和非沉浸模式一致。
                 immersive
-                  ? 'text-white caret-white placeholder:text-white/45'
+                  ? 'dark:text-white dark:caret-white dark:placeholder:text-white/45 text-[var(--rp-fg)] caret-[var(--rp-accent)] placeholder:text-[var(--rp-fg-subtle)]'
                   : 'text-[var(--rp-fg)] caret-[var(--rp-accent)] placeholder:text-[var(--rp-fg-subtle)]',
               )}
               style={{ height: 'auto' }}
@@ -1423,7 +1536,7 @@ export function ChatView({
             ) : (
               <button
                 type="button"
-                onClick={send}
+                onClick={() => send()}
                 disabled={!input.trim() && draftImages.length === 0}
                 aria-label="发送"
                 className={cn(
@@ -1452,7 +1565,9 @@ export function ChatView({
                 onClick={() => setComposerExpanded(true)}
                 className={cn(
                   'flex h-8 cursor-pointer items-center gap-1.5 rounded-full px-2.5 text-[12px] transition-colors',
-                  immersive ? 'bg-black/45 text-white/85 backdrop-blur-sm' : 'bg-[var(--rp-bg-sunken)] text-[var(--rp-fg-muted)]',
+                  immersive
+                    ? 'dark:bg-black/45 dark:text-white/85 bg-[var(--rp-bg-elevated)]/85 text-[var(--rp-fg)] backdrop-blur-sm'
+                    : 'bg-[var(--rp-bg-sunken)] text-[var(--rp-fg-muted)]',
                 )}
               >
                 <Maximize2 className="size-3.5" aria-hidden="true" /> 编辑

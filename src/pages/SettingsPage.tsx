@@ -26,15 +26,17 @@ import {
   Image as ImageIcon,
   KeyRound,
   Loader2,
+  MoreVertical,
   Plus,
   RefreshCw,
   Save,
+  Search,
   Trash2,
   Upload,
   UserRound,
 } from 'lucide-react';
 import { useApp } from '@/state/store.js';
-import { PROVIDERS, providersByGroup, providerInfo } from '@/core/llm/providers.js';
+import { providersByGroup, providerInfo } from '@/core/llm/providers.js';
 import { BUILTIN_IMAGE_ADAPTERS } from '@/core/image/types.js';
 import { BUILTIN_THEMES } from '@/core/defaults/themes.js';
 import { exportAll, importAll } from '@/core/storage/index.js';
@@ -64,7 +66,14 @@ import {
   Switch,
   Textarea,
 } from '@/components/ui/input.js';
-import { Badge, EmptyState, Hint } from '@/components/ui/misc.js';
+import {
+  Badge,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  EmptyState,
+} from '@/components/ui/misc.js';
 import { toast } from '@/components/ui/toast.js';
 import { cn, downloadBlob, uid } from '@/lib/utils.js';
 import { runtime, providerNeedsProxy } from '@/lib/runtime.js';
@@ -72,6 +81,7 @@ import { SettingsHub } from './SettingsHub.js';
 import { SLOT, SlotOutlet } from '@/core/plugin/slots.js';
 import { hapticsSupported, vibratePreview } from '@/lib/haptics';
 import { confirmAction } from '@/components/ui/confirm.js';
+import { APP_VERSION, APP_VERSION_CODE } from '@/core/version.js';
 
 export function SettingsPage({
   /** Current sub-route section; `undefined` = hub directory. */
@@ -82,14 +92,18 @@ export function SettingsPage({
   onOpenPlugins,
   /** Opens sibling content pages (世界书/预设/小说). */
   onOpenRoute,
+  /** Manually check for an app update (About page button). */
+  onCheckUpdate,
 }: {
   section?: string;
   onOpenSection?: (id: string) => void;
   onOpenPlugins?: () => void;
-  onOpenRoute?: (route: 'lore' | 'presets' | 'novel') => void;
+  onOpenRoute?: (route: 'lore' | 'presets' | 'novel' | 'card-store' | 'plugin-store') => void;
+  onCheckUpdate?: () => Promise<void>;
 } = {}) {
   const settings = useApp((s) => s.settings);
   const setSettings = useApp((s) => s.setSettings);
+  const llmConnections = useApp((s) => s.llmConnections);
   const fileInput = useRef<HTMLInputElement>(null);
   /*
    * Fully controlled by the app's flat sub-route (`#/settings/models`) —
@@ -361,7 +375,8 @@ export function SettingsPage({
                   }
                 >
                   <SelectTrigger id="reasoning-effort">
-                    <SelectValue />
+                    {/* 空值（默认）那一项 Radix 渲染不出来，框会是空的；用 placeholder 补上它的文案。 */}
+                    <SelectValue placeholder="默认（跟随服务商）" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="">默认（跟随服务商）</SelectItem>
@@ -391,6 +406,52 @@ export function SettingsPage({
                 checked={settings.render.immersiveMode}
                 onChange={(v) => setSettings({ render: { ...settings.render, immersiveMode: v } })}
               />
+            </section>
+
+            <section className="space-y-3">
+              <h3 className="text-[13px] font-semibold">聊天建议</h3>
+              <ToggleRow
+                id="chat-suggestions"
+                label="启用聊天建议"
+                hint="AI 回复后，在输入框上方给出 3 条接话建议，点一下直接发送；用下面的快速模型生成。"
+                checked={settings.chat.suggestionsEnabled ?? true}
+                onChange={(v) => setSettings({ chat: { ...settings.chat, suggestionsEnabled: v } })}
+              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="fast-conn">快速模型服务</Label>
+                  <Select
+                    value={settings.chat.fastConnectionId ?? ''}
+                    onValueChange={(v) =>
+                      setSettings({ chat: { ...settings.chat, fastConnectionId: v || undefined } })
+                    }
+                  >
+                    <SelectTrigger id="fast-conn">
+                      <SelectValue placeholder="跟随聊天模型" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">跟随聊天模型</SelectItem>
+                      {llmConnections.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          {c.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="fast-model">快速模型</Label>
+                  <Input
+                    id="fast-model"
+                    value={settings.chat.fastModel ?? ''}
+                    onChange={(e) => setSettings({ chat: { ...settings.chat, fastModel: e.target.value } })}
+                    placeholder="留空则用该连接的默认模型"
+                  />
+                </div>
+              </div>
+              <p className="text-[11px] text-[var(--rp-fg-subtle)]">
+                快速模型用来生成聊天建议（以后也会用来生成对话标题等后台任务）；不填就跟随当前对话的模型。
+              </p>
             </section>
 
             <section className="space-y-3">
@@ -638,8 +699,70 @@ export function SettingsPage({
             </section>
           </div>
           )}
+
+          {/* ------------------------------------------------------- about */}
+          {section === 'about' && (
+          <AboutSettings onCheckUpdate={onCheckUpdate} />
+          )}
         </>
       </div>
+    </div>
+  );
+}
+
+function AboutSettings({ onCheckUpdate }: { onCheckUpdate?: () => Promise<void> }) {
+  const [checking, setChecking] = useState(false);
+  return (
+    <div className="space-y-4">
+      <section className="space-y-2 rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-4">
+        <div className="flex items-center gap-3">
+          <div className="flex size-12 items-center justify-center rounded-2xl bg-[var(--rp-accent)] text-[20px] font-bold text-[var(--rp-accent-fg)]">
+            R
+          </div>
+          <div>
+            <h3 className="text-[15px] font-semibold">RPNow</h3>
+            <p className="text-[11.5px] text-[var(--rp-fg-subtle)]">本地优先的 AI 角色扮演应用</p>
+          </div>
+        </div>
+        <dl className="space-y-1.5 pt-1 text-[12.5px]">
+          <div className="flex justify-between gap-2">
+            <dt className="text-[var(--rp-fg-muted)]">当前版本</dt>
+            <dd className="font-medium">v{APP_VERSION}（{APP_VERSION_CODE}）</dd>
+          </div>
+          <div className="flex justify-between gap-2">
+            <dt className="text-[var(--rp-fg-muted)]">更新渠道</dt>
+            <dd className="font-medium">服务器发布</dd>
+          </div>
+        </dl>
+        <Button
+          className="w-full rounded-full"
+          disabled={checking}
+          onClick={async () => {
+            setChecking(true);
+            try {
+              await onCheckUpdate?.();
+            } finally {
+              setChecking(false);
+            }
+          }}
+        >
+          {checking ? (
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+          ) : (
+            <RefreshCw className="size-3.5" aria-hidden="true" />
+          )}
+          {checking ? '正在检查…' : '检查更新'}
+        </Button>
+        <p className="text-[11px] leading-relaxed text-[var(--rp-fg-subtle)]">
+          新版本会在服务器上发布，应用启动时会自动检查。强制更新不可跳过，请及时更新到最新版；普通更新可以稍后再说，也可以忽略该版本。
+        </p>
+      </section>
+      <section className="space-y-2 rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-4">
+        <h3 className="text-[13px] font-semibold">关于 RPNow</h3>
+        <p className="text-[12px] leading-relaxed text-[var(--rp-fg-muted)]">
+          RPNow 是一款本地优先、插件化的 AI 角色扮演应用：角色卡、世界书、预设共用一条可检视的提示词流水线，数据保存在本机，角色卡与插件商店由服务器提供。
+        </p>
+      </section>
     </div>
   );
 }
@@ -673,6 +796,22 @@ function ToggleRow({
 }
 
 // --------------------------------------------------------------- models
+// 聊天 API：照 Tavo 的 API 连接设置排版——列表是搜索框＋大图标行（名字＋
+// 默认角标、服务商：模型、右端 ⋮ 菜单），顶栏右侧是“新建”胶囊按钮；点新建
+// 或点一行进表单页（名称 / 服务商 / 接口地址 / API 密钥 / 模型），底部是
+// 主题色胶囊保存按钮。Tavo 的服务商推广横幅不要。
+
+/** 新建表单的默认值：跟随当前服务商。 */
+function defaultModelForm(providerKey: string): Partial<LLMConnection> {
+  const info = providerInfo(providerKey);
+  return {
+    name: info?.label ?? '自定义',
+    baseURL: info?.baseURL ?? '',
+    provider: providerKey,
+    defaultModel: info?.models[0] ?? '',
+    apiKey: '',
+  };
+}
 
 function ModelSettings() {
   const connections = useApp((s) => s.llmConnections);
@@ -681,25 +820,73 @@ function ModelSettings() {
   const settings = useApp((s) => s.settings);
   const setSettings = useApp((s) => s.setSettings);
   const llm = useLLM();
+  const addModelRequest = useApp((s) => s.addModelRequest);
+  const requestAddModel = useApp((s) => s.requestAddModel);
 
   const [adding, setAdding] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [providerKey, setProviderKey] = useState('openai');
-  const [form, setForm] = useState<Partial<LLMConnection>>({});
+  const [form, setForm] = useState<Partial<LLMConnection>>(() => defaultModelForm('openai'));
   const [testing, setTesting] = useState(false);
   const [models, setModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [query, setQuery] = useState('');
 
   const info = providerInfo(providerKey);
 
+  // 顶栏“新建”按钮的瞬时请求：表单没开才打开（开着时不重置，免得冲掉正在填的内容）。
   useEffect(() => {
-    setForm({
-      name: info?.label ?? '自定义',
-      baseURL: info?.baseURL ?? '',
-      provider: providerKey,
-      defaultModel: info?.models[0] ?? '',
-      apiKey: '',
+    if (!addModelRequest) return;
+    requestAddModel(false);
+    if (adding) return;
+    setEditingId(null);
+    setProviderKey('openai');
+    setForm(defaultModelForm('openai'));
+    setModels([]);
+    setAdding(true);
+  }, [addModelRequest, adding, requestAddModel]);
+
+  function openAdd() {
+    setEditingId(null);
+    setProviderKey('openai');
+    setForm(defaultModelForm('openai'));
+    setModels([]);
+    setAdding(true);
+  }
+
+  function openEdit(c: LLMConnection) {
+    setEditingId(c.id);
+    setProviderKey(c.provider);
+    setForm({ ...c });
+    setModels([]);
+    setAdding(true);
+  }
+
+  function closeForm() {
+    setAdding(false);
+    setEditingId(null);
+  }
+
+  /**
+   * 服务商切换：地址和默认模型跟新服务商走；名字只在还是旧服务商的自动
+   * 名（或空）时才跟新服务商走——用户自己起的名字和已填的密钥不动，
+   * 免得先填名字再挑服务商时被冲掉。
+   */
+  function onProviderChange(v: string) {
+    const oldInfo = providerInfo(providerKey);
+    const ni = providerInfo(v);
+    setProviderKey(v);
+    setForm((f) => {
+      const nameTouched = (f.name ?? '').trim() !== '' && (f.name ?? '').trim() !== (oldInfo?.label ?? '');
+      return {
+        ...f,
+        provider: v,
+        baseURL: ni?.baseURL ?? '',
+        defaultModel: ni?.models[0] ?? '',
+        name: nameTouched ? f.name : (ni?.label ?? '自定义'),
+      };
     });
-  }, [providerKey, info]);
+  }
 
   async function testConnection() {
     if (!llm) return;
@@ -750,210 +937,249 @@ function ModelSettings() {
     }
   }
 
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <div className="min-w-0 flex-1">
-          <h3 className="text-[13px] font-semibold">模型连接</h3>
-          <p className="text-[11.5px] text-[var(--rp-fg-muted)]">
-            支持 {PROVIDERS.length} 家服务商以及任意 OpenAI 兼容接口。密钥只保存在本机浏览器。
-          </p>
+  async function saveForm() {
+    if (!form.baseURL?.trim()) {
+      toast.error('接口地址不能为空');
+      return;
+    }
+    const conn: LLMConnection = {
+      id: editingId ?? uid('llm'),
+      name: form.name?.trim() || info?.label || '自定义连接',
+      provider: form.provider ?? providerKey,
+      baseURL: form.baseURL.trim().replace(/\/+$/, ''),
+      apiKey: form.apiKey ?? '',
+      defaultModel: form.defaultModel?.trim(),
+    };
+    await save(conn);
+    if (!settings.defaultConnectionId) setSettings({ defaultConnectionId: conn.id });
+    closeForm();
+    toast.success(editingId ? '连接已更新' : '连接已保存');
+  }
+
+  const filtered = connections.filter((c) => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    const p = providerInfo(c.provider);
+    return [c.name, p?.label ?? '', c.provider, c.defaultModel ?? '', c.baseURL].some((s) =>
+      s.toLowerCase().includes(q),
+    );
+  });
+
+  // ------------------------------------------------------------ 表单页
+  if (adding) {
+    return (
+      <div className="space-y-5">
+        <div className="flex items-center justify-between">
+          <h3 className="text-[15px] font-semibold">{editingId ? '编辑聊天 API' : '新建聊天 API'}</h3>
+          <Button variant="ghost" size="sm" onClick={closeForm}>
+            取消
+          </Button>
         </div>
-        <Button size="sm" onClick={() => setAdding((v) => !v)}>
-          <Plus className="size-3.5" aria-hidden="true" /> 添加连接
-        </Button>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="cname">名称</Label>
+          <Input
+            id="cname"
+            value={form.name ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+            placeholder="例如：我的 DeepSeek"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="prov">服务提供方</Label>
+          <Select value={providerKey} onValueChange={onProviderChange}>
+            <SelectTrigger id="prov">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {providersByGroup().map((g) => (
+                <SelectGroup key={g.group}>
+                  <SelectLabel>{g.group}</SelectLabel>
+                  {g.items.map((p) => (
+                    <SelectItem key={p.key} value={p.key}>
+                      {p.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="cbase" required>
+            接口地址
+          </Label>
+          <Input
+            id="cbase"
+            value={form.baseURL ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, baseURL: e.target.value }))}
+            placeholder="https://api.example.com/v1"
+            aria-describedby="cbase-hint"
+          />
+          <p id="cbase-hint" className="text-[11px] text-[var(--rp-fg-subtle)]">
+            填到 <code>/v1</code> 为止，不要加 <code>/chat/completions</code>。
+            {info?.note && ` ${info.note}`}
+          </p>
+          {info?.altBaseURLs?.length ? (
+            <div className="flex flex-wrap gap-1.5">
+              {info.altBaseURLs.map((u) => (
+                <button
+                  key={u}
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, baseURL: u }))}
+                  className="cursor-pointer rounded border border-[var(--rp-border)] px-1.5 py-0.5 text-[10.5px] hover:bg-[var(--rp-bg-elevated)]"
+                >
+                  {u}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="ckey">
+            API 密钥
+            {info?.keyOptional && <span className="ml-1 font-normal text-[var(--rp-fg-subtle)]">（本地服务可留空）</span>}
+          </Label>
+          <Input
+            id="ckey"
+            type="password"
+            autoComplete="off"
+            value={form.apiKey ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
+            placeholder="sk-…"
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="cmodel">模型</Label>
+            <Button variant="ghost" size="sm" className="h-7 text-[11px]" onClick={fetchModels} disabled={loadingModels}>
+              {loadingModels ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" aria-hidden="true" />}
+              从服务获取列表
+            </Button>
+          </div>
+          <Input
+            id="cmodel"
+            list="model-options"
+            value={form.defaultModel ?? ''}
+            onChange={(e) => setForm((f) => ({ ...f, defaultModel: e.target.value }))}
+            placeholder="直接输入模型名也可以"
+          />
+          <datalist id="model-options">
+            {(models.length ? models : (info?.models ?? [])).map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </div>
+
+        {providerNeedsProxy(Boolean(info?.browserCors)) && (
+          <p className="rounded border border-[var(--rp-warn)]/40 bg-[var(--rp-warn)]/10 p-2 text-[11px] text-[var(--rp-warn)]">
+            该服务商通常不发送 CORS 头，浏览器直连可能失败。可在「网络」中启用代理，或改用桌面版（桌面版无需代理）。
+          </p>
+        )}
+
+        <div className="space-y-2 pt-1">
+          <Button variant="outline" className="w-full rounded-full" onClick={testConnection} disabled={testing}>
+            {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" aria-hidden="true" />}
+            测试连接
+          </Button>
+          <Button className="h-12 w-full rounded-full text-[15px]" onClick={saveForm}>
+            <Save className="size-4" aria-hidden="true" /> 保存
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // ------------------------------------------------------------ 列表页
+  return (
+    <div className="space-y-3">
+      <div className="relative">
+        <Search
+          className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[var(--rp-fg-subtle)]"
+          aria-hidden="true"
+        />
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="搜索聊天 API"
+          aria-label="搜索聊天 API"
+          className="rounded-full pl-10"
+        />
       </div>
 
-      {adding && (
-        <section className="space-y-3 rounded-lg border border-[var(--rp-accent)]/40 bg-[var(--rp-bg-sunken)]/40 p-3">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor="prov">服务商</Label>
-              <Select value={providerKey} onValueChange={setProviderKey}>
-                <SelectTrigger id="prov">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {providersByGroup().map((g) => (
-                    <SelectGroup key={g.group}>
-                      <SelectLabel>{g.group}</SelectLabel>
-                      {g.items.map((p) => (
-                        <SelectItem key={p.key} value={p.key}>
-                          {p.label}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="cname">连接名称</Label>
-              <Input
-                id="cname"
-                value={form.name ?? ''}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                placeholder="例如：我的 DeepSeek"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="cbase" required>
-              接口地址
-            </Label>
-            <Input
-              id="cbase"
-              value={form.baseURL ?? ''}
-              onChange={(e) => setForm((f) => ({ ...f, baseURL: e.target.value }))}
-              placeholder="https://api.example.com/v1"
-              aria-describedby="cbase-hint"
-            />
-            <p id="cbase-hint" className="text-[11px] text-[var(--rp-fg-subtle)]">
-              填到 <code>/v1</code> 为止，不要加 <code>/chat/completions</code>。
-              {info?.note && ` ${info.note}`}
-            </p>
-            {info?.altBaseURLs?.length ? (
-              <div className="flex flex-wrap gap-1.5">
-                {info.altBaseURLs.map((u) => (
-                  <button
-                    key={u}
-                    type="button"
-                    onClick={() => setForm((f) => ({ ...f, baseURL: u }))}
-                    className="cursor-pointer rounded border border-[var(--rp-border)] px-1.5 py-0.5 text-[10.5px] hover:bg-[var(--rp-bg-elevated)]"
-                  >
-                    {u}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="ckey">
-              API Key
-              {info?.keyOptional && <span className="ml-1 font-normal text-[var(--rp-fg-subtle)]">（本地服务可留空）</span>}
-            </Label>
-            <Input
-              id="ckey"
-              type="password"
-              autoComplete="off"
-              value={form.apiKey ?? ''}
-              onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
-              placeholder="sk-…"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="cmodel">默认模型</Label>
-              <Button variant="ghost" size="sm" className="h-7 text-[11px]" onClick={fetchModels} disabled={loadingModels}>
-                {loadingModels ? <Loader2 className="size-3 animate-spin" /> : <RefreshCw className="size-3" aria-hidden="true" />}
-                从服务获取列表
-              </Button>
-            </div>
-            <Input
-              id="cmodel"
-              list="model-options"
-              value={form.defaultModel ?? ''}
-              onChange={(e) => setForm((f) => ({ ...f, defaultModel: e.target.value }))}
-              placeholder="直接输入模型名也可以"
-            />
-            <datalist id="model-options">
-              {(models.length ? models : (info?.models ?? [])).map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
-          </div>
-
-          {providerNeedsProxy(Boolean(info?.browserCors)) && (
-            <p className="rounded border border-[var(--rp-warn)]/40 bg-[var(--rp-warn)]/10 p-2 text-[11px] text-[var(--rp-warn)]">
-              该服务商通常不发送 CORS 头，浏览器直连可能失败。可在「网络」中启用代理，或改用桌面版（桌面版无需代理）。
-            </p>
-          )}
-
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button variant="outline" size="sm" onClick={testConnection} disabled={testing}>
-              {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" aria-hidden="true" />}
-              测试连接
-            </Button>
-            <Button
-              size="sm"
-              onClick={async () => {
-                if (!form.baseURL?.trim()) {
-                  toast.error('接口地址不能为空');
-                  return;
-                }
-                const conn: LLMConnection = {
-                  id: uid('llm'),
-                  name: form.name?.trim() || info?.label || '自定义连接',
-                  provider: form.provider ?? providerKey,
-                  baseURL: form.baseURL.trim().replace(/\/+$/, ''),
-                  apiKey: form.apiKey ?? '',
-                  defaultModel: form.defaultModel?.trim(),
-                };
-                await save(conn);
-                if (!settings.defaultConnectionId) setSettings({ defaultConnectionId: conn.id });
-                setAdding(false);
-                toast.success('连接已保存');
-              }}
-            >
-              <Save className="size-3.5" aria-hidden="true" /> 保存连接
-            </Button>
-          </div>
-        </section>
-      )}
-
-      {connections.length === 0 && !adding ? (
+      {connections.length === 0 ? (
         <EmptyState
           icon={<KeyRound className="size-5" aria-hidden="true" />}
-          title="还没有模型连接"
+          title="还没有聊天 API"
           description="添加一个 API 后即可开始对话。推荐：OpenRouter（一个 Key 多模型）或 DeepSeek（性价比高）。"
           action={
-            <Button size="sm" onClick={() => setAdding(true)}>
-              添加第一个连接
+            <Button size="sm" onClick={openAdd}>
+              <Plus className="size-3.5" aria-hidden="true" /> 添加第一个连接
             </Button>
           }
         />
+      ) : filtered.length === 0 ? (
+        <p className="py-8 text-center text-[12.5px] text-[var(--rp-fg-muted)]">没有找到“{query.trim()}”相关的连接</p>
       ) : (
         <ul className="space-y-2">
-          {connections.map((c) => {
+          {filtered.map((c) => {
             const p = providerInfo(c.provider);
+            const isDefault = settings.defaultConnectionId === c.id;
+            const initial = (p?.label ?? c.provider).trim().charAt(0) || '?';
             return (
-              <li key={c.id} className="rounded-lg border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-3">
-                <div className="flex items-center gap-2">
-                  <div className="min-w-0 flex-1">
-                    <p className="flex items-center gap-1.5 text-[12.5px] font-semibold">
-                      {c.name}
-                      {settings.defaultConnectionId === c.id && <Badge variant="accent">默认</Badge>}
-                      {providerNeedsProxy(Boolean(p?.browserCors)) && <Badge variant="warn">需代理</Badge>}
-                    </p>
-                    <p className="truncate text-[11px] text-[var(--rp-fg-muted)]">
-                      {p?.label ?? c.provider} · {c.baseURL}
-                    </p>
-                    <p className="text-[11px] text-[var(--rp-fg-subtle)]">
-                      模型：{c.defaultModel || '未设置'} · 密钥：{c.apiKey ? '已填写' : '未填写'}
-                    </p>
-                  </div>
-                  {settings.defaultConnectionId !== c.id && (
-                    <Button size="sm" variant="outline" onClick={() => setSettings({ defaultConnectionId: c.id })}>
-                      设为默认
-                    </Button>
-                  )}
-                  <Hint label="删除连接">
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      className="text-[var(--rp-danger)]"
-                      aria-label="删除连接"
-                      onClick={async () => {
-                        if (!(await confirmAction({ title: '确认操作', description: `删除连接「${c.name}」？` }))) return;
-                        void remove(c.id);
-                      }}
+              <li key={c.id}>
+                <div className="flex items-center gap-3 rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-3">
+                  <button
+                    type="button"
+                    onClick={() => openEdit(c)}
+                    aria-label={`编辑连接 ${c.name}`}
+                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
+                  >
+                    <span
+                      className="flex size-14 shrink-0 items-center justify-center rounded-2xl bg-[var(--rp-accent-soft)] text-[20px] font-bold text-[var(--rp-accent)]"
+                      aria-hidden="true"
                     >
-                      <Trash2 className="size-3.5" aria-hidden="true" />
-                    </Button>
-                  </Hint>
+                      {initial}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-1.5 text-[15px] font-semibold">
+                        <span className="truncate">{c.name}</span>
+                        {isDefault && <Badge variant="accent">默认</Badge>}
+                        {providerNeedsProxy(Boolean(p?.browserCors)) && <Badge variant="warn">需代理</Badge>}
+                      </span>
+                      <span className="mt-0.5 block truncate text-[12px] text-[var(--rp-fg-muted)]">
+                        {c.provider}: {c.defaultModel || '未设置模型'}
+                      </span>
+                    </span>
+                  </button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon-sm" aria-label={`${c.name} 的更多操作`}>
+                        <MoreVertical className="size-4" aria-hidden="true" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => openEdit(c)}>编辑</DropdownMenuItem>
+                      {!isDefault && (
+                        <DropdownMenuItem onClick={() => setSettings({ defaultConnectionId: c.id })}>
+                          设为默认
+                        </DropdownMenuItem>
+                      )}
+                      <DropdownMenuItem
+                        destructive
+                        onClick={async () => {
+                          if (!(await confirmAction({ title: '确认操作', description: `删除连接「${c.name}」？` }))) return;
+                          void remove(c.id);
+                        }}
+                      >
+                        删除
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               </li>
             );

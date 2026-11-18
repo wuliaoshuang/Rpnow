@@ -140,7 +140,13 @@ export function PushAside({
 
 
   return (
-    <div ref={ref} className="relative flex h-full min-h-0 w-full overflow-hidden isolate">
+    <div
+      ref={ref}
+      className="relative flex h-full min-h-0 w-full overflow-hidden bg-[var(--rp-bg-elevated)] isolate"
+      // 根层就是侧栏的颜色：页面圆角切掉的月牙缝隙露出来的正是这一层，
+      // 跟侧栏同色才看不出接缝（之前是 body 的 --rp-bg，比侧栏暗一档，
+      // 圆角处就露出一道颜色不一样的边）。
+    >
       {/*
         Both panels are mounted from the first render — so their contents are
         laid out and themed before the user ever taps ☰ (mounting lazily showed
@@ -225,15 +231,19 @@ export function PushAside({
           Inner shadow along the edge facing the drawer: a separate absolutely
           positioned gradient that fades with opacity, instead of an animated
           `box-shadow` (which repaints the whole layer each frame).
+
+          注意方向：左栏打开时页面向右推，朝向侧栏的是页面的左缘，阴影就贴
+          左缘、向右淡出；右栏反之。之前写反了，阴影落在页面远端（推出屏幕
+          外），实际从没显示过，圆角接缝处也就少了这层过渡。
         */}
         <div
           aria-hidden="true"
           className="pointer-events-none absolute inset-y-0 w-6 transition-opacity"
           style={{
             opacity: open ? 1 : 0,
-            [side === 'right' ? 'left' : 'right']: 0,
+            ...(side === 'left' ? { left: 0 } : { right: 0 }),
             background:
-              side === 'right'
+              side === 'left'
                 ? 'linear-gradient(to right, rgba(0,0,0,.18), transparent)'
                 : 'linear-gradient(to left, rgba(0,0,0,.18), transparent)',
             transitionDuration: `${DURATION_MS}ms`,

@@ -52,7 +52,7 @@ export function AvatarAIModule({
   };
 
   return (
-    <div className="mt-2 space-y-1.5">
+    <div className="space-y-1.5">
       <Label htmlFor="avatar-prompt">头像提示词（英文 Tag）</Label>
       <Input
         id="avatar-prompt"

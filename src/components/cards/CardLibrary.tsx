@@ -30,7 +30,16 @@ import { PublishWizard } from '@/components/marketplace/PublishWizard.js';
 import type { RPChat } from '@/core/types/chat.js';
 import { buildGreetings } from '@/features/chat/orchestrator.js';
 import { importFiles } from '@/features/import/cardImport.js';
-import { toPngBlob, toJsonBlob, toCharXBlob } from '@/core/card/parser.js';
+import { toPngBlob, toJsonBlob, toCharXBlob, parseCardFile } from '@/core/card/parser.js';
+import {
+  downloadPackage,
+  listInstalledSources,
+  queryCardItems,
+  recordInstall,
+  saveInstalledSource,
+} from '@/core/marketplace/client.js';
+import { readPublishManifest } from '@/core/marketplace/packaging.js';
+import type { MarketItem } from '@/core/marketplace/types.js';
 import { CardAIGenerateDialog } from './CardAIGenerateDialog.js';
 import { CardIntroPanel } from './CardIntroPanel.js';
 import { SLOT, SlotOutlet } from '@/core/plugin/slots.js';
@@ -83,6 +92,67 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
   const [importing, setImporting] = React.useState(false);
   const [importResult, setImportResult] = React.useState<Awaited<ReturnType<typeof importFiles>> | null>(null);
   const fileInput = React.useRef<HTMLInputElement>(null);
+
+  const setHideTopbar = useApp((s) => s.setHideTopbar);
+  // 创建角色子页面和角色卡编辑器都自带返回头，壳顶栏要藏起来，免得两个头叠着。
+  const editorOpen = Boolean(editing || creating);
+  React.useEffect(() => {
+    setHideTopbar(createOpen || editorOpen);
+    return () => setHideTopbar(false);
+  }, [createOpen, editorOpen, setHideTopbar]);
+
+  /** 商店里的卡（快捷导入用）：打开创建页时拉一次，拉不到就藏起这块。 */
+  const [storePicks, setStorePicks] = React.useState<MarketItem[]>([]);
+  const [installingId, setInstallingId] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!createOpen) return;
+    let alive = true;
+    queryCardItems({ page: 1, pageSize: 6, sort: 'newest' })
+      .then((page) => {
+        if (alive) setStorePicks(page?.items ?? []);
+      })
+      .catch(() => {
+        if (alive) setStorePicks([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [createOpen]);
+
+  const installedSources = React.useMemo(() => listInstalledSources(), [storePicks, cards]);
+
+  /** 点商店里的卡：已装过且本地还在就直接打开；否则下载安装再打开。 */
+  async function handleStorePick(item: MarketItem) {
+    const storeId = item.manifest.id;
+    if (installedSources[storeId]) {
+      const local = cards.find((c) => c.data.name === item.manifest.name);
+      if (local) {
+        setCreateOpen(false);
+        setIntroCard(local);
+        return;
+      }
+    }
+    if (installingId) return;
+    setInstallingId(storeId);
+    try {
+      if (!item.versions.length) throw new Error('这张卡没有可用版本');
+      const version = item.versions[0];
+      const pkg = await downloadPackage(storeId, version);
+      const pub = await readPublishManifest(pkg);
+      if (pub.type !== 'card') throw new Error('该发布包不是角色卡');
+      const parsed = await parseCardFile(pkg, `${pub.name}.rpcard`);
+      await addCard(parsed.card);
+      saveInstalledSource({ id: storeId, kind: item.manifest.type, version, installedAt: new Date().toISOString(), source: 'market' });
+      void recordInstall(storeId).catch(() => {});
+      toast.success(`已安装「${item.manifest.name}」`);
+      setCreateOpen(false);
+      setIntroCard(parsed.card);
+    } catch (err) {
+      toast.error('安装失败', err instanceof Error ? err.message : String(err));
+    } finally {
+      setInstallingId(null);
+    }
+  }
 
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -178,10 +248,11 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
           setCreateOpen(false);
           setAiOpen(true);
         }}
-        quickPicks={cards.slice(0, 6)}
-        onQuickPick={(card) => {
-          setCreateOpen(false);
-          setIntroCard(card);
+        storePicks={storePicks}
+        installedIds={installedSources}
+        installingId={installingId}
+        onStorePick={(item) => {
+          void handleStorePick(item);
         }}
       />
     );

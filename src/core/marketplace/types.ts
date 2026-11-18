@@ -34,8 +34,7 @@ export const PLUGIN_PERMISSION_LABELS: Record<PluginPermission, string> = {
 export type ContentRating = 'sfw' | 'suggestive' | 'nsfw';
 
 /** 发布元数据（写入发布包的 `publish.json`，也是商店索引的基础）。 */
-export interface PublishManifest {
-  type: MarketKind;
+interface PublishManifestBase {
   /** 结构版本。 */
   schema: 1;
   /** 稳定唯一 id：`card.<author-slug>.<slug>` / `plugin.<manifest.id>`。 */
@@ -53,17 +52,29 @@ export interface PublishManifest {
   rating: ContentRating;
   contentWarnings: string[];
   screenshots: string[]; // 包内相对路径
-  /** 依赖的插件 id（仅插件）。 */
-  requires?: string[];
   /** 最低 RPNow 版本（semver）。 */
   minHostVersion?: string;
-  /** 插件权限（仅插件）。 */
-  permissions?: PluginPermission[];
   changelog?: string;
   createdAt: string;
   /** 统计（由商店维护，发布时可为空）。 */
   stats?: { downloads?: number; likes?: number; dislikes?: number };
 }
+
+/** 角色卡发布元数据：没有权限/依赖字段。 */
+export interface CardPublishManifest extends PublishManifestBase {
+  type: 'card';
+}
+
+/** 插件发布元数据：权限必填，依赖仅插件有。 */
+export interface PluginPublishManifest extends PublishManifestBase {
+  type: 'plugin';
+  /** 依赖的插件 id（仅插件）。 */
+  requires?: string[];
+  /** 插件权限（仅插件，必填）。 */
+  permissions: PluginPermission[];
+}
+
+export type PublishManifest = CardPublishManifest | PluginPublishManifest;
 
 /** 商店列表项（服务端索引）。 */
 export interface MarketItem {

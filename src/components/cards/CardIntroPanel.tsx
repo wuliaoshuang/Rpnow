@@ -15,7 +15,6 @@ import { useKernelService } from '@/hooks/useKernel.js';
 import { SERVICE } from '@/core/plugin/kernel-types.js';
 import type { RendererService } from '@/core/agent/types.js';
 import { Button } from '@/components/ui/button.js';
-import { Badge } from '@/components/ui/misc.js';
 
 export function CardIntroPanel({
   card,
@@ -80,10 +79,14 @@ export function CardIntroPanel({
         </button>
 
         <div className="rp-scroll min-h-0 flex-1 overflow-y-auto">
-          {/* Portrait: full-bleed at the top, melting into the panel. */}
-          <div className="relative aspect-[4/5] w-full overflow-hidden bg-[var(--rp-bg-sunken)]">
+          {/* Portrait: full-bleed at the top, melting into the panel.
+              Height is capped (48dvh) so the text below — description, stats,
+              author notes — fits above the fold instead of being cut off
+              behind the action bar; the image crops from the bottom
+              (`object-top`) so faces and head details survive. */}
+          <div className="relative aspect-[4/5] max-h-[48dvh] w-full overflow-hidden bg-[var(--rp-bg-sunken)]">
             {card.avatar ? (
-              <img src={card.avatar} alt="" className="size-full object-cover" />
+              <img src={card.avatar} alt="" className="size-full object-cover object-top" />
             ) : (
               <div className="flex size-full items-center justify-center bg-gradient-to-br from-[var(--rp-accent-soft)] to-[var(--rp-bg-sunken)] text-5xl font-semibold text-[var(--rp-accent)]">
                 {card.data.name.slice(0, 1)}
@@ -106,8 +109,9 @@ export function CardIntroPanel({
             </div>
           </div>
 
-          <div className="space-y-3 px-4 pb-2 pt-3">
-            {/* Summary card: description in a sunken rounded block. */}
+          <div className="space-y-3 px-4 pb-4 pt-3">
+            {/* Summary card: description in a sunken rounded block — the
+                main text, kept prominent. */}
             <div className="rounded-2xl bg-[var(--rp-bg-sunken)] p-3">
               <div
                 className="rp-md text-[13px] leading-relaxed text-[var(--rp-fg)]"
@@ -115,17 +119,17 @@ export function CardIntroPanel({
               />
             </div>
 
-            <div className="flex flex-wrap gap-1.5">
-              <Badge variant="outline">{card.data.character_book?.entries?.length ?? 0} 条世界书</Badge>
-              <Badge variant="outline">{words} 字设定</Badge>
-              {(card.data.alternate_greetings?.length ?? 0) > 0 && (
-                <Badge variant="outline">开场 +{card.data.alternate_greetings!.length}</Badge>
-              )}
-              {card.data.creator && <Badge variant="outline">作者 {card.data.creator}</Badge>}
-            </div>
+            {/* Stats are trivia, not content: quiet text, no pill borders. */}
+            <p className="text-[11px] leading-relaxed text-[var(--rp-fg-subtle)]">
+              {card.data.character_book?.entries?.length ?? 0} 条世界书 · {words} 字设定
+              {(card.data.alternate_greetings?.length ?? 0) > 0
+                ? ` · 开场 +${card.data.alternate_greetings!.length}`
+                : ''}
+              {card.data.creator ? ` · 作者 ${card.data.creator}` : ''}
+            </p>
 
             {card.data.creator_notes ? (
-              <div className="rounded-lg border border-[var(--rp-border)] p-2.5">
+              <div>
                 <p className="mb-1 text-[11px] font-semibold text-[var(--rp-fg-subtle)]">作者注释</p>
                 <p className="text-[12px] leading-relaxed text-[var(--rp-fg-muted)]">{card.data.creator_notes}</p>
               </div>

@@ -82,6 +82,29 @@ export interface AppState {
   /** Active chat id for the chat view. */
   activeChatId?: string;
 
+  /**
+   * Transient request from the top bar: open the publish picker for a store.
+   * The store page consumes it (opens its picker) and clears it; never persisted.
+   */
+  publishStoreRequest: 'card' | 'plugin' | null;
+  requestStorePublish(kind: 'card' | 'plugin' | null): void;
+
+  /**
+   * Transient request from the top bar: open the new-connection form on the
+   * 聊天 API page. The models section consumes it (opens the form) and clears
+   * it; never persisted. Same pattern as publishStoreRequest.
+   */
+  addModelRequest: boolean;
+  requestAddModel(next: boolean): void;
+
+  /**
+   * Transient UI state: a sub-page with its own header (e.g. 创建角色) hides
+   * the shell top bar so there is only one header. The sub-page sets it and
+   * clears it on exit; never persisted.
+   */
+  hideTopbar: boolean;
+  setHideTopbar(next: boolean): void;
+
   // ------------------------------------------------------------- actions
   boot(): Promise<void>;
   setSettings(patch: Partial<RPAppSettings>): void;
@@ -161,6 +184,9 @@ export const useApp = create<AppState>((set, get) => ({
   imageConnections: [],
   settings: DEFAULT_SETTINGS,
   ready: false,
+  publishStoreRequest: null,
+  addModelRequest: false,
+  hideTopbar: false,
 
   boot: async () => {
     try {
@@ -272,6 +298,18 @@ export const useApp = create<AppState>((set, get) => ({
     }
   },
 
+  requestStorePublish: (kind) => {
+    set({ publishStoreRequest: kind });
+  },
+
+  requestAddModel: (next) => {
+    set({ addModelRequest: next });
+  },
+
+  setHideTopbar: (next) => {
+    set({ hideTopbar: next });
+  },
+
   savePreset: async (preset) => {
     const presets = upsert(get().presets, { ...preset, updatedAt: Date.now() });
     set({ presets });
@@ -381,6 +419,11 @@ export const useApp = create<AppState>((set, get) => ({
     const llmConnections = get().llmConnections.filter((c) => c.id !== id);
     set({ llmConnections });
     await idbStorage.set(KEY.llm, llmConnections);
+    // 删的是默认连接时不能留一个指向不存在 id 的 defaultConnectionId，
+    // 否则侧边栏/设置页会继续显示“已配置”：顺延到剩余第一个，没有则清空。
+    if (get().settings.defaultConnectionId === id) {
+      get().setSettings({ defaultConnectionId: llmConnections[0]?.id });
+    }
   },
   saveImageConnection: async (c) => {
     const imageConnections = upsert(get().imageConnections, c);

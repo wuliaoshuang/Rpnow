@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import type { Route } from '@/components/layout/AppShell.js';
 import { useApp } from '@/state/store.js';
+import { useSidebarStatus } from '@/hooks/useSidebarStatus.js';
 import { BUILTIN_THEMES, THEME_MAP } from '@/core/defaults/themes.js';
 import { vibrate } from '@/lib/haptics';
 
@@ -46,8 +47,8 @@ export function GlobalDrawer({
   const activeChatId = useApp((s) => s.activeChatId);
   const setActiveChat = useApp((s) => s.setActiveChat);
   const settings = useApp((s) => s.settings);
-  const personas = useApp((s) => s.personas);
   const presets = useApp((s) => s.presets);
+  const sidebar = useSidebarStatus(chats.find((c) => c.id === activeChatId)?.personaId);
   const lorebooks = useApp((s) => s.lorebooks);
   const [navTab, setNavTab] = React.useState<'chats' | 'apps' | 'more'>('chats');
 
@@ -65,7 +66,6 @@ export function GlobalDrawer({
 
   const activeChat = chats.find((c) => c.id === activeChatId);
   const activeCard = cards.find((c) => c.id === activeChat?.cardId);
-  const persona = personas.find((p) => p.id === activeChat?.personaId);
   const preset = presets.find((p) => p.id === (activeChat?.presetId ?? settings.defaultPresetId));
   const theme = THEME_MAP.get(settings.themeId) ?? BUILTIN_THEMES[0];
   const bookNames = (activeChat?.lorebookIds ?? [])
@@ -79,9 +79,10 @@ export function GlobalDrawer({
 
   type Row = { label: string; value?: string; icon: React.ReactNode; onPress?: () => void };
   const moreRows: Row[] = [
-    { label: '用户身份', value: persona?.name || '未设置', icon: <UserRound className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'persona') },
-    { label: '模型连接', value: '前往配置', icon: <Layers className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'models') },
-    { label: '生图', value: settings.imageGen.key ? '已配置' : '未配置', icon: <ImagePlus className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'imagegen') },
+    { label: '用户身份', value: sidebar.personaName || '未设置', icon: <UserRound className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'persona') },
+    { label: '模型连接', value: sidebar.apiConnectionName ?? '未配置', icon: <Layers className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'models') },
+    { label: '生图', value: sidebar.imageConfigured ? '已配置' : '未配置', icon: <ImagePlus className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'image') },
+    { label: '自动生图', value: sidebar.autoImageConfigured ? '已配置' : '未配置', icon: <ImagePlus className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'imagegen') },
     { label: '预设', value: preset?.name || '默认', icon: <Sparkles className="size-4" aria-hidden="true" />, onPress: () => onNavigate('presets') },
     { label: '世界书', value: bookNames || '未启用', icon: <BookMarked className="size-4" aria-hidden="true" />, onPress: () => onNavigate('lore') },
     { label: '正则', value: `${scripts.filter((s) => !s.disabled).length}/${scripts.length} 启用`, icon: <ListChecks className="size-4" aria-hidden="true" />, onPress: () => onNavigate('cards') },
