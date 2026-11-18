@@ -35,10 +35,17 @@ export type Route =
   | 'lore'
   | 'presets'
   | 'novel'
+  | 'novel-chapters'
+  | 'novel-settings'
+  | 'novel-characters'
+  | 'novel-search'
   | 'plugins'
   | 'card-store'
   | 'plugin-store'
   | 'settings';
+
+/** Novel book sub-routes (a book's workspace is split into pages, not tabs). */
+export const NOVEL_BOOK_ROUTES: Route[] = ['novel-chapters', 'novel-settings', 'novel-characters', 'novel-search'];
 
 export interface NavItem {
   route: Route;
@@ -91,7 +98,8 @@ export function AppShell({ route, onNavigate, children, title, topbarActions, as
         </div>
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
-          const active = route === item.route;
+          const active =
+            route === item.route || (item.route === 'novel' && NOVEL_BOOK_ROUTES.includes(route));
           return (
             <button
               key={item.route}
