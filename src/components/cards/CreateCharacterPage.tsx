@@ -2,12 +2,17 @@
  * 创建角色 —— 通用入口子页面（对照参考图）。
  *
  * Three big rows (new / import file / import URL) plus a 快捷导入 strip of
- * sample characters. Reached from the single ＋ button on the cards page, so
+ * the store's cards: tapping one installs it (or opens it if already
+ * installed). Reached from the single ＋ button on the cards page, so
  * the toolbar stays clean instead of carrying three competing actions.
+ * The shell top bar is hidden while this page is open (it has its own
+ * back header); see `hideTopbar` in the store.
  */
 
-import { ChevronLeft, ImagePlus, Link2, UserPlus } from 'lucide-react';
-import type { RPCard } from '@/core/types/card.js';
+import * as React from 'react';
+import { Check, ChevronLeft, ImagePlus, Link2, UserPlus } from 'lucide-react';
+import type { MarketItem } from '@/core/marketplace/types.js';
+import { avatarUrl } from '@/core/marketplace/client.js';
 import { vibrate } from '@/lib/haptics';
 
 export interface CreateCharacterPageProps {
@@ -15,9 +20,73 @@ export interface CreateCharacterPageProps {
   onNew: () => void;
   onImportFile: () => void;
   onImportUrl: () => void;
-  /** Sample characters offered as one-tap imports. */
-  quickPicks: RPCard[];
-  onQuickPick: (card: RPCard) => void;
+  /** 商店里的角色卡（快捷导入用）。 */
+  storePicks: MarketItem[];
+  /** 已安装的商店卡 id（安装记录的 key 集合）。 */
+  installedIds: Record<string, unknown>;
+  /** 正在安装的商店卡 id。 */
+  installingId: string | null;
+  onStorePick: (item: MarketItem) => void;
+}
+
+/** 一张商店卡的海报格：头像铺满，名字压在底部遮罩上；没头像显示首字。 */
+function StorePickTile({
+  item,
+  installed,
+  installing,
+  onPick,
+}: {
+  item: MarketItem;
+  installed: boolean;
+  installing: boolean;
+  onPick: () => void;
+}) {
+  const [imgError, setImgError] = React.useState(false);
+  return (
+    <button
+      key={item.manifest.id}
+      type="button"
+      onClick={() => {
+        vibrate('tap');
+        onPick();
+      }}
+      disabled={installing}
+      aria-label={installed ? `打开 ${item.manifest.name}` : `安装 ${item.manifest.name}`}
+      className="rp-tap-card group relative aspect-[3/4] w-full cursor-pointer overflow-hidden rounded-2xl bg-[var(--rp-bg-sunken)] disabled:cursor-wait"
+    >
+      {!imgError ? (
+        <img
+          src={avatarUrl(item.manifest.id)}
+          alt=""
+          loading="lazy"
+          onError={() => setImgError(true)}
+          className="size-full object-cover"
+        />
+      ) : (
+        <span className="flex size-full items-center justify-center text-2xl font-semibold text-[var(--rp-accent)]">
+          {item.manifest.name.slice(0, 1)}
+        </span>
+      )}
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/75 to-transparent"
+      />
+      <span className="pointer-events-none absolute inset-x-2 bottom-2 truncate text-[13px] font-semibold text-white drop-shadow">
+        {item.manifest.name}
+      </span>
+      {installed && !installing && (
+        <span className="absolute right-2 top-2 flex items-center gap-0.5 rounded-full bg-[var(--rp-accent)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--rp-accent-fg)]">
+          <Check className="size-3" aria-hidden="true" />
+          已安装
+        </span>
+      )}
+      {installing && (
+        <span className="absolute right-2 top-2 rounded-full bg-[var(--rp-accent)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--rp-accent-fg)]">
+          安装中…
+        </span>
+      )}
+    </button>
+  );
 }
 
 export function CreateCharacterPage({
@@ -25,8 +94,10 @@ export function CreateCharacterPage({
   onNew,
   onImportFile,
   onImportUrl,
-  quickPicks,
-  onQuickPick,
+  storePicks,
+  installedIds,
+  installingId,
+  onStorePick,
 }: CreateCharacterPageProps) {
   const rows = [
     {
@@ -93,38 +164,20 @@ export function CreateCharacterPage({
           ))}
         </div>
 
-        {quickPicks.length > 0 && (
+        {storePicks.length > 0 && (
           <section className="mt-7">
             <h2 className="mb-3 text-center text-[12.5px] font-semibold text-[var(--rp-fg-subtle)]">
               快捷导入
             </h2>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              {quickPicks.slice(0, 6).map((card) => (
-                <button
-                  key={card.id}
-                  type="button"
-                  onClick={() => {
-                    vibrate('tap');
-                    onQuickPick(card);
-                  }}
-                  aria-label={`快捷导入 ${card.data.name}`}
-                  className="rp-tap-card group relative aspect-[3/4] w-full cursor-pointer overflow-hidden rounded-2xl bg-[var(--rp-bg-sunken)]"
-                >
-                  {card.avatar ? (
-                    <img src={card.avatar} alt="" loading="lazy" className="size-full object-cover" />
-                  ) : (
-                    <span className="flex size-full items-center justify-center text-2xl font-semibold text-[var(--rp-accent)]">
-                      {card.data.name.slice(0, 1)}
-                    </span>
-                  )}
-                  <span
-                    aria-hidden="true"
-                    className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/75 to-transparent"
-                  />
-                  <span className="pointer-events-none absolute inset-x-2 bottom-2 truncate text-[13px] font-semibold text-white drop-shadow">
-                    {card.data.name}
-                  </span>
-                </button>
+              {storePicks.slice(0, 6).map((item) => (
+                <StorePickTile
+                  key={item.manifest.id}
+                  item={item}
+                  installed={Boolean(installedIds[item.manifest.id])}
+                  installing={installingId === item.manifest.id}
+                  onPick={() => onStorePick(item)}
+                />
               ))}
             </div>
           </section>

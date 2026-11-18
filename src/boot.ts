@@ -20,6 +20,7 @@ import { SERVICE } from '@/core/plugin/kernel-types.js';
 import { BUILTIN_THEMES, THEME_MAP } from '@/core/defaults/themes.js';
 import { uid } from '@/lib/utils.js';
 import type { RPCard } from '@/core/types/card.js';
+import { setMarketBase } from '@/core/marketplace/client.js';
 import type { RPLorebook } from '@/core/types/lorebook.js';
 import type { RPPersona } from '@/core/types/chat.js';
 import type { RPCompletionPreset } from '@/core/types/preset.js';
@@ -202,6 +203,11 @@ export async function boot(): Promise<ServiceRegistry> {
   booted = true;
 
   await store.boot();
+
+  // 商店源：设置里填了 baseURL 就用它（此前 settings.market.baseURL 只显示不生效，
+  // 客户端永远打本地 mock）。没填则用构建时注入的地址或本地默认值。
+  const marketBase = useApp.getState().settings.market?.baseURL?.trim();
+  if (marketBase) setMarketBase(marketBase);
 
   const kernel = new ServiceRegistry();
   // Give every plugin (builtin or installed) the same data surface.

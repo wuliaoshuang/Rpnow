@@ -7,7 +7,7 @@
  *     浏览器端没有能力也不应假装能"判定恶意"）。
  */
 
-import type { MarketKind, PublishManifest } from './types.js';
+import type { MarketKind, PluginPublishManifest, PublishManifest } from './types.js';
 import { isValidCategory } from './categories.js';
 
 /** 允许的 SPDX 简写 + 常见写法。 */
@@ -79,10 +79,13 @@ export function validatePublishManifest(
   if ((m.screenshots?.length ?? 0) > 6) errors.push('截图最多 6 张');
 
   if (kind === 'plugin') {
-    if (!Array.isArray(m.permissions) || m.permissions.length === 0) {
+    // PublishManifest 是卡片/插件联合，permissions 只在插件分支上；
+    // 先按插件分支收窄再读。
+    const permissions = (m as Partial<PluginPublishManifest>).permissions;
+    if (!Array.isArray(permissions) || permissions.length === 0) {
       warnings.push('未声明权限；安装时将按"完全信任"提示');
     }
-    const unknown = (m.permissions ?? []).filter(
+    const unknown = (permissions ?? []).filter(
       (p) => !['network', 'storage', 'clipboard', 'filesystem', 'render-injection', 'top-window'].includes(p),
     );
     if (unknown.length) errors.push(`未知权限：${unknown.join(', ')}`);

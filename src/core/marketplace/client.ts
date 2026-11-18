@@ -7,7 +7,17 @@
 
 import type { InstalledSource, MarketItem, MarketPage, MarketQuery, PublishManifest } from './types.js';
 
-export const DEFAULT_MARKET_BASE = 'http://127.0.0.1:8799';
+/**
+ * 商店远端地址。
+ *
+ * 优先级：设置页填的 baseURL（boot 时调 setMarketBase 传入）＞ 构建时注入的
+ * VITE_MARKET_BASE_URL（生产部署）＞ 本地 mock 服务。
+ */
+export const DEFAULT_MARKET_BASE =
+  (typeof import.meta !== 'undefined' &&
+    (import.meta as unknown as { env?: Record<string, string | undefined> }).env
+      ?.VITE_MARKET_BASE_URL?.trim()) ||
+  'http://127.0.0.1:8799';
 
 let baseUrlOverride: string | undefined;
 
@@ -34,7 +44,17 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(detail || `商店请求失败（${res.status}）`);
   }
-  return (await res.json()) as T;
+  const body = (await res.json()) as unknown;
+  // 生产后端把所有返回包在 { data, ok } 里，本地 mock 直接返回本体；两种都认。
+  if (
+    body !== null &&
+    typeof body === 'object' &&
+    'data' in (body as Record<string, unknown>) &&
+    'ok' in (body as Record<string, unknown>)
+  ) {
+    return (body as { data: T }).data;
+  }
+  return body as T;
 }
 
 function queryToString(q: MarketQuery): string {
@@ -54,8 +74,23 @@ export function queryItems(q: MarketQuery): Promise<MarketPage> {
   return req<MarketPage>(`/v1/items?${queryToString(q)}`);
 }
 
+/** 角色卡商店专用：kind 写死 'card'。 */
+export function queryCardItems(q: Omit<MarketQuery, 'kind'>): Promise<MarketPage> {
+  return queryItems({ ...q, kind: 'card' });
+}
+
+/** 插件商店专用：kind 写死 'plugin'。 */
+export function queryPluginItems(q: Omit<MarketQuery, 'kind'>): Promise<MarketPage> {
+  return queryItems({ ...q, kind: 'plugin' });
+}
+
 export function getItem(id: string): Promise<MarketItem> {
   return req<MarketItem>(`/v1/items/${encodeURIComponent(id)}`);
+}
+
+/** 头像图地址（从最新版安装包里的 avatar.png 取；没有头像返回 404）。 */
+export function avatarUrl(id: string): string {
+  return `${marketBase()}/v1/items/${encodeURIComponent(id)}/avatar`;
 }
 
 /** 下载发布包（zip Blob）。 */

@@ -49,7 +49,7 @@ export const SETTINGS_SECTIONS: Array<{
   icon: React.ReactNode;
   group: string;
 }> = [
-  { id: 'models', label: '模型连接', icon: <SlidersHorizontal className="size-4" aria-hidden="true" />, group: '聊天' },
+  { id: 'models', label: '聊天 API', icon: <SlidersHorizontal className="size-4" aria-hidden="true" />, group: '聊天' },
   { id: 'chat', label: '模型设置', icon: <MessageSquare className="size-4" aria-hidden="true" />, group: '聊天' },
   { id: 'image', label: '生图 API', icon: <ImagePlus className="size-4" aria-hidden="true" />, group: '生图' },
   { id: 'imagegen', label: '生图设置', icon: <ImagePlus className="size-4" aria-hidden="true" />, group: '生图' },
@@ -67,12 +67,18 @@ export const SETTINGS_SECTIONS: Array<{
 export function useSectionValue(id: SettingsSectionId): string | undefined {
   const settings = useApp((s) => s.settings);
   const personas = useApp((s) => s.personas);
+  const llmConnections = useApp((s) => s.llmConnections);
+  const imageConnections = useApp((s) => s.imageConnections);
+  const apiConnection =
+    llmConnections.find((c) => c.id === settings.defaultConnectionId) ?? llmConnections[0];
   switch (id) {
     case 'persona':
       return personas[0]?.name || '未设置';
     case 'models':
-      return settings.defaultConnectionId ? '已配置' : '未配置';
+      return apiConnection?.name ?? '未配置';
     case 'image':
+      return imageConnections.length ? '已配置' : '未配置';
+    case 'imagegen':
       return settings.imageGen?.key ? '已配置' : '未配置';
     case 'appearance':
       return (THEME_MAP.get(settings.themeId) ?? BUILTIN_THEMES[0]).label;
@@ -89,6 +95,30 @@ export function useSectionValue(id: SettingsSectionId): string | undefined {
   }
 }
 
+/** 商店轮播的两张图：每张图上招牌字就是店名。图片是 webp、1200×400、每张约 50–70KB。 */
+const STORE_SLIDES: Array<{
+  route: 'card-store' | 'plugin-store';
+  label: string;
+  img: string;
+  alt: string;
+  caption: string;
+}> = [
+  {
+    route: 'card-store',
+    label: '角色卡商店',
+    img: '/carousel-card.webp',
+    alt: '角色卡商店：暖光小店，漂浮的角色卡',
+    caption: '逛逛角色卡，找你的下一个主角',
+  },
+  {
+    route: 'plugin-store',
+    label: '插件商店',
+    img: '/carousel-plugin.webp',
+    alt: '插件商店：青光工坊，漂浮的拼图和齿轮',
+    caption: '给应用装上新本事',
+  },
+];
+
 export function SettingsHub({
   onOpen,
   /** Opens the standalone plugins page (插件管理不是设置子区块). */
@@ -98,10 +128,12 @@ export function SettingsHub({
 }: {
   onOpen: (id: SettingsSectionId) => void;
   onOpenPlugins?: () => void;
-  onOpenRoute?: (route: 'lore' | 'presets' | 'novel') => void;
+  onOpenRoute?: (route: 'lore' | 'presets' | 'novel' | 'card-store' | 'plugin-store') => void;
 }) {
   const settings = useApp((s) => s.settings);
   const personas = useApp((s) => s.personas);
+  const llmConnections = useApp((s) => s.llmConnections);
+  const imageConnections = useApp((s) => s.imageConnections);
   const lorebooks = useApp((s) => s.lorebooks);
   const presets = useApp((s) => s.presets);
   // Installed user plugins live on the kernel (sync read, same as PluginsPage).
@@ -119,12 +151,16 @@ export function SettingsHub({
   }
 
   const valueFor = (id: SettingsSectionId): string | undefined => {
+    const apiConnection =
+      llmConnections.find((c) => c.id === settings.defaultConnectionId) ?? llmConnections[0];
     switch (id) {
       case 'persona':
         return personas[0]?.name || '未设置';
       case 'models':
-        return settings.defaultConnectionId ? '已配置' : '未配置';
+        return apiConnection?.name ?? '未配置';
       case 'image':
+        return imageConnections.length ? '已配置' : '未配置';
+      case 'imagegen':
         return settings.imageGen?.key ? '已配置' : '未配置';
       case 'appearance':
         return (THEME_MAP.get(settings.themeId) ?? BUILTIN_THEMES[0]).label;
@@ -139,8 +175,63 @@ export function SettingsHub({
     }
   };
 
+  const [slide, setSlide] = React.useState(0);
+  const touchX = React.useRef<number | null>(null);
+  // 每 4 秒自动切下一张；手动切过后重新计时。
+  React.useEffect(() => {
+    const t = window.setTimeout(() => setSlide((s) => (s + 1) % STORE_SLIDES.length), 4000);
+    return () => window.clearTimeout(t);
+  }, [slide]);
+
   return (
     <div className="mx-auto max-w-2xl space-y-4 px-4 py-1">
+      {/* 商店轮播：两张图各是一家商店，图上的招牌字就是店名（图里自带文字）。点图进店，左右滑或点圆点切换。 */}
+      <section aria-label="商店">
+        <div
+          className="relative h-[132px] overflow-hidden rounded-2xl border border-[var(--rp-border)]"
+          onTouchStart={(e) => {
+            touchX.current = e.touches[0]?.clientX ?? null;
+          }}
+          onTouchEnd={(e) => {
+            if (touchX.current == null) return;
+            const dx = (e.changedTouches[0]?.clientX ?? touchX.current) - touchX.current;
+            if (Math.abs(dx) > 40) {
+              setSlide((s) => (dx < 0 ? (s + 1) % STORE_SLIDES.length : (s + STORE_SLIDES.length - 1) % STORE_SLIDES.length));
+            }
+            touchX.current = null;
+          }}
+        >
+          {STORE_SLIDES.map((s, i) => (
+            <button
+              key={s.route}
+              type="button"
+              aria-label={`进入${s.label}`}
+              onClick={() => {
+                vibrate('tap');
+                onOpenRoute?.(s.route);
+              }}
+              className={`absolute inset-0 block h-full w-full cursor-pointer transition-opacity duration-500 ${i === slide ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+            >
+              <img src={s.img} alt={s.alt} className="block h-full w-full object-cover" />
+              <span className="absolute inset-x-0 bottom-0 flex items-end justify-between bg-gradient-to-t from-black/55 to-transparent p-3 pt-8">
+                <span className="text-[12.5px] text-white/90">{s.caption}</span>
+                <span className="shrink-0 rounded-full bg-white/95 px-3 py-1 text-[12.5px] font-medium text-[#241b3d]">进入商店 →</span>
+              </span>
+            </button>
+          ))}
+          <div className="absolute right-3 top-3 flex gap-1.5">
+            {STORE_SLIDES.map((s, i) => (
+              <button
+                key={s.route}
+                type="button"
+                aria-label={`切换到${s.label}`}
+                onClick={() => setSlide(i)}
+                className={`h-1.5 rounded-full transition-all ${i === slide ? 'w-4 bg-white' : 'w-1.5 bg-white/60'}`}
+              />
+            ))}
+          </div>
+        </div>
+      </section>
       {groups.map((group) => (
         <section key={group.name} aria-label={group.name}>
           <h2 className="mb-1.5 px-1 text-[12px] font-semibold text-[var(--rp-fg-subtle)]">{group.name}</h2>

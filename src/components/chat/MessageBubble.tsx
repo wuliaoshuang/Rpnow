@@ -205,10 +205,12 @@ export function MessageBubble({
   const swipeCount = message.swipes?.length ?? 0;
   const swipeId = message.swipeId ?? 0;
   /**
-   * Action plates reuse the message-bubble treatment: translucent black with a
-   * light blur, so the icons stay legible over character art.
+   * Action plates reuse the message-bubble treatment: translucent with a
+   * light blur, so the icons stay legible over character art — black in dark
+   * mode, the theme's elevated surface in light mode (tokens, not hardcoded).
    */
-  const actionPlate = 'bg-black/45 text-white/80 backdrop-blur-sm hover:bg-black/60 hover:text-white';
+  const actionPlate =
+    'dark:bg-black/45 dark:text-white/80 bg-[var(--rp-bg-elevated)]/85 text-[var(--rp-fg-muted)] backdrop-blur-sm dark:hover:bg-black/60 hover:bg-[var(--rp-bg-elevated)] dark:hover:text-white hover:text-[var(--rp-fg)]';
 
   /** Turn `[M12]` markers into clickable badges that open the source memory. */
   const citedHtml = React.useMemo(() => {
@@ -268,7 +270,7 @@ export function MessageBubble({
         <div
           className={cn(
             'flex items-center gap-2 text-[10.5px]',
-            immersive ? 'text-white/50' : 'text-[var(--rp-fg-subtle)]',
+            immersive ? 'dark:text-white/50 text-[var(--rp-fg-subtle)]' : 'text-[var(--rp-fg-subtle)]',
             isUser && 'flex-row-reverse',
           )}
         >
@@ -276,7 +278,7 @@ export function MessageBubble({
             <span
               className={cn(
                 'truncate font-semibold',
-                immersive ? 'text-white/80' : 'text-[var(--rp-fg-muted)]',
+                immersive ? 'dark:text-white/80 text-[var(--rp-fg-muted)]' : 'text-[var(--rp-fg-muted)]',
               )}
             >
               {message.speaker}
@@ -324,8 +326,10 @@ export function MessageBubble({
               ? 'rounded-lg border border-dashed border-[var(--rp-danger)]/40 bg-[var(--rp-danger)]/10 text-[var(--rp-fg-muted)]'
               : immersive
                 ? isUser
-                  ? 'rounded-2xl bg-white/15 text-white backdrop-blur-sm'
-                  : 'rounded-2xl bg-black/45 text-white backdrop-blur-sm'
+                  ? // 沉浸气泡跟随主题：浅色用主题气泡色（--rp-user-bubble）磨砂，
+                    // 深色才用半透明白；颜色取自当前主题预设。
+                    'rounded-2xl backdrop-blur-sm bg-[var(--rp-user-bubble)]/85 text-[var(--rp-fg)] dark:bg-white/15 dark:text-white'
+                  : 'rounded-2xl backdrop-blur-sm bg-[var(--rp-char-bubble)]/85 text-[var(--rp-fg)] dark:bg-black/45 dark:text-white'
                 : isUser
                   ? 'rounded-tr-sm bg-[var(--rp-user-bubble)] text-[var(--rp-fg)]'
                   : 'rounded-tl-sm bg-[var(--rp-char-bubble)] text-[var(--rp-fg)] border border-[var(--rp-border)]',
@@ -414,22 +418,22 @@ export function MessageBubble({
         >
           {/* Swipe pager: pill shape. */}
           {swipeCount > 1 && (
-            <div className="flex h-8 items-center gap-0.5 rounded-full bg-black/45 px-1 backdrop-blur-sm">
+            <div className="flex h-8 items-center gap-0.5 rounded-full px-1 backdrop-blur-sm dark:bg-black/45 bg-[var(--rp-bg-elevated)]/85">
               <button
                 type="button"
                 aria-label="上一段开场白"
-                className="flex size-6 cursor-pointer items-center justify-center rounded-full text-white/80 transition hover:bg-white/15 hover:text-white"
+                className="flex size-6 cursor-pointer items-center justify-center rounded-full transition dark:text-white/80 text-[var(--rp-fg-muted)] dark:hover:bg-white/15 hover:bg-[var(--rp-fg)]/10 dark:hover:text-white hover:text-[var(--rp-fg)]"
                 onClick={() => onSwipe?.(message.id, -1)}
               >
                 <ChevronLeft className="size-4" aria-hidden="true" />
               </button>
-              <span className="min-w-[2.2rem] text-center text-[11px] tabular-nums text-white/80">
+              <span className="min-w-[2.2rem] text-center text-[11px] tabular-nums dark:text-white/80 text-[var(--rp-fg-muted)]">
                 {swipeId + 1}/{swipeCount}
               </span>
               <button
                 type="button"
                 aria-label="下一段开场白"
-                className="flex size-6 cursor-pointer items-center justify-center rounded-full text-white/80 transition hover:bg-white/15 hover:text-white"
+                className="flex size-6 cursor-pointer items-center justify-center rounded-full transition dark:text-white/80 text-[var(--rp-fg-muted)] dark:hover:bg-white/15 hover:bg-[var(--rp-fg)]/10 dark:hover:text-white hover:text-[var(--rp-fg)]"
                 onClick={() => onSwipe?.(message.id, 1)}
               >
                 <ChevronRight className="size-4" aria-hidden="true" />
@@ -549,7 +553,7 @@ export function MessageBubble({
           <div
             className={cn(
               'flex items-center gap-1.5 whitespace-nowrap text-[10.5px] tabular-nums',
-              immersive ? 'text-white/45' : 'text-[var(--rp-fg-subtle)]',
+              immersive ? 'dark:text-white/45 text-[var(--rp-fg-subtle)]' : 'text-[var(--rp-fg-subtle)]',
               isUser && 'flex-row-reverse',
             )}
           >

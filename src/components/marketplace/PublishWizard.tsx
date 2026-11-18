@@ -25,7 +25,7 @@ import { validatePublishManifest, scanContent, scanPluginCode, LICENSES } from '
 import { buildCardPackageInput, buildPluginPackageInput } from '@/core/marketplace/collect.js';
 import { buildCardPackage, buildPluginPackage } from '@/core/marketplace/packaging.js';
 import { makeMarketId } from '@/core/marketplace/packaging.js';
-import { publishPackage } from '@/core/marketplace/client.js';
+import { marketBase, publishPackage } from '@/core/marketplace/client.js';
 import type { MarketKind, PluginPermission, PublishManifest } from '@/core/marketplace/types.js';
 import type { ScreenshotLike } from '@/core/marketplace/collect.js';
 
@@ -47,7 +47,6 @@ const PERMISSION_LABELS: Record<PluginPermission, string> = {
 };
 
 export function PublishWizard({ kind, subjectId, open, onClose }: PublishWizardProps) {
-  const settings = useApp((s) => s.settings);
   const cards = useApp((s) => s.cards);
   const personaName = useApp((s) => s.personas[0]?.name ?? '');
   const [step, setStep] = useState<'form' | 'busy' | 'done'>('form');
@@ -95,13 +94,16 @@ export function PublishWizard({ kind, subjectId, open, onClose }: PublishWizardP
       rating,
       contentWarnings: warningsText.split(/[,，]/).map((s) => s.trim()).filter(Boolean),
       screenshots: screenshots.map((s) => s.name),
-      permissions: kind === 'plugin' ? permissions : undefined,
       changelog: changelog.trim() || undefined,
       createdAt: new Date().toISOString(),
     };
 
-    // 组装完整 manifest 以复用校验（type 由 collect/packaging 补）
-    const manifest: PublishManifest = { ...base, type: kind };
+    // 组装完整 manifest 以复用校验（type 由 collect/packaging 补）。
+    // 卡片与插件是联合类型：权限字段只属于插件，卡片分支不带它。
+    const manifest: PublishManifest =
+      kind === 'plugin'
+        ? { ...base, type: 'plugin' as const, permissions }
+        : { ...base, type: 'card' as const };
     const result = validatePublishManifest(manifest, kind);
     if (result.errors.length) {
       setError(result.errors.join('；'));
@@ -127,7 +129,7 @@ export function PublishWizard({ kind, subjectId, open, onClose }: PublishWizardP
       } else {
         const record = (await listInstalled()).find((r) => r.manifest.id === subjectId);
         if (!record) throw new Error('找不到要发布的插件');
-        pkgInput = buildPluginPackageInput(record, base, { screenshots });
+        pkgInput = buildPluginPackageInput(record, { ...base, permissions }, { screenshots });
         pluginCode = record.code;
         contentText = `${record.manifest.description ?? ''}\n${record.readme ?? ''}`;
       }
@@ -170,7 +172,7 @@ export function PublishWizard({ kind, subjectId, open, onClose }: PublishWizardP
         <DialogHeader>
           <DialogTitle>发布{kind === 'card' ? '角色卡' : '插件'}到商店</DialogTitle>
           <DialogDescription>
-            生成发布包并上传到当前商店源（{settings.market?.baseURL ?? 'http://127.0.0.1:8799'}）。发布前会做本地校验与隐私自查。
+            生成发布包并上传到当前商店源（{marketBase()}）。发布前会做本地校验与隐私自查。
           </DialogDescription>
         </DialogHeader>
 

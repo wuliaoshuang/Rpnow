@@ -32,6 +32,7 @@ import type { RPCard } from '@/core/types/card.js';
 import type { RPChat } from '@/core/types/chat.js';
 import type { Route } from '@/components/layout/AppShell.js';
 import { useApp } from '@/state/store.js';
+import { useSidebarStatus } from '@/hooks/useSidebarStatus.js';
 import { BUILTIN_THEMES, THEME_MAP } from '@/core/defaults/themes.js';
 import { Switch } from '@/components/ui/input';
 import { vibrate } from '@/lib/haptics';
@@ -59,8 +60,8 @@ export function ChatDrawer({
   onToggleFullscreen: () => void;
 }) {
   const settings = useApp((s) => s.settings);
-  const personas = useApp((s) => s.personas);
   const presets = useApp((s) => s.presets);
+  const sidebar = useSidebarStatus(chat.personaId);
   const lorebooks = useApp((s) => s.lorebooks);
   const updateCard = useApp((s) => s.updateCard);
   const chats = useApp((s) => s.chats);
@@ -82,7 +83,6 @@ export function ChatDrawer({
 
   if (!open) return null;
 
-  const persona = personas.find((p) => p.id === chat.personaId);
   const preset = presets.find((p) => p.id === (chat.presetId ?? settings.defaultPresetId));
   const bookNames = chat.lorebookIds
     .map((id) => lorebooks.find((b) => b.id === id)?.name)
@@ -111,9 +111,10 @@ export function ChatDrawer({
 
   type Row = { label: string; value?: string; icon: React.ReactNode; onPress?: () => void };
   const rows: Array<Row | 'divider'> = [
-    { label: '用户身份', value: persona?.name || '未设置', icon: <UserRound className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'persona') },
-    { label: '模型连接', value: '前往配置', icon: <Layers className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'models') },
-    { label: '生图', value: settings.imageGen.key ? '已配置' : '未配置', icon: <ImagePlus className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'imagegen') },
+    { label: '用户身份', value: sidebar.personaName || '未设置', icon: <UserRound className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'persona') },
+    { label: '模型连接', value: sidebar.apiConnectionName ?? '未配置', icon: <Layers className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'models') },
+    { label: '生图', value: sidebar.imageConfigured ? '已配置' : '未配置', icon: <ImagePlus className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'image') },
+    { label: '自动生图', value: sidebar.autoImageConfigured ? '已配置' : '未配置', icon: <ImagePlus className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'imagegen') },
     { label: '预设', value: preset?.name || '默认', icon: <Sparkles className="size-4" aria-hidden="true" />, onPress: () => onNavigate('presets') },
     { label: '世界书', value: bookNames || '未启用', icon: <BookMarked className="size-4" aria-hidden="true" />, onPress: () => onNavigate('lore') },
     { label: '正则', value: regexOpen ? undefined : `${scripts.filter((s) => !s.disabled).length}/${scripts.length} 启用`, icon: <ListChecks className="size-4" aria-hidden="true" />, onPress: () => setRegexOpen((v) => !v) },

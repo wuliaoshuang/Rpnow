@@ -439,6 +439,8 @@ export async function parseCardFile(input: Blob, filename = ''): Promise<ParsedC
 async function findArchiveAvatar(input: Blob): Promise<string | undefined> {
   const zip = await JSZip.loadAsync(await input.arrayBuffer());
   const candidates = [
+    // 我们自己的发布包把头像写成 avatar.png，优先认它（包里有截图时也不能错认成头像）。
+    zip.file(/^avatar\.(png|jpe?g|webp)$/i)[0],
     zip.file(/^card\.png$/i)[0],
     zip.file(/^assets\/icon\.(png|jpe?g|webp)$/i)[0],
     zip.file(/^icon\.(png|jpe?g|webp)$/i)[0],

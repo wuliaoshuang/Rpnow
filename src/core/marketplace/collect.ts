@@ -11,7 +11,7 @@ import type { RPCard, RPRegexScript } from '../types/card.js';
 import type { RPCompletionPreset } from '../types/preset.js';
 import type { InstalledPlugin } from '../plugins/rpnx.js';
 import type { CardPackageInput, PluginPackageInput } from './packaging.js';
-import type { PublishManifest } from './types.js';
+import type { PluginPublishManifest, PublishManifest } from './types.js';
 
 export interface ScreenshotLike {
   name: string;
@@ -53,7 +53,7 @@ export async function buildCardPackageInput(
 
 export function buildPluginPackageInput(
   record: InstalledPlugin,
-  manifest: Omit<PublishManifest, 'type'>,
+  manifest: Omit<PluginPublishManifest, 'type'>,
   options: { screenshots?: ScreenshotLike[]; readme?: string } = {},
 ): PluginPackageInput {
   return {

@@ -6,8 +6,8 @@ import { boot, applyTheme } from './boot.js';
 import { useApp } from './state/store.js';
 import { runtime } from './lib/runtime.js';
 import { AppShell, type Route } from './components/layout/AppShell.js';
-import { MarketplacePage } from './pages/MarketplacePage.js';
-import { Store } from 'lucide-react';
+import { CardMarketPage } from './pages/CardMarketPage.js';
+import { PluginMarketPage } from './pages/PluginMarketPage.js';
 import { TooltipProvider } from './components/ui/misc.js';
 import { Toaster, toast } from './components/ui/toast.js';
 import { ConfirmHost } from './components/ui/confirm.js';
@@ -24,9 +24,8 @@ import { NovelPage } from './pages/NovelPage.js';
 import { PluginsPage } from './pages/PluginsPage.js';
 import { SettingsPage } from './pages/SettingsPage.js';
 import { SETTINGS_SECTIONS } from './pages/SettingsHub.js';
-import { ConnectionPanel } from './components/layout/ConnectionPanel.js';
 import { Button } from './components/ui/button.js';
-import { BookOpen, Loader2 } from 'lucide-react';
+import { BookOpen, Loader2, Plus, Store } from 'lucide-react';
 import { confirmAction } from '@/components/ui/confirm.js';
 
 /**
@@ -89,7 +88,8 @@ function App() {
       presets: '预设',
       novel: '小说',
       plugins: '插件',
-      market: '商店',
+      'card-store': '角色卡商店',
+      'plugin-store': '插件商店',
     };
     return labels[route] ?? 'RPNow';
   }, [route, deepSection]);
@@ -208,6 +208,7 @@ function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
   const themeId = useApp((s) => s.settings.themeId);
+  const hideTopbar = useApp((s) => s.hideTopbar);
   const kernel = useApp((s) => s.kernel);
 
   // One-time boot: kernel, plugins, theme.
@@ -373,22 +374,25 @@ function App() {
           onNavigate={navigate}
           title={routeTitle}
           topbarActions={
-            <>
-              {route !== 'market' && route !== 'chat' ? (
-                <button
-                  type="button"
-                  onClick={() => navigate('market')}
-                  aria-label="商店"
-                  title="商店"
-                  className="flex size-9 items-center justify-center rounded-lg text-[var(--rp-fg-muted)] transition-colors hover:bg-[var(--rp-bg-elevated)] hover:text-[var(--rp-fg)]"
-                >
-                  <Store className="size-4" aria-hidden="true" />
-                </button>
-              ) : null}
-              <ConnectionPanel />
-            </>
+            route === 'card-store' || route === 'plugin-store' ? (
+              // 商店页：顶栏右侧就是发布按钮。链接图标（连接面板）已从所有顶
+              // 栏去掉，API 连接改走左侧栏底部的“API连接”和设置页。
+              <Button
+                size="sm"
+                className="rounded-full"
+                onClick={() => useApp.getState().requestStorePublish(route === 'card-store' ? 'card' : 'plugin')}
+              >
+                <Store className="size-3.5" aria-hidden="true" /> 发布内容
+              </Button>
+            ) : route === 'settings' && deepSection === 'models' ? (
+              // 聊天 API 页：顶栏右侧是新建按钮（Tavo 同款位置），点开新建表单。
+              <Button size="sm" className="rounded-full" onClick={() => useApp.getState().requestAddModel(true)}>
+                <Plus className="size-3.5" aria-hidden="true" /> 新建
+              </Button>
+            ) : null
           }
           isSubPage={route !== 'chat'}
+          hideTopbar={hideTopbar}
           onBack={() => {
             // Settings sub-page climbs to the hub first; anything else → home.
             if (route === 'settings' && deepSection) navigate('settings');
@@ -416,7 +420,8 @@ function App() {
           {route === 'presets' && <PresetsPage />}
           {route === 'novel' && <NovelPage />}
           {route === 'plugins' && <PluginsPage />}
-          {route === 'market' && <MarketplacePage />}
+          {route === 'card-store' && <CardMarketPage />}
+          {route === 'plugin-store' && <PluginMarketPage />}
           {route === 'settings' && (
             <SettingsPage
               section={deepSection}

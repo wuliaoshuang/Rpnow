@@ -18,7 +18,7 @@ import {
   sha256Hex,
 } from './packaging.js';
 import { LICENSES, scanContent, scanPluginCode, validatePublishManifest } from './validate.js';
-import type { PublishManifest } from './types.js';
+import type { PluginPublishManifest, PublishManifest } from './types.js';
 
 function baseManifest(over: Partial<PublishManifest> = {}): PublishManifest {
   return {
@@ -37,7 +37,9 @@ function baseManifest(over: Partial<PublishManifest> = {}): PublishManifest {
     screenshots: [],
     createdAt: new Date(0).toISOString(),
     ...over,
-  };
+    // 覆盖项可能把 type 换成 'plugin'，字面量类型推断会混用两个分支；
+    // 测试辅助函数以运行期形状为准。
+  } as unknown as PublishManifest;
 }
 
 describe('categories', () => {
@@ -131,7 +133,7 @@ describe('packaging', () => {
     expect(zip.file('manifest.json')).toBeTruthy();
     expect(zip.file('plugin.js')).toBeTruthy();
     const manifest = await readPublishManifest(blob);
-    expect(manifest.permissions).toEqual(['network']);
+    expect((manifest as PluginPublishManifest).permissions).toEqual(['network']);
   });
 
   it('生成稳定 id 与版本比较', () => {

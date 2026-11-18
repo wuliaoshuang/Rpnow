@@ -36,7 +36,8 @@ export type Route =
   | 'presets'
   | 'novel'
   | 'plugins'
-  | 'market'
+  | 'card-store'
+  | 'plugin-store'
   | 'settings';
 
 export interface NavItem {
@@ -68,10 +69,12 @@ export interface AppShellProps {
   onOpenDrawer?: () => void;
   /** This page is a sub-page: show a back chevron instead of the drawer handle. */
   isSubPage?: boolean;
+  /** A sub-page with its own header hides the shell top bar (no double header). */
+  hideTopbar?: boolean;
   onBack?: () => void;
 }
 
-export function AppShell({ route, onNavigate, children, title, topbarActions, aside, isSubPage, onBack }: AppShellProps) {
+export function AppShell({ route, onNavigate, children, title, topbarActions, aside, isSubPage, onBack, hideTopbar }: AppShellProps) {
   const Topbar = useSlot(SLOT.TOPBAR);
   return (
     <div
@@ -116,7 +119,7 @@ export function AppShell({ route, onNavigate, children, title, topbarActions, as
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* ------------------------------------------------------------- topbar */}
-        {route !== 'chat' && (
+        {route !== 'chat' && !hideTopbar && (
           <>
             {/*
               Top bar. `min-h-14` rather than a fixed `h-14` so the safe-area padding
@@ -154,8 +157,10 @@ export function AppShell({ route, onNavigate, children, title, topbarActions, as
           <h1 className="min-w-0 flex-1 truncate text-center text-[15.5px] font-semibold leading-tight">
             {title ?? 'RPNow'}
           </h1>
-          {/* Right slot: same fixed width as the left, so the centre holds. */}
-          <div className="flex w-24 shrink-0 items-center justify-end gap-1.5">
+          {/* Right slot: same fixed width as the left, so the centre holds — but
+              it may grow to fit its content (the store pages put a 发布内容
+              button here, which is wider than 96px). */}
+          <div className="flex min-w-24 shrink-0 items-center justify-end gap-1.5">
             {topbarActions}
             {Topbar ? <Topbar route={route} onNavigate={onNavigate} /> : null}
           </div>

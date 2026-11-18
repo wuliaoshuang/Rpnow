@@ -31,6 +31,7 @@ import type { Route } from '@/components/layout/AppShell.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { RPChat } from '@/core/types/chat.js';
 import { useApp } from '@/state/store.js';
+import { useSidebarStatus } from '@/hooks/useSidebarStatus.js';
 import { BUILTIN_THEMES, THEME_MAP } from '@/core/defaults/themes.js';
 import { Switch } from '@/components/ui/input';
 import { vibrate } from '@/lib/haptics';
@@ -62,13 +63,12 @@ export function SettingsPanel({
   onClearChat: () => void;
 }) {
   const settings = useApp((s) => s.settings);
-  const personas = useApp((s) => s.personas);
   const presets = useApp((s) => s.presets);
   const lorebooks = useApp((s) => s.lorebooks);
   const updateCard = useApp((s) => s.updateCard);
   const [regexOpen, setRegexOpen] = React.useState(false);
 
-  const persona = personas.find((p) => p.id === chat?.personaId);
+  const sidebar = useSidebarStatus(chat?.personaId);
   const preset = presets.find((p) => p.id === (chat?.presetId ?? settings.defaultPresetId));
   const theme = THEME_MAP.get(settings.themeId) ?? BUILTIN_THEMES[0];
   const bookNames = (chat?.lorebookIds ?? [])
@@ -111,11 +111,12 @@ export function SettingsPanel({
   };
   const groups: Array<Array<Row>> = [
     [
-      { label: '用户身份', value: persona?.name || '未设置', icon: <UserRound className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'persona') },
+      { label: '用户身份', value: sidebar.personaName || '未设置', icon: <UserRound className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'persona') },
     ],
     [
-      { label: 'API 连接', value: '前往配置', icon: <SlidersHorizontal className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'models') },
-      { label: '生图 API', value: settings.imageGen.key ? '已配置' : '未配置', icon: <ImagePlus className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'imagegen') },
+      { label: 'API 连接', value: sidebar.apiConnectionName ?? '未配置', icon: <SlidersHorizontal className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'models') },
+      { label: '生图 API', value: sidebar.imageConfigured ? '已配置' : '未配置', icon: <ImagePlus className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'image') },
+      { label: '自动生图', value: sidebar.autoImageConfigured ? '已配置' : '未配置', icon: <ImagePlus className="size-4" aria-hidden="true" />, onPress: () => onNavigate('settings', 'imagegen') },
       { label: '预设', value: preset?.name || '默认', icon: <Sparkles className="size-4" aria-hidden="true" />, onPress: () => onNavigate('presets') },
       { label: '世界书', value: bookNames || '未启用', icon: <BookMarked className="size-4" aria-hidden="true" />, onPress: () => onNavigate('lore') },
       {

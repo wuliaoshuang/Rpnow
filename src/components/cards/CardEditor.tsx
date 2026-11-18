@@ -261,7 +261,7 @@ export function CardEditor({ card, onClose }: CardEditorProps) {
         Android back button), title + unsaved marker on the midline, and a
         single 保存 action. Safe-area top is part of the bar, not a squeeze.
       */}
-      <header className="flex shrink-0 items-center gap-1 border-b border-[var(--rp-border)] px-2 pt-[env(safe-area-inset-top,0px)] pb-2 sm:px-4">
+      <header className="flex shrink-0 items-center gap-1 border-b border-[var(--rp-border)] px-4 pt-[calc(env(safe-area-inset-top,0px)+16px)] pb-2">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -289,7 +289,7 @@ export function CardEditor({ card, onClose }: CardEditorProps) {
               setDirty(true);
             }}
           />
-          <Button size="sm" onClick={save} disabled={saving || nameError}>
+          <Button size="sm" className="rounded-full" onClick={save} disabled={saving || nameError}>
             {saving ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <Check className="size-3.5" aria-hidden="true" />}
             保存
           </Button>
@@ -299,122 +299,156 @@ export function CardEditor({ card, onClose }: CardEditorProps) {
       <div className="rp-scroll min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-3xl px-3 py-3 pb-[calc(env(safe-area-inset-bottom,0px)+1.5rem)] sm:px-6">
           <Tabs value={tab} onValueChange={setTab}>
-            <TabsList className="sticky top-0 z-10 mb-3 flex w-full overflow-x-auto">
-              <TabsTrigger value="identity">身份</TabsTrigger>
-              <TabsTrigger value="definition">设定</TabsTrigger>
-              <TabsTrigger value="greetings">开场白</TabsTrigger>
-              <TabsTrigger value="lorebook">世界书</TabsTrigger>
-              <TabsTrigger value="advanced">高级</TabsTrigger>
+            <TabsList className="sticky top-0 z-10 mx-2 mb-4 flex w-auto overflow-x-auto rounded-[10px] p-1">
+              <TabsTrigger
+                value="identity"
+                className="flex-1 rounded-[10px] data-[state=active]:bg-[var(--rp-accent)] data-[state=active]:text-[var(--rp-accent-fg)] data-[state=active]:shadow-none"
+              >
+                身份
+              </TabsTrigger>
+              <TabsTrigger
+                value="definition"
+                className="flex-1 rounded-[10px] data-[state=active]:bg-[var(--rp-accent)] data-[state=active]:text-[var(--rp-accent-fg)] data-[state=active]:shadow-none"
+              >
+                设定
+              </TabsTrigger>
+              <TabsTrigger
+                value="greetings"
+                className="flex-1 rounded-[10px] data-[state=active]:bg-[var(--rp-accent)] data-[state=active]:text-[var(--rp-accent-fg)] data-[state=active]:shadow-none"
+              >
+                开场白
+              </TabsTrigger>
+              <TabsTrigger
+                value="lorebook"
+                className="flex-1 rounded-[10px] data-[state=active]:bg-[var(--rp-accent)] data-[state=active]:text-[var(--rp-accent-fg)] data-[state=active]:shadow-none"
+              >
+                世界书
+              </TabsTrigger>
+              <TabsTrigger
+                value="advanced"
+                className="flex-1 rounded-[10px] data-[state=active]:bg-[var(--rp-accent)] data-[state=active]:text-[var(--rp-accent-fg)] data-[state=active]:shadow-none"
+              >
+                高级
+              </TabsTrigger>
             </TabsList>
 
             {/* ---------------------------------------------------- identity */}
             <TabsContent value="identity" className="space-y-4">
-              <div className="flex flex-col gap-4 sm:flex-row">
-                <div className="shrink-0">
-                  <Label className="mb-1.5 block">头像</Label>
-                  <button
-                    type="button"
-                    onClick={() => avatarInput.current?.click()}
-                    className="group relative flex size-28 cursor-pointer items-center justify-center overflow-hidden rounded-xl border-2 border-dashed border-[var(--rp-border-strong)] transition hover:border-[var(--rp-accent)]"
-                    aria-label="上传头像"
-                  >
-                    {avatar ? (
-                      <>
-                        <img src={avatar} alt="" className="size-full object-cover" />
-                        <span className="absolute inset-0 flex items-center justify-center bg-black/50 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
-                          更换
-                        </span>
-                      </>
-                    ) : (
-                      <span className="flex flex-col items-center gap-1 text-[11px] text-[var(--rp-fg-subtle)]">
-                        <Upload className="size-5" aria-hidden="true" />
-                        上传
-                      </span>
-                    )}
-                  </button>
-                  <input
-                    ref={avatarInput}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={async (e) => {
-                      const f = e.target.files?.[0];
-                      if (f) {
-                        setAvatar(await blobToDataUrl(f));
-                        setDirty(true);
-                      }
-                      e.target.value = '';
-                    }}
-                  />
-                  {avatar && (
+              {/* 角色名片：头像 + 名字/作者，一眼认出这张卡是谁。 */}
+              <div className="rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-4">
+                <div className="flex items-start gap-4">
+                  <div className="shrink-0">
                     <button
                       type="button"
-                      onClick={() => {
-                        setAvatar(undefined);
-                        setDirty(true);
-                      }}
-                      className="mt-1 w-full cursor-pointer text-[11px] text-[var(--rp-fg-subtle)] hover:text-[var(--rp-danger)]"
+                      onClick={() => avatarInput.current?.click()}
+                      className="group relative flex size-32 cursor-pointer items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-[var(--rp-border-strong)] transition hover:border-[var(--rp-accent)]"
+                      aria-label="上传头像"
                     >
-                      移除
+                      {avatar ? (
+                        <>
+                          <img src={avatar} alt="" className="size-full object-cover" />
+                          <span className="absolute inset-0 flex items-center justify-center bg-black/50 text-[11px] text-white opacity-0 transition-opacity group-hover:opacity-100">
+                            更换
+                          </span>
+                        </>
+                      ) : (
+                        <span className="flex flex-col items-center gap-1 text-[11px] text-[var(--rp-fg-subtle)]">
+                          <Upload className="size-5" aria-hidden="true" />
+                          上传
+                        </span>
+                      )}
                     </button>
-                  )}
-                  <AvatarAIModule
-                    prompt={String((data.extensions as Record<string, unknown> | undefined)?.avatar_prompt ?? '')}
-                    onPromptChange={(value) =>
-                      patch({
-                        extensions: { ...data.extensions, avatar_prompt: value },
-                      })
-                    }
-                    onGenerated={(dataUrl) => {
-                      setAvatar(dataUrl);
-                      setDirty(true);
-                    }}
-                  />
-                </div>
-
-                <div className="min-w-0 flex-1 space-y-3">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="card-name" required>
-                      角色名称
-                    </Label>
-                    <Input
-                      id="card-name"
-                      value={data.name}
-                      onChange={(e) => patch({ name: e.target.value })}
-                      placeholder="例如：阿尔德里克"
-                      aria-invalid={nameError}
-                      autoFocus
+                    <input
+                      ref={avatarInput}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const f = e.target.files?.[0];
+                        if (f) {
+                          setAvatar(await blobToDataUrl(f));
+                          setDirty(true);
+                        }
+                        e.target.value = '';
+                      }}
                     />
-                    {nameError && (
-                      <p className="text-[11px] text-[var(--rp-danger)]">
-                        必填 — 这是对话中 {'{{char}}'} 会替换成的名字。
-                      </p>
+                    {avatar && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAvatar(undefined);
+                          setDirty(true);
+                        }}
+                        className="mt-1 w-full cursor-pointer text-[11px] text-[var(--rp-fg-subtle)] hover:text-[var(--rp-danger)]"
+                      >
+                        移除
+                      </button>
                     )}
                   </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="card-creator">作者署名</Label>
-                    <Input
-                      id="card-creator"
-                      value={data.creator ?? ''}
-                      onChange={(e) => patch({ creator: e.target.value })}
-                      placeholder="你的名字或昵称"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="card-version">版本</Label>
-                    <Input
-                      id="card-version"
-                      value={data.character_version ?? ''}
-                      onChange={(e) => patch({ character_version: e.target.value })}
-                      placeholder="1.0"
-                    />
+
+                  <div className="min-w-0 flex-1 space-y-3 pt-0.5">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="card-name" required>
+                        角色名称
+                      </Label>
+                      <Input
+                        id="card-name"
+                        value={data.name}
+                        onChange={(e) => patch({ name: e.target.value })}
+                        placeholder="例如：阿尔德里克"
+                        aria-invalid={nameError}
+                        autoFocus
+                        className="h-12 rounded-xl text-[16px]"
+                      />
+                      {nameError && (
+                        <p className="text-[11px] text-[var(--rp-danger)]">
+                          必填 — 这是对话中 {'{{char}}'} 会替换成的名字。
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="card-creator">作者署名</Label>
+                      <Input
+                        id="card-creator"
+                        value={data.creator ?? ''}
+                        onChange={(e) => patch({ creator: e.target.value })}
+                        placeholder="你的名字或昵称"
+                      />
+                    </div>
                   </div>
                 </div>
               </div>
 
+              {/* 用 AI 生成头像：提示词 + 生成/换画法。 */}
+              <div className="rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-4">
+                <p className="mb-3 text-[13px] font-semibold">用 AI 生成头像</p>
+                <AvatarAIModule
+                  prompt={String((data.extensions as Record<string, unknown> | undefined)?.avatar_prompt ?? '')}
+                  onPromptChange={(value) =>
+                    patch({
+                      extensions: { ...data.extensions, avatar_prompt: value },
+                    })
+                  }
+                  onGenerated={(dataUrl) => {
+                    setAvatar(dataUrl);
+                    setDirty(true);
+                  }}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="card-version">版本</Label>
+                <Input
+                  id="card-version"
+                  value={data.character_version ?? ''}
+                  onChange={(e) => patch({ character_version: e.target.value })}
+                  placeholder="1.0"
+                />
+              </div>
+
               <div className="space-y-1.5">
                 <Label htmlFor="card-tags">标签</Label>
-                <div className="flex flex-wrap gap-1.5 rounded-md border border-[var(--rp-border-strong)] bg-[var(--rp-bg)] p-2">
+                <div className="flex flex-wrap gap-1.5 rounded-xl border border-[var(--rp-border-strong)] bg-[var(--rp-bg)] p-2">
                   {(data.tags ?? []).map((t, i) => (
                     <span
                       key={`${t}-${i}`}
@@ -506,11 +540,11 @@ export function CardEditor({ card, onClose }: CardEditorProps) {
 
             {/* --------------------------------------------------- greetings */}
             <TabsContent value="greetings" className="space-y-4">
-              <p className="rounded-md border border-[var(--rp-border)] bg-[var(--rp-bg-sunken)]/60 p-2.5 text-[12px] text-[var(--rp-fg-muted)]">
+              <p className="rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-sunken)]/60 p-2.5 text-[12px] text-[var(--rp-fg-muted)]">
                 第一条是默认开场白，其余会在对话里以「滑动切换」的形式出现，让同一个角色有不同开局。
               </p>
               {greetings.map((g, i) => (
-                <div key={i} className="space-y-1.5 rounded-lg border border-[var(--rp-border)] p-3">
+                <div key={i} className="space-y-1.5 rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-3.5">
                   <div className="flex items-center gap-2">
                     <Label htmlFor={`greet-${i}`} className="flex-1">
                       {i === 0 ? '默认开场白' : `备选开场白 ${i}`}
@@ -592,7 +626,7 @@ export function CardEditor({ card, onClose }: CardEditorProps) {
             <TabsContent value="advanced" className="space-y-4">
               {/* Plugin-provided editor sections. */}
               <SlotOutlet slot={SLOT.CARD_EDITOR} componentProps={{ card, data }} />
-              <div className="rounded-md border border-[var(--rp-border)] bg-[var(--rp-bg-sunken)]/60 p-2.5 text-[12px] leading-relaxed text-[var(--rp-fg-muted)]">
+              <div className="rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-sunken)]/60 p-2.5 text-[12px] leading-relaxed text-[var(--rp-fg-muted)]">
                 <p className="mb-1 font-medium text-[var(--rp-fg)]">主提示覆盖</p>
                 <p>
                   填写后会替换当前预设的「主提示」。用 <code className="rounded bg-[var(--rp-bg)] px-1">{'{{original}}'}</code>{' '}
@@ -617,7 +651,7 @@ export function CardEditor({ card, onClose }: CardEditorProps) {
                 rows={3}
               />
 
-              <div className="space-y-2 rounded-lg border border-[var(--rp-border)] p-3">
+              <div className="space-y-2 rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-3.5">
                 <Label>深度提示（@Depth）</Label>
                 <p className="text-[11px] text-[var(--rp-fg-subtle)]">
                   每次请求都会插入到聊天记录的第 N 层，适合放「始终要记住」的短规则。
@@ -732,7 +766,7 @@ function RegexScriptsEditor({
   }>;
 
   return (
-    <div className="space-y-2 rounded-lg border border-[var(--rp-border)] p-3">
+    <div className="space-y-2 rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-3.5">
       <div className="flex items-center justify-between">
         <Label>正则脚本</Label>
         <Button
