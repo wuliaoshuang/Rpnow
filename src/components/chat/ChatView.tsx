@@ -568,6 +568,12 @@ export function ChatView({
     messages?: RPChatMessage[];
     /** Append a placeholder message with `id` that we stream into. */
     targetId?: string;
+    /**
+     * The message being regenerated. It is trimmed out of `messages` (so the
+     * prompt starts fresh), but the new reply keeps its id and carries the
+     * old content as a swipe variant.
+     */
+    swipeBase?: RPChatMessage;
     impersonate?: boolean;
   } = {}) {
     if (!llm || !loop) {
@@ -721,6 +727,32 @@ export function ChatView({
             })(),
           };
         });
+      } else if (opts.targetId && opts.swipeBase) {
+        /*
+         * Regenerate: the target was trimmed out of the prompt, so it is not
+         * in `base.messages` — but the new reply still takes its place at the
+         * end of the trimmed history, keeps its id, and carries the old reply
+         * (plus any earlier variants) as swipe variants. The ‹ › pager then
+         * shows 2/2 and the first output is never swallowed.
+         */
+        const swipes = [...(opts.swipeBase.swipes ?? [opts.swipeBase.content]), finalText];
+        messages = [
+          ...base.messages,
+          {
+            ...opts.swipeBase,
+            content: finalText,
+            swipes,
+            swipeId: swipes.length - 1,
+            reasoning: reasoningText || undefined,
+            styleFilterHits: styleFilterHits.length ? styleFilterHits : undefined,
+            createdAt: Date.now(),
+            model: chat.model || connection.defaultModel,
+            usage: result.usage ? { ...result.usage, durationMs: Date.now() - genStart } : undefined,
+            images: replyImages.length ? replyImages : undefined,
+            meta: replyMeta,
+            speaker: speakerForReply,
+          },
+        ];
       } else {
         messages = [
           ...base.messages,
@@ -914,8 +946,16 @@ export function ChatView({
   // ----------------------------------------------------------- message ops
   function regenerate(messageId: string) {
     const idx = chat.messages.findIndex((m) => m.id === messageId);    if (idx === -1) return;
+    const target = chat.messages[idx];
+    /*
+     * Keep the old reply as a swipe variant instead of throwing it away.
+     * The prompt uses the history up to before the target (so the model
+     * starts fresh instead of continuing the old reply), but the new
+     * message keeps the target's id and carries the old content in its
+     * swipes — the ‹ › pager then lets the user flip back to it.
+     */
     const trimmed = chat.messages.slice(0, idx);
-    void generate({ messages: trimmed, targetId: undefined });
+    void generate({ messages: trimmed, targetId: messageId, swipeBase: target });
     patch({ messages: trimmed });
     // Summaries for the removed round must go too, or the next prompt still
     // treats deleted history as real.

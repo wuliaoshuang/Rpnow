@@ -611,7 +611,7 @@ export function MessageBubble({
             <div className="flex h-8 items-center gap-0.5 rounded-full px-1 backdrop-blur-sm dark:bg-black/45 bg-[var(--rp-bg-elevated)]/85">
               <button
                 type="button"
-                aria-label="上一段开场白"
+                aria-label="上一个版本"
                 className="flex size-6 cursor-pointer items-center justify-center rounded-full transition dark:text-white/80 text-[var(--rp-fg-muted)] dark:hover:bg-white/15 hover:bg-[var(--rp-fg)]/10 dark:hover:text-white hover:text-[var(--rp-fg)]"
                 onClick={() => onSwipe?.(message.id, -1)}
               >
@@ -622,7 +622,7 @@ export function MessageBubble({
               </span>
               <button
                 type="button"
-                aria-label="下一段开场白"
+                aria-label="下一个版本"
                 className="flex size-6 cursor-pointer items-center justify-center rounded-full transition dark:text-white/80 text-[var(--rp-fg-muted)] dark:hover:bg-white/15 hover:bg-[var(--rp-fg)]/10 dark:hover:text-white hover:text-[var(--rp-fg)]"
                 onClick={() => onSwipe?.(message.id, 1)}
               >
@@ -698,7 +698,12 @@ export function MessageBubble({
             </>
           )}
 
-          {isLast && !isUser && (
+          {/*
+            Regenerate: only on the newest assistant floor, and never on the
+            opening greeting — the greeting comes from the character card, it
+            was never generated, so there is nothing to regenerate.
+          */}
+          {isLast && !isUser && !message.isGreeting && (
             <Hint label="重新生成">
               <button
                 type="button"
