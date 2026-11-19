@@ -18,7 +18,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -28,7 +27,7 @@ import { Badge, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMen
 import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/image/nai.js';
 import { loadStudioDraft, saveStudioDraft } from '@/core/image/studioDraft.js';
-import { estimateAnlasCost, maxNSamplesForArea, NAI_NOISE_SCHEDULES, NAI_SAMPLERS, NAI_UC_PRESETS, opusFreeStatus, SIZE_MAP } from '@/core/image/types.js';
+import { estimateAnlasCost, maxNSamplesForArea, NAI_NOISE_SCHEDULES, NAI_SAMPLER_LABELS, NAI_SAMPLERS, NAI_SIZE_TIER_LABELS, NAI_UC_PRESETS, naiSizeFor, opusFreeStatus, SIZE_MAP, type NAIImageSizeTier } from '@/core/image/types.js';
 import { buildTagInjection } from '@/core/image/tagContext.js';
 import { describeEmptyTagResult, TAG_CONVERT_MAX_TOKENS } from '@/core/image/tagFailure.js';
 import { BUILTIN_PRESETS } from '@/core/defaults/presets.js';
@@ -57,7 +56,7 @@ export interface ImageStudioProps {
  * `value` undefined means "use the provider default" (shown as placeholder).
  */
 function ParamSlider({
-  id, label, min, max, step, value, placeholder, onChange, hint,
+  id, label, min, max, step, value, placeholder, onChange, hint, className,
 }: {
   id: string;
   label: string;
@@ -68,10 +67,11 @@ function ParamSlider({
   placeholder: string;
   onChange: (v: number | undefined) => void;
   hint?: string;
+  className?: string;
 }) {
   const shown = value ?? Number(placeholder);
   return (
-    <div className="space-y-1.5">
+    <div className={`space-y-1.5 ${className ?? ''}`}>
       <Label htmlFor={id}>{label}</Label>
       <div className="flex items-center gap-2">
         <input
@@ -140,6 +140,8 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   const [variety, setVariety] = React.useState<boolean | undefined>(undefined);
   const [transparentBg, setTransparentBg] = React.useState<boolean | undefined>(undefined);
   const [qualityToggle, setQualityToggle] = React.useState<boolean | undefined>(undefined);
+  /** NovelAI 尺寸档位（小 / 标准 / 大 / 壁纸），默认标准。 */
+  const [sizeTier, setSizeTier] = React.useState<NAIImageSizeTier | undefined>(undefined);
   const [busy, setBusy] = React.useState(false);
   const [results, setResults] = React.useState<string[]>([]);
   const [error, setError] = React.useState<string | null>(null);
@@ -186,6 +188,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
       setVariety(draft.variety);
       setTransparentBg(draft.transparentBg);
       setQualityToggle(draft.qualityToggle);
+      setSizeTier(draft.sizeTier);
       return;
     }
     if (prompt) return;
@@ -224,8 +227,9 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
       variety,
       transparentBg,
       qualityToggle,
+      sizeTier,
     });
-  }, [open, chat.id, prompt, positive, artist, negative, size, connectionId, model, steps, genScale, sampler, seed, noiseSchedule, nSamples, ucPreset, cfgRescale, variety, transparentBg, qualityToggle]);
+  }, [open, chat.id, prompt, positive, artist, negative, size, connectionId, model, steps, genScale, sampler, seed, noiseSchedule, nSamples, ucPreset, cfgRescale, variety, transparentBg, qualityToggle, sizeTier]);
 
   const adapter = imageService?.adapters().find((a) => a.key === connections.find((c) => c.id === connectionId)?.provider);
 
@@ -237,9 +241,12 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   const isV5Model = effectiveModel.startsWith('nai-diffusion-5');
   /** NovelAI 时预估这张图要多少 Anlas，点生成之前就让用户看到。
    * 免费规则是像素面积（宽×高 ≤ 1,048,576 px），不是“两边 ≤1024”：
-   * 832×1216 也在免费额度内。V4.5 免费不限量，V5 从 Opus 额度电池里扣。 */
+   * 832×1216 也在免费额度内。V4.5 免费不限量，V5 从 Opus 额度电池里扣。
+   * 尺寸按档位 × 画幅算（官网 Small / Normal / Large / Wallpaper）。 */
   const isNovelConn = selectedConn?.provider === 'novelai';
-  const naiSize = SIZE_MAP[size].nai;
+  const naiSize: [number, number] = isNovelConn
+    ? naiSizeFor(sizeTier ?? 'normal', size)
+    : SIZE_MAP[size].nai;
   const estSteps = steps ?? 23;
   const estNSamples = nSamples ?? 1;
   const estFree = isNovelConn
@@ -296,6 +303,8 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
         prompt: finalPrompt,
         negativePrompt: negative || undefined,
         size,
+        // NovelAI 的实际像素由档位 × 画幅决定，直接传宽高，省得适配器再猜。
+        ...(isNovelConn ? { width: naiSize[0], height: naiSize[1] } : {}),
         model: effectiveModel || undefined,
         steps,
         scale: genScale,
@@ -605,20 +614,43 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="portrait">竖版 2:3</SelectItem>
-                  <SelectItem value="square">方形 1:1</SelectItem>
-                  <SelectItem value="landscape">横版 3:2</SelectItem>
+                  <SelectItem value="portrait">竖版 2:3 · {naiSizeFor(sizeTier ?? 'normal', 'portrait').join('×')}</SelectItem>
+                  <SelectItem value="square">方形 1:1 · {naiSizeFor(sizeTier ?? 'normal', 'square').join('×')}</SelectItem>
+                  <SelectItem value="landscape">横版 3:2 · {naiSizeFor(sizeTier ?? 'normal', 'landscape').join('×')}</SelectItem>
                 </SelectContent>
               </Select>
+              {isNovelConn && (
+                <p className="text-[11px] text-[var(--rp-fg-subtle)]">
+                  当前 {naiSize[0]}×{naiSize[1]}（{naiSize[0] * naiSize[1] > 1_048_576 ? '超 1,048,576 px，不免费' : '面积 ≤1,048,576 px，Opus 免费额度内'}）
+                </p>
+              )}
             </div>
+            {isNovelConn && (
+              <div className="space-y-1.5">
+                <Label htmlFor="img-sizetier">尺寸</Label>
+                <Select value={sizeTier ?? 'normal'} onValueChange={(v) => setSizeTier(v as NAIImageSizeTier)}>
+                  <SelectTrigger id="img-sizetier">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(NAI_SIZE_TIER_LABELS) as NAIImageSizeTier[]).map((t) => (
+                      <SelectItem key={t} value={t}>
+                        {NAI_SIZE_TIER_LABELS[t]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
 
           {/* 生图参数（NovelAI）：这些参数直接决定出图质量，空着用默认值。 */}
           <div className="space-y-3 rounded-xl border border-[var(--rp-border)] p-3">
             <p className="text-[13px] font-medium">生图参数</p>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              {/* 步数 / CFG：官网是拖动条 + 可点数字，照着做。默认值按官网：
-                  步数 23，CFG 强度 V4.5 是 5、V5 是 7。 */}
+              {/* 步数 / CFG / 张数 / CFG Rescale：官网是拖动条 + 可点数字，
+                  照着做。拖动条占满一行（手机上两列太挤，拖不动），默认值按
+                  官网：步数 23，CFG 强度 V4.5 是 5、V5 是 7。 */}
               <ParamSlider
                 id="img-steps"
                 label="步数"
@@ -629,6 +661,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                 placeholder="23"
                 onChange={(v) => setSteps(v === undefined ? undefined : Math.min(50, Math.max(1, Math.round(v))))}
                 hint="Opus 免费上限是 28 步。"
+                className="col-span-2 sm:col-span-3"
               />
               <ParamSlider
                 id="img-scale"
@@ -639,6 +672,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                 value={genScale}
                 placeholder={isV5Model ? '7' : '5'}
                 onChange={(v) => setGenScale(v === undefined ? undefined : Math.min(10, Math.max(0, v)))}
+                className="col-span-2 sm:col-span-3"
               />
               <ParamSlider
                 id="img-samples"
@@ -650,6 +684,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                 placeholder="1"
                 onChange={(v) => setNSamples(v === undefined ? undefined : Math.min(maxNSamples, Math.max(1, Math.round(v))))}
                 hint={`当前尺寸最多 ${maxNSamples} 张；多于 1 张一定花 Anlas。`}
+                className="col-span-2 sm:col-span-3"
               />
               <div className="space-y-1.5">
                 <Label htmlFor="img-sampler">采样器</Label>
@@ -660,7 +695,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                   <SelectContent>
                     {NAI_SAMPLERS.map((s) => (
                       <SelectItem key={s} value={s}>
-                        {s}
+                        {NAI_SAMPLER_LABELS[s] ?? s}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -695,6 +730,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                 value={cfgRescale}
                 placeholder="0"
                 onChange={(v) => setCfgRescale(v === undefined ? undefined : Math.min(1, Math.max(0, v)))}
+                className="col-span-2 sm:col-span-3"
               />
               <div className="space-y-1.5">
                 <Label htmlFor="img-ucpreset">负面预设</Label>
@@ -828,26 +864,29 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
           />
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            关闭
-          </Button>
-          <div className="flex flex-1 flex-col items-end gap-0.5">
-            <Button onClick={run} disabled={busy || !positive.trim()} title={positive.trim() ? undefined : '先转写 Tag 或填写正面提示词'}>
+        {/* 底部：费用提示单独一行居中，关闭和生成并排两个等宽按钮。
+            原来的 DialogFooter 在手机上是 flex-col-reverse，生成跑到上
+            面、关闭单独占满一行，布局是散的，这里不用它了。 */}
+        <div className="space-y-2 border-t border-[var(--rp-border)] bg-[var(--rp-bg-sunken)]/50 p-4">
+          {isNovelConn && estAnlas !== null && (
+            <p className="text-center text-[11px] text-[var(--rp-fg-muted)]">
+              {estFree === 'free'
+                ? 'Opus 免费（V4.5、面积 ≤1,048,576 px、≤28 步、单张）'
+                : estFree === 'battery'
+                  ? 'V5 额度（Opus 电池里扣，不花 Anlas）'
+                  : `约 ${estAnlas} Anlas`}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+              关闭
+            </Button>
+            <Button className="flex-1" onClick={run} disabled={busy || !positive.trim()} title={positive.trim() ? undefined : '先转写 Tag 或填写正面提示词'}>
               {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Wand2 className="size-4" aria-hidden="true" />}
               {busy ? '生成中…' : '生成'}
             </Button>
-            {isNovelConn && estAnlas !== null && (
-              <p className="text-[11px] text-[var(--rp-fg-muted)]">
-                {estFree === 'free'
-                  ? 'Opus 免费（V4.5、面积 ≤1,048,576 px、≤28 步、单张）'
-                  : estFree === 'battery'
-                    ? 'V5 额度（Opus 电池里扣，不花 Anlas）'
-                    : `约 ${estAnlas} Anlas`}
-              </p>
-            )}
           </div>
-        </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );
