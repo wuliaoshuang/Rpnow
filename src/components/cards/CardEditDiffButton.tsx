@@ -2,7 +2,10 @@
  * "智能修改" — ask the model to edit the card by numbered reference.
  *
  * The model calls `edit_character_card`; the payload is validated, applied to a
- * draft, and the concrete changes are listed before the user confirms.
+ * draft, and the concrete changes are listed before the user confirms:
+ * word-level LCS diff with `+added/−removed` counts, a first-message preview
+ * for `first_mes` changes, truncation rejection (`finishReason === 'length'`),
+ * and a stale-snapshot refusal if the card moved after the diff was made.
  */
 
 import * as React from 'react';
@@ -10,23 +13,58 @@ import { Loader2, Sparkles, X } from 'lucide-react';
 import type { RPCard } from '@/core/types/card.js';
 import { useApp } from '@/state/store.js';
 import { useLLM } from '@/hooks/useKernel.js';
-import { describeCardForEdit, diffCard, EDIT_CARD_TOOL, parseCardDiff, type Change } from '@/core/cardai/diff.js';
+import {
+  describeCardForEdit,
+  diffCard,
+  EDIT_CARD_TOOL,
+  isTruncatedFinishReason,
+  parseCardDiff,
+  snapshotCardForEdit,
+  type Change,
+} from '@/core/cardai/diff.js';
+import { ChangeDiffView } from './SmartEditDiff.js';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/input';
 import { toast } from '@/components/ui/toast.js';
 
-export function CardEditDiffButton({ card, onApplied }: { card: RPCard; onApplied: (card: RPCard) => void }) {
+export function CardEditDiffButton({
+  card,
+  getCurrentCard,
+  onApplied,
+}: {
+  card: RPCard;
+  /**
+   * Live card at call time. The editor passes its unsaved draft here so the
+   * diff is generated against — and checked against — what the user actually
+   * sees, not the last saved copy. Falls back to the `card` prop.
+   */
+  getCurrentCard?: () => RPCard | null;
+  onApplied: (card: RPCard) => void;
+}) {
   const [open, setOpen] = React.useState(false);
   const [prompt, setPrompt] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [changes, setChanges] = React.useState<Change[] | null>(null);
   const [draft, setDraft] = React.useState<RPCard | null>(null);
+  /** Snapshot taken when the diff was generated; apply re-checks it (P08). */
+  const snapshotRef = React.useRef<string | null>(null);
 
   const llm = useLLM();
   const connections = useApp((s) => s.llmConnections);
   const settings = useApp((s) => s.settings);
   const connection = connections.find((c) => c.id === settings.defaultConnectionId) ?? connections[0];
+
+  /** The card as it stands right now (live draft when the editor provides one). */
+  const currentCard = (): RPCard | null => getCurrentCard?.() ?? card ?? null;
+
+  /**
+   * The stored card as it stands right now, read live from the store.
+   * The editor's `card` prop is frozen at open time (CardLibrary keeps the
+   * opened card in local state), so only the store sees an external change.
+   */
+  const savedCardNow = (): RPCard | null =>
+    (card ? (useApp.getState().cards.find((c) => c.id === card.id) ?? card) : null);
 
   const close = () => {
     setOpen(false);
@@ -34,12 +72,18 @@ export function CardEditDiffButton({ card, onApplied }: { card: RPCard; onApplie
     setError(null);
     setChanges(null);
     setDraft(null);
+    snapshotRef.current = null;
   };
 
   const generate = async () => {
     if (!prompt.trim()) return;
     if (!llm || !connection) {
       setError('请先配置模型连接');
+      return;
+    }
+    const source = currentCard();
+    if (!source) {
+      setError('无法读取当前角色卡，请关闭后重试');
       return;
     }
     setBusy(true);
@@ -55,10 +99,11 @@ export function CardEditDiffButton({ card, onApplied }: { card: RPCard; onApplie
             '世界书用 W1…，新增用 W+；正则用 R1…，新增用 R+。只提交确实需要改动的条目。',
           ].join('\n'),
         },
-        { role: 'user' as const, content: `当前角色卡：\n${describeCardForEdit(card)}\n\n修改要求：${prompt.trim()}` },
+        { role: 'user' as const, content: `当前角色卡：\n${describeCardForEdit(source)}\n\n修改要求：${prompt.trim()}` },
       ];
       const tool = EDIT_CARD_TOOL as unknown as { name: string; description: string; parameters: Record<string, unknown> };
       let rawArgs: unknown = null;
+      let finishReason: string | undefined;
       const stream = llm.stream(connection.id, {
         model: connection.defaultModel || '',
         messages,
@@ -69,22 +114,39 @@ export function CardEditDiffButton({ card, onApplied }: { card: RPCard; onApplie
       });
       for await (const ev of stream) {
         if (ev.type === 'tool_call' && ev.call.name === 'edit_character_card') rawArgs = ev.call.arguments;
+        else if (ev.type === 'finish') finishReason = ev.reason;
         else if (ev.type === 'error') throw new Error(ev.message);
+      }
+      // Truncated tool output may carry a partial diff — never apply it.
+      if (isTruncatedFinishReason(finishReason)) {
+        setError('修改工具输出被截断，请缩小修改范围后重试');
+        return;
       }
       if (!rawArgs) {
         setError('API 未返回角色卡修改工具调用，请确认模型和站点支持工具后重试');
         return;
       }
-      const parsed = parseCardDiff(rawArgs);
+      // Tool-call arguments arrive as a JSON string; parse before validating.
+      let parsedArgs: unknown = rawArgs;
+      if (typeof rawArgs === 'string') {
+        try {
+          parsedArgs = JSON.parse(rawArgs);
+        } catch {
+          setError('修改工具参数不是完整的 JSON，请重试');
+          return;
+        }
+      }
+      const parsed = parseCardDiff(parsedArgs);
       if (parsed.error || !parsed.diff) {
         setError(parsed.error ?? '修改工具参数格式错误，请重试');
         return;
       }
-      const applied = diffCard(card, parsed.diff);
+      const applied = diffCard(source, parsed.diff);
       if (!applied.changes.length) {
         setError('没有需要应用的修改');
         return;
       }
+      snapshotRef.current = snapshotCardForEdit(source, savedCardNow());
       setChanges(applied.changes);
       setDraft(applied.card);
     } catch (err) {
@@ -96,6 +158,20 @@ export function CardEditDiffButton({ card, onApplied }: { card: RPCard; onApplie
 
   const apply = () => {
     if (!draft) return;
+    const current = currentCard();
+    if (!current) {
+      setError('无法读取当前角色卡，请关闭后重试');
+      return;
+    }
+    // The card moved after the diff was generated — the draft is based on
+    // stale content, so refuse rather than silently overwriting the change.
+    if (snapshotRef.current !== null && snapshotCardForEdit(current, savedCardNow()) !== snapshotRef.current) {
+      setError('角色卡在生成修改方案后被改过，请重新生成修改方案');
+      setChanges(null);
+      setDraft(null);
+      snapshotRef.current = null;
+      return;
+    }
     onApplied(draft);
     toast.success(`成功应用 ${changes?.length ?? 0} 处修改`);
     close();
@@ -155,15 +231,20 @@ export function CardEditDiffButton({ card, onApplied }: { card: RPCard; onApplie
                   <p className="text-[12px] font-semibold">将应用 {changes.length} 处修改</p>
                   <ul className="space-y-1.5">
                     {changes.map((c, i) => (
-                      <li key={i} className="rounded-lg border border-[var(--rp-border)] p-2 text-[11.5px]">
-                        <p className="font-medium">{c.label}</p>
-                        {c.original && (
-                          <p className="mt-0.5 text-[var(--rp-danger)] line-through">{c.original.slice(0, 120)}</p>
-                        )}
-                        {c.modified && <p className="text-[var(--rp-ok)]">{c.modified.slice(0, 120)}</p>}
-                      </li>
+                      <ChangeDiffView
+                        key={i}
+                        change={c}
+                        cardName={draft?.data.name ?? card?.data.name ?? ''}
+                        avatar={draft?.avatar ?? card?.avatar}
+                      />
                     ))}
                   </ul>
+                  <p className="text-[11px] text-[var(--rp-fg-subtle)]">
+                    <span className="text-[var(--rp-ok)]">绿色为新增</span>
+                    {' · '}
+                    <span className="text-[var(--rp-danger)] line-through">红色删除线为删除</span>
+                    {' · …… 为省略的未改动内容'}
+                  </p>
                 </div>
               )}
             </div>

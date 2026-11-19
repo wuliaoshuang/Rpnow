@@ -26,22 +26,176 @@ const joinURL = (base: string, path: string): string => {
   return `${b}${path}`;
 };
 
-/** Reasoning text can arrive under several non-standard keys. */
+/** Reasoning text can arrive under several non-standard keys (C01). */
 function reasoningFromDelta(delta: Record<string, unknown>): string | undefined {
-  // DeepSeek: reasoning_content · OpenRouter: reasoning · others: thinking
-  const candidates = [delta.reasoning_content, delta.reasoning, delta.thinking];
+  // DeepSeek: reasoning_content · OpenRouter: reasoning · others: thinking /
+  // thinking_content / thought / thoughts / reasoning_text (string or array).
+  const candidates = [
+    delta.reasoning_content,
+    delta.reasoning,
+    delta.thinking,
+    delta.thinking_content,
+    delta.thought,
+    delta.thoughts,
+    delta.reasoning_text,
+  ];
   for (const c of candidates) {
     if (typeof c === 'string' && c) return c;
+    if (Array.isArray(c)) {
+      const joined = c
+        .map((x) =>
+          typeof x === 'string'
+            ? x
+            : x && typeof x === 'object'
+              ? String((x as Record<string, unknown>).text ?? (x as Record<string, unknown>).reasoning ?? '')
+              : '',
+        )
+        .join('');
+      if (joined) return joined;
+    }
   }
+  // OpenAI-compatible `content[]` thought shards (C01): a part flagged
+  // `thought: true` or whose type names reasoning/thinking/thought.
+  const fromContent = openAIReasoningContent(delta.content);
+  if (fromContent) return fromContent;
   // Some providers send structured reasoning details.
   const details = delta.reasoning_details;
   if (Array.isArray(details)) {
     const parts = details
-      .map((d) => (d && typeof d === 'object' ? (d as Record<string, unknown>).text : undefined))
+      .map((d) =>
+        d && typeof d === 'object'
+          ? (d as Record<string, unknown>).text ?? (d as Record<string, unknown>).reasoning ?? (d as Record<string, unknown>).content
+          : undefined,
+      )
       .filter((x): x is string => typeof x === 'string');
     if (parts.length) return parts.join('');
   }
   return undefined;
+}
+
+/** Reasoning tokens, when the provider reports them in the usage payload. */
+function openAIUsage(usage: OpenAIChunk['usage']): {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  reasoningTokens?: number;
+} {
+  return {
+    inputTokens: usage?.prompt_tokens,
+    outputTokens: usage?.completion_tokens,
+    cachedTokens: (usage?.prompt_tokens_details as Record<string, number> | undefined)?.cached_tokens,
+    reasoningTokens: (usage?.completion_tokens_details as Record<string, number> | undefined)?.reasoning_tokens,
+  };
+}
+
+/**
+ * Events for one parsed OpenAI JSON body (non-stream response, or a server
+ * that ignored `stream: true` and answered JSON anyway — C07). Shared so
+ * both paths emit exactly the same events.
+ */
+function openAIJsonEvents(json: OpenAIChunk): LLMStreamEvent[] {
+  const events: LLMStreamEvent[] = [];
+  const choice = json.choices?.[0];
+  const text = openAITextContent(choice?.message?.content);
+  if (text) events.push({ type: 'text', delta: text });
+  const r = choice?.message ? reasoningFromDelta(choice.message as Record<string, unknown>) : undefined;
+  if (r) events.push({ type: 'reasoning', delta: r });
+  for (const tc of choice?.message?.tool_calls ?? []) {
+    events.push({
+      type: 'tool_call',
+      call: { id: tc.id ?? String(Math.random()), name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '{}' },
+    });
+  }
+  if (json.usage) events.push({ type: 'usage', ...openAIUsage(json.usage) });
+  events.push({ type: 'finish', reason: choice?.finish_reason ?? 'stop' });
+  return events;
+}
+
+// ------------------------------------------------------------ Multimodal
+
+/** Split a `data:<mime>;base64,<data>` URL; null for remote URLs / junk. */
+export function parseDataUrl(url: string): { mime: string; data: string } | null {
+  const m = /^data:([^;,]+)?;base64,(.+)$/s.exec(url);
+  if (!m) return null;
+  return { mime: m[1] || 'image/jpeg', data: m[2] };
+}
+
+/** OpenAI `content`: plain text, or text + `image_url` parts (detail high). */
+function openAIContent(m: LLMMessage): unknown {
+  if (!m.imageUrls?.length) return m.content;
+  const parts: unknown[] = [{ type: 'text', text: m.content }];
+  for (const url of m.imageUrls) {
+    parts.push({ type: 'image_url', image_url: { url, detail: 'high' } });
+  }
+  return parts;
+}
+
+/** Anthropic `content`: text block + one image block per picture. */
+function anthropicContent(m: LLMMessage): unknown {
+  if (!m.imageUrls?.length) return m.content;
+  const blocks: unknown[] = [{ type: 'text', text: m.content || '（图片）' }];
+  for (const url of m.imageUrls) {
+    const parsed = parseDataUrl(url);
+    blocks.push(
+      parsed
+        ? { type: 'image', source: { type: 'base64', media_type: parsed.mime, data: parsed.data } }
+        : { type: 'image', source: { type: 'url', url } },
+    );
+  }
+  return blocks;
+}
+
+/** Gemini `parts`: text + inline base64 (or a file reference for remote URLs). */
+function geminiParts(m: LLMMessage): unknown[] {
+  const parts: unknown[] = [{ text: m.content }];
+  for (const url of m.imageUrls ?? []) {
+    const parsed = parseDataUrl(url);
+    parts.push(
+      parsed
+        ? { inlineData: { mimeType: parsed.mime, data: parsed.data } }
+        : { fileData: { mimeType: 'image/jpeg', fileUri: url } },
+    );
+  }
+  return parts;
+}
+
+/** A message/delta `content` may be a string or a parts array — read the text. */
+function openAITextContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((p) => {
+        if (!p || typeof p !== 'object') return '';
+        const part = p as Record<string, unknown>;
+        // A `thought: true` text part is reasoning, not prose — it must not
+        // leak into the reply (C01); see openAIReasoningContent below.
+        if (part.thought === true) return '';
+        return part.type === 'text' ? String(part.text ?? '') : '';
+      })
+      .join('');
+  }
+  return '';
+}
+
+/**
+ * Reasoning text hidden in an OpenAI-compatible `content[]` parts array
+ * (C01): parts flagged `thought: true`, or whose `type` names
+ * reasoning/thinking/thought (e.g. `{type:'reasoning', text:'…'}`).
+ */
+function openAIReasoningContent(content: unknown): string {
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((p) => {
+      if (!p || typeof p !== 'object') return '';
+      const part = p as Record<string, unknown>;
+      const isThought =
+        part.thought === true ||
+        (typeof part.type === 'string' && /reason|think|thought/i.test(part.type));
+      if (!isThought) return '';
+      const t = part.text ?? part.reasoning_content ?? part.reasoning ?? part.content;
+      return typeof t === 'string' ? t : '';
+    })
+    .join('');
 }
 
 // --------------------------------------------------------------- OpenAI
@@ -102,21 +256,17 @@ export const openAICompatibleAdapter: LLMProviderAdapter = {
 
     if (req.stream === false) {
       const json = (await res.json()) as OpenAIChunk;
-      const choice = json.choices?.[0];
-      if (choice?.message?.content) yield { type: 'text', delta: choice.message.content };
-      const r = choice?.message ? reasoningFromDelta(choice.message as Record<string, unknown>) : undefined;
-      if (r) yield { type: 'reasoning', delta: r };
-      for (const tc of choice?.message?.tool_calls ?? []) {
-        yield {
-          type: 'tool_call',
-          call: { id: tc.id ?? String(Math.random()), name: tc.function?.name ?? '', arguments: tc.function?.arguments ?? '{}' },
-        };
-      }
-      if (json.usage) {
-        const cached = (json.usage.prompt_tokens_details as Record<string, number> | undefined)?.cached_tokens;
-        yield { type: 'usage', inputTokens: json.usage.prompt_tokens, outputTokens: json.usage.completion_tokens, cachedTokens: cached };
-      }
-      yield { type: 'finish', reason: choice?.finish_reason ?? 'stop' };
+      for (const ev of openAIJsonEvents(json)) yield ev;
+      return;
+    }
+
+    // C07: the server ignored `stream: true` and answered plain JSON. A
+    // content-type check catches that before the SSE parser chokes on it;
+    // a missing header still falls through to SSE (some servers omit it).
+    const contentType = res.headers.get('content-type') ?? '';
+    if (!contentType.includes('text/event-stream') && contentType.includes('application/json')) {
+      const json = (await res.json()) as OpenAIChunk;
+      for (const ev of openAIJsonEvents(json)) yield ev;
       return;
     }
 
@@ -133,19 +283,14 @@ export const openAICompatibleAdapter: LLMProviderAdapter = {
     for await (const chunk of sseJson<OpenAIChunk>(res.body)) {
       // The usage chunk legitimately has `choices: []` — never index blindly.
       if (chunk.usage) {
-        const cached = (chunk.usage.prompt_tokens_details as Record<string, number> | undefined)?.cached_tokens;
-        yield {
-          type: 'usage',
-          inputTokens: chunk.usage.prompt_tokens,
-          outputTokens: chunk.usage.completion_tokens,
-          cachedTokens: cached,
-        };
+        yield { type: 'usage', ...openAIUsage(chunk.usage) };
       }
       const choice = chunk.choices?.[0];
       if (!choice) continue;
       const delta = choice.delta ?? {};
-      if (typeof delta.content === 'string' && delta.content) {
-        yield { type: 'text', delta: delta.content };
+      const text = openAITextContent(delta.content);
+      if (text) {
+        yield { type: 'text', delta: text };
       }
       const reasoning = reasoningFromDelta(delta as Record<string, unknown>);
       if (reasoning) yield { type: 'reasoning', delta: reasoning };
@@ -182,6 +327,8 @@ interface OpenAIChunk {
     prompt_tokens?: number;
     completion_tokens?: number;
     prompt_tokens_details?: { cached_tokens?: number };
+    /** OpenAI reports reasoning tokens here (o1 / DeepSeek-R1 style). */
+    completion_tokens_details?: { reasoning_tokens?: number };
   };
 }
 
@@ -193,7 +340,7 @@ function toOpenAIMessages(messages: LLMMessage[]): unknown[] {
     if (m.role === 'assistant' && m.toolCalls?.length) {
       return {
         role: 'assistant',
-        content: m.content || null,
+        content: openAIContent(m),
         tool_calls: m.toolCalls.map((t) => ({
           id: t.id,
           type: 'function',
@@ -201,7 +348,7 @@ function toOpenAIMessages(messages: LLMMessage[]): unknown[] {
         })),
       };
     }
-    const out: Record<string, unknown> = { role: m.role, content: m.content };
+    const out: Record<string, unknown> = { role: m.role, content: openAIContent(m) };
     if (m.name) out.name = m.name;
     return out;
   });
@@ -282,7 +429,7 @@ export const anthropicAdapter: LLMProviderAdapter = {
       max_tokens: req.maxTokens && req.maxTokens > 0 ? req.maxTokens : 4096,
       messages: turns.map((m) => ({
         role: m.role === 'assistant' ? 'assistant' : 'user',
-        content: m.content,
+        content: anthropicContent(m),
       })),
       stream: req.stream !== false,
     };
@@ -309,6 +456,30 @@ export const anthropicAdapter: LLMProviderAdapter = {
 
     if (!res.ok) {
       yield { type: 'error', message: await describeHttpError(res) };
+      return;
+    }
+    // C07: non-SSE JSON answer to a streaming request — parse it as one
+    // message instead of feeding it to the SSE parser.
+    const anthropicCt = res.headers.get('content-type') ?? '';
+    if (!anthropicCt.includes('text/event-stream') && anthropicCt.includes('application/json')) {
+      const json = (await res.json()) as {
+        content?: Array<{ type?: string; text?: string; thinking?: string }>;
+        usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number };
+        stop_reason?: string;
+      };
+      for (const block of json.content ?? []) {
+        if (block.type === 'text' && block.text) yield { type: 'text', delta: block.text };
+        else if (block.type === 'thinking' && block.thinking) yield { type: 'reasoning', delta: block.thinking };
+      }
+      if (json.usage) {
+        yield {
+          type: 'usage',
+          inputTokens: json.usage.input_tokens,
+          outputTokens: json.usage.output_tokens,
+          cachedTokens: json.usage.cache_read_input_tokens,
+        };
+      }
+      yield { type: 'finish', reason: json.stop_reason ?? 'stop' };
       return;
     }
     if (!res.body) {
@@ -391,7 +562,7 @@ export const geminiAdapter: LLMProviderAdapter = {
       .map((m) => ({
         // Gemini calls the assistant role "model", not "assistant".
         role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
+        parts: geminiParts(m),
       }));
 
     const generationConfig: Record<string, unknown> = {};
@@ -427,10 +598,30 @@ export const geminiAdapter: LLMProviderAdapter = {
         content?: { parts?: Array<{ text?: string; thought?: boolean }> };
         finishReason?: string;
       }>;
-      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+      usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
     };
 
     let finishReason = 'stop';
+    // C07: the stream endpoint answered plain JSON instead of SSE.
+    const geminiCt = res.headers.get('content-type') ?? '';
+    if (isStream && !geminiCt.includes('text/event-stream') && geminiCt.includes('application/json')) {
+      const json = (await res.json()) as GeminiResp;
+      for (const part of json.candidates?.[0]?.content?.parts ?? []) {
+        if (!part.text) continue;
+        if (part.thought) yield { type: 'reasoning', delta: part.text };
+        else yield { type: 'text', delta: part.text };
+      }
+      if (json.usageMetadata) {
+        yield {
+          type: 'usage',
+          inputTokens: json.usageMetadata.promptTokenCount,
+          outputTokens: json.usageMetadata.candidatesTokenCount,
+          reasoningTokens: json.usageMetadata.thoughtsTokenCount,
+        };
+      }
+      yield { type: 'finish', reason: json.candidates?.[0]?.finishReason ?? 'stop' };
+      return;
+    }
     if (!isStream) {
       const json = (await res.json()) as GeminiResp;
       for (const part of json.candidates?.[0]?.content?.parts ?? []) {
@@ -443,6 +634,7 @@ export const geminiAdapter: LLMProviderAdapter = {
           type: 'usage',
           inputTokens: json.usageMetadata.promptTokenCount,
           outputTokens: json.usageMetadata.candidatesTokenCount,
+          reasoningTokens: json.usageMetadata.thoughtsTokenCount,
         };
       }
       yield { type: 'finish', reason: json.candidates?.[0]?.finishReason ?? 'stop' };
@@ -467,6 +659,7 @@ export const geminiAdapter: LLMProviderAdapter = {
           type: 'usage',
           inputTokens: chunk.usageMetadata.promptTokenCount,
           outputTokens: chunk.usageMetadata.candidatesTokenCount,
+          reasoningTokens: chunk.usageMetadata.thoughtsTokenCount,
         };
       }
     }
@@ -509,5 +702,5 @@ export const BUILTIN_ADAPTERS: LLMProviderAdapter[] = [
 ];
 
 /** Exported for tests. */
-export const __internal = { toOpenAIMessages, assignSamplers, reasoningFromDelta };
+export const __internal = { toOpenAIMessages, assignSamplers, reasoningFromDelta, openAIContent, anthropicContent, geminiParts, parseDataUrl, openAITextContent, openAIReasoningContent };
 export type { LLMToolCall };

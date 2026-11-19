@@ -16,6 +16,8 @@ export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
 export interface LLMMessage {
   role: ChatRole;
   content: string;
+  /** User-attached pictures (data URLs), sent as multimodal content. */
+  imageUrls?: string[];
   /** Tool call id for `role: 'tool'` results. */
   toolCallId?: string;
   /** For assistant messages that requested tools. */
@@ -63,7 +65,7 @@ export type LLMStreamEvent =
   | { type: 'text'; delta: string }
   | { type: 'reasoning'; delta: string }
   | { type: 'tool_call'; call: LLMToolCall }
-  | { type: 'usage'; inputTokens?: number; outputTokens?: number; cachedTokens?: number }
+  | { type: 'usage'; inputTokens?: number; outputTokens?: number; cachedTokens?: number; reasoningTokens?: number }
   | { type: 'finish'; reason: string }
   | { type: 'error'; message: string };
 
@@ -72,7 +74,7 @@ export interface LLMResult {
   reasoning?: string;
   toolCalls: LLMToolCall[];
   finishReason?: string;
-  usage?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number };
+  usage?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number; reasoningTokens?: number };
 }
 
 /** A connection = provider kind + endpoint + credential + defaults. */
@@ -158,7 +160,12 @@ export async function collectStream(gen: AsyncGenerator<LLMStreamEvent>): Promis
         toolCalls.push(ev.call);
         break;
       case 'usage':
-        usage = { inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, cachedTokens: ev.cachedTokens };
+        usage = {
+          inputTokens: ev.inputTokens,
+          outputTokens: ev.outputTokens,
+          cachedTokens: ev.cachedTokens,
+          reasoningTokens: ev.reasoningTokens,
+        };
         break;
       case 'finish':
         finishReason = ev.reason;

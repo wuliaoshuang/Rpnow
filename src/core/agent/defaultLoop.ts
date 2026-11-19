@@ -31,13 +31,21 @@ export const defaultAgentLoop: AgentLoop = {
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
     let cachedTokens: number | undefined;
+    let reasoningTokens: number | undefined;
     const toolTrace: AgentResult['toolTrace'] = [];
+    // Calls the model asked for in the current round, before any of them
+    // have run — on abort these are the "unfinished tool queue" (C08).
+    let currentRoundCalls: LLMToolCall[] = [];
+    let executedInRound = 0;
 
+    try {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       steps++;
       let roundText = '';
       let roundReasoning = '';
       const toolCalls: LLMToolCall[] = [];
+      currentRoundCalls = [];
+      executedInRound = 0;
 
       const stream = llm.stream(opts.connectionId, {
         model: opts.model,
@@ -62,12 +70,14 @@ export const defaultAgentLoop: AgentLoop = {
             break;
           case 'tool_call':
             toolCalls.push(ev.call);
+            currentRoundCalls.push(ev.call);
             opts.onEvent?.(ev);
             break;
           case 'usage':
             inputTokens = ev.inputTokens ?? inputTokens;
             outputTokens = ev.outputTokens ?? outputTokens;
             cachedTokens = ev.cachedTokens ?? cachedTokens;
+            reasoningTokens = ev.reasoningTokens ?? reasoningTokens;
             opts.onEvent?.(ev);
             break;
           case 'finish':
@@ -97,6 +107,7 @@ export const defaultAgentLoop: AgentLoop = {
           result = { error: err instanceof Error ? err.message : String(err) };
         }
         toolTrace.push({ name: call.name, args, result });
+        executedInRound++;
         messages.push({
           role: 'tool',
           toolCallId: call.id,
@@ -107,12 +118,26 @@ export const defaultAgentLoop: AgentLoop = {
       fullText = fullText.slice(0, fullText.length - roundText.length);
       if (opts.context.stopOnToolResult) break;
     }
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') {
+        // C08: mark the calls that never ran (still queued when the user hit
+        // stop, or cut off mid-stream) so the timeline can show them instead
+        // of silently dropping the queue. Completed calls are already traced.
+        for (const call of currentRoundCalls.slice(executedInRound)) {
+          toolTrace.push({ name: call.name, args: parseArgs(call.arguments), result: { error: '生成已中止' } });
+        }
+        if (toolTrace.length) {
+          (err as Error & { toolTrace?: AgentResult['toolTrace'] }).toolTrace = toolTrace;
+        }
+      }
+      throw err;
+    }
 
     return {
       text: fullText,
       reasoning: reasoning || undefined,
       steps,
-      usage: { inputTokens, outputTokens, cachedTokens },
+      usage: { inputTokens, outputTokens, cachedTokens, reasoningTokens },
       toolTrace: toolTrace.length ? toolTrace : undefined,
     };
   },

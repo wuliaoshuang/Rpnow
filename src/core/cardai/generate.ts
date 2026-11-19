@@ -269,6 +269,121 @@ export function cleanFirstMessage(text: string): string {
   return text.replace(/\*\*([^*]*)\*\*/g, '$1').replace(/^\s*[-*]\s+/gm, '').trim();
 }
 
+// ---------------------------------------------------------------- P02/P03
+
+/**
+ * Card-generation progress (P02, RP-Hub parity).
+ *
+ * RP-Hub counts sections as the model streams them: the 7 base sections are
+ * worth 60%, the Regex Scripts section adds 20%, and the final 20% only lands
+ * when generation finishes — so a stream stuck at 80% means "regex done, still
+ * writing", not "almost done". Status strings mirror RP-Hub's
+ * 准备中/等待API响应/正在思考/正在生成/生成完成/生成失败.
+ */
+export const CARD_GEN_BASE_SECTIONS = [
+  'name',
+  'description',
+  'personality',
+  'scenario',
+  'first message',
+  'post history instructions',
+  'creator notes',
+] as const;
+
+export const CARD_GEN_TOTAL_SECTIONS = 10;
+
+export type CardGenStatus =
+  | 'preparing'
+  | 'waiting'
+  | 'thinking'
+  | 'generating'
+  | 'done'
+  | 'failed';
+
+export const CARD_GEN_STATUS_TEXT: Record<CardGenStatus, string> = {
+  preparing: '准备中',
+  waiting: '等待API响应',
+  thinking: '正在思考',
+  generating: '正在生成',
+  done: '生成完成',
+  failed: '生成失败',
+};
+
+/** Which section headings have appeared in the streamed text so far. */
+export function cardGenSectionsSeen(text: string): {
+  baseDone: number;
+  hasAvatarPrompt: boolean;
+  hasWorldInfo: boolean;
+  hasRegex: boolean;
+  totalDone: number;
+} {
+  const seen = (label: string) => new RegExp(`^#{1,6}\\s*${label}\\b`, 'im').test(text);
+  const baseDone = CARD_GEN_BASE_SECTIONS.filter((s) => seen(s)).length;
+  const hasAvatarPrompt = seen('avatar prompt');
+  const hasWorldInfo = seen('world info');
+  const hasRegex = seen('regex');
+  const totalDone =
+    baseDone + (hasAvatarPrompt ? 1 : 0) + (hasWorldInfo ? 1 : 0) + (hasRegex ? 1 : 0);
+  return { baseDone, hasAvatarPrompt, hasWorldInfo, hasRegex, totalDone };
+}
+
+/**
+ * Progress while streaming: 60% for the 7 base sections, +20% once the Regex
+ * Scripts heading appears, capped at 80% until the caller reports completion
+ * (`done: true` → 100%).
+ */
+export function cardGenProgress(text: string, done = false): number {
+  if (done) return 100;
+  const { baseDone, hasRegex } = cardGenSectionsSeen(text);
+  return Math.min(80, Math.round((60 * baseDone) / CARD_GEN_BASE_SECTIONS.length) + (hasRegex ? 20 : 0));
+}
+
+/**
+ * Gemini truncation check (P03, RP-Hub parity).
+ *
+ * Gemini often stops before the tail of a long card: the `<image>` avatar
+ * block and/or the `### Regex Scripts` section go missing. When either is
+ * missing on a Gemini model, the caller should retry once via `output_reply`.
+ */
+export function cardGenMissingParts(text: string): { missingImage: boolean; missingRegex: boolean } {
+  const sections = parseCardSections(text);
+  const hasImageBlock = /<image>[\s\S]*?<\/image>/i.test(text);
+  const missingImage = !hasImageBlock && !sections.avatarPrompt.trim();
+  const missingRegex = !cardGenSectionsSeen(text).hasRegex;
+  return { missingImage, missingRegex };
+}
+
+/** True when a Gemini reply lost its tail and deserves one `output_reply` retry. */
+export function shouldRetryCardGen(text: string, model: string): boolean {
+  if (!/gemini/i.test(model)) return false;
+  const { missingImage, missingRegex } = cardGenMissingParts(text);
+  return missingImage || missingRegex;
+}
+
+/** The `output_reply` tool definition, in the LLM service's tool shape. */
+export function outputReplyToolDef(): { name: string; description: string; parameters: Record<string, unknown> } {
+  return {
+    name: 'output_reply',
+    description: '提交正文回复。将完整正文放入 content，不要省略或截断。',
+    parameters: {
+      type: 'object',
+      properties: { content: { type: 'string', description: '完整回复正文' } },
+      required: ['content'],
+    },
+  };
+}
+
+/** Pull the reply text out of an `output_reply` tool call (arguments are JSON). */
+export function extractOutputReplyContent(toolCall: { name: string; arguments: string }): string | null {
+  if (toolCall.name !== 'output_reply') return null;
+  try {
+    const args = JSON.parse(toolCall.arguments) as { content?: unknown };
+    return typeof args.content === 'string' ? args.content : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Normalise generated world-info entries. */
 export function coerceWorldInfo(value: unknown): Array<Record<string, unknown>> {
   const list = Array.isArray(value) ? value : value && typeof value === 'object' ? (value as { entries?: unknown[] }).entries ?? [value] : [];

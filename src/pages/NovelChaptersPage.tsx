@@ -180,6 +180,21 @@ setStreamText('');
 }
 };
 
+/**
+ * Q08: directory click → scroll to chapter (RP-Hub `scrollToChapter`).
+ * Expands only the target chapter, then smooth-scrolls to it after 400ms
+ * so the expand has laid out first.
+ */
+const scrollToChapter = (index: number) => {
+  updateBook((b) => ({
+    ...b,
+    chapters: b.chapters.map((c, ci) => ({ ...c, isExpanded: ci === index })),
+  }));
+  window.setTimeout(() => {
+    document.getElementById(`novel-chapter-${index}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 400);
+};
+
 const addBlankChapter = () => {
 const n = book.chapters.length + 1;
 const chapter: NovelChapter = {
@@ -344,6 +359,24 @@ return (
 还没有章节。点上面「提笔续写」让 AI 写，或新建一章自己写。
 </p>
 ): (
+<>
+{/* Q08: 目录 —— 点某章展开它并滚动定位到那一章。 */}
+<div className="rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-3">
+<p className="text-[12px] font-semibold text-[var(--rp-fg-muted)]">目录 · {book.chapters.length} 章</p>
+<div className="mt-2 flex flex-wrap gap-1.5">
+{book.chapters.map((chapter, i) => (
+<button
+key={i}
+type="button"
+onClick={() => scrollToChapter(i)}
+aria-label={`跳到第 ${i + 1} 章 ${chapter.title || '未命名章节'}`}
+className="max-w-full cursor-pointer truncate rounded-full border border-[var(--rp-border)] px-2.5 py-1 text-[11.5px] text-[var(--rp-fg-muted)] hover:border-[var(--rp-accent)] hover:text-[var(--rp-fg)]"
+>
+第 {i + 1} 章 {chapter.title || '未命名章节'}
+</button>
+))}
+</div>
+</div>
 <ul className="space-y-2">
 {book.chapters.map((chapter, i) => (
 <li key={i} id={`novel-chapter-${i}`} className="overflow-hidden rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)]">
@@ -638,6 +671,7 @@ className="mt-0.5 inline-flex cursor-pointer items-center gap-1 text-[10.5px] te
 </li>
 ))}
 </ul>
+</>
 )}
 </div>
 </div>

@@ -53,7 +53,7 @@ export interface AgentResult {
   reasoning?: string;
   /** Number of upstream model round-trips the loop performed. */
   steps: number;
-  usage?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number };
+  usage?: { inputTokens?: number; outputTokens?: number; cachedTokens?: number; reasoningTokens?: number };
   toolTrace?: Array<{ name: string; args: unknown; result: unknown }>;
 }
 

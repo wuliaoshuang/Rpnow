@@ -6,10 +6,13 @@
  */
 
 import * as React from 'react';
-import { Code2, Plus, Trash2 } from 'lucide-react';
+import { Code2, Download, Plus, Trash2 } from 'lucide-react';
 import { useApp } from '@/state/store.js';
 import { createTemplate, type RPUITemplate } from '@/core/uitemplate/types.js';
 import { renderTemplate } from '@/core/uitemplate/engine.js';
+import { uiTemplatesExportDoc } from '@/core/export/selective.js';
+import { ExportSelectionModal } from '@/components/export/ExportSelectionModal.js';
+import { downloadBlob, safeFilename } from '@/lib/utils.js';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Slider, Switch, Textarea } from '@/components/ui/input';
 import { toast } from '@/components/ui/toast.js';
@@ -24,6 +27,8 @@ export function TemplateSettingsPanel() {
   const cards = useApp((s) => s.cards);
 
   const [editingId, setEditingId] = React.useState<string | null>(null);
+  /** O07: selective export sheet for UI templates. */
+  const [exportOpen, setExportOpen] = React.useState(false);
   const patchSettings = (p: Partial<typeof settings.uiTemplate>) =>
     setSettings({ uiTemplate: { ...settings.uiTemplate, ...p } });
 
@@ -116,9 +121,14 @@ export function TemplateSettingsPanel() {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <p className="text-[12.5px] font-semibold">模板列表</p>
-              <Button size="sm" variant="outline" onClick={startNew}>
-                <Plus className="size-3.5" aria-hidden="true" /> 新建模板
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button size="sm" variant="outline" onClick={() => setExportOpen(true)} disabled={!templates.length}>
+                  <Download className="size-3.5" aria-hidden="true" /> 导出
+                </Button>
+                <Button size="sm" variant="outline" onClick={startNew}>
+                  <Plus className="size-3.5" aria-hidden="true" /> 新建模板
+                </Button>
+              </div>
             </div>
 
             {templates.length === 0 ? (
@@ -176,6 +186,33 @@ export function TemplateSettingsPanel() {
               onClose={() => setEditingId(null)}
             />
           )}
+
+          <ExportSelectionModal
+            open={exportOpen}
+            onOpenChange={setExportOpen}
+            title="选择性导出 UI 模板"
+            description="只导出勾选的模板（{type, templates} 格式）。"
+            groups={[
+              {
+                id: 'templates',
+                label: 'UI 模板',
+                items: templates.map((t) => ({
+                  id: t.id,
+                  label: t.name,
+                  hint: t.scope === 'global' ? '全局' : '角色',
+                })),
+              },
+            ]}
+            onExport={(selected) => {
+              const ids = new Set(selected.templates ?? []);
+              const picked = templates.filter((t) => ids.has(t.id));
+              downloadBlob(
+                new Blob([JSON.stringify(uiTemplatesExportDoc(picked), null, 2)], { type: 'application/json' }),
+                safeFilename('UI模板精选', 'json'),
+              );
+              toast.success(`已导出 ${picked.length} 个 UI 模板`);
+            }}
+          />
         </>
       )}
     </div>

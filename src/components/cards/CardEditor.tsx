@@ -283,6 +283,19 @@ export function CardEditor({ card, onClose }: CardEditorProps) {
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           <CardEditDiffButton
             card={card as RPCard}
+            getCurrentCard={() =>
+              ({
+                ...(card ?? {
+                  id: uid('c'),
+                  spec: 'v2',
+                  specVersion: '2.0',
+                  createdAt: Date.now(),
+                  updatedAt: Date.now(),
+                }),
+                data,
+                avatar,
+              }) as RPCard
+            }
             onApplied={(next) => {
               if (!next) return;
               setData(next.data);

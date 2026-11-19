@@ -8,9 +8,11 @@
 
 import * as React from 'react';
 import {
+  Check,
   Download,
   FileArchive,
   IdCard,
+  Layers,
   Pencil,
   Plus,
   Search,
@@ -22,6 +24,7 @@ import {
   List,
   LayoutGrid,
   Store,
+  X,
 } from 'lucide-react';
 import { cn, downloadBlob, safeFilename, uid } from '@/lib/utils';
 import { useApp } from '@/state/store.js';
@@ -59,7 +62,14 @@ import { toast } from '@/components/ui/toast.js';
 import { vibrate } from '@/lib/haptics';
 import { CardEditor } from '@/components/cards/CardEditor.js';
 import { ImportDialog } from '@/components/cards/ImportDialog.js';
+import { ExportSelectionModal } from '@/components/export/ExportSelectionModal.js';
+import { loreItemId, regexItemId, selectiveCard } from '@/core/export/selective.js';
+import type { RPRegexScript } from '@/core/types/card.js';
+import { CharacterDeck } from '@/components/cards/CharacterDeck.js';
 import { confirmAction } from '@/components/ui/confirm.js';
+
+/** Long-press threshold for entering selection mode (same as the novel bookshelf). */
+const LONG_PRESS_MS = 500;
 
 export interface CardLibraryProps {
   onStartChat: (cardId: string) => void;
@@ -72,6 +82,7 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
   const addCard = useApp((s) => s.addCard);
   const saveChat = useApp((s) => s.saveChat);
   const settings = useApp((s) => s.settings);
+  const setSettings = useApp((s) => s.setSettings);
   const personas = useApp((s) => s.personas);
   const setActiveChat = useApp((s) => s.setActiveChat);
 
@@ -82,8 +93,16 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
   const [aiOpen, setAiOpen] = React.useState(false);
   /** 创建角色子页面（＋ 的唯一去向）。 */
   const [createOpen, setCreateOpen] = React.useState(false);
-  /** Card layout: Tavo offers both a poster grid and a compact list. */
-  const [view, setView] = React.useState<'grid' | 'list'>('grid');
+  /** Card layout: Tavo offers both a poster grid and a compact list; RP-Hub adds a stacked deck. */
+  const [view, setView] = React.useState<'grid' | 'list' | 'deck'>('grid');
+  /** Batch-delete selection (long-press a card to enter, tap to toggle). */
+  const [selectedIds, setSelectedIds] = React.useState<ReadonlySet<string>>(new Set());
+  const selecting = selectedIds.size > 0;
+  const longPressTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressed = React.useRef(false);
+  /** Pointer position where the current long-press started (move cancels it). */
+  const longPressStart = React.useRef<{ x: number; y: number } | null>(null);
+  const lastPointerType = React.useRef<string>('mouse');
   /** Card whose long-press action menu is open. */
   const [menuCard, setMenuCard] = React.useState<RPCard | null>(null);
   /** Card id being published to the marketplace (opens the wizard). */
@@ -91,6 +110,8 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
   const [introCard, setIntroCard] = React.useState<RPCard | null>(null);
   const [importing, setImporting] = React.useState(false);
   const [importResult, setImportResult] = React.useState<Awaited<ReturnType<typeof importFiles>> | null>(null);
+  /** Card open in the selective-export sheet (P10). */
+  const [exportingCard, setExportingCard] = React.useState<RPCard | null>(null);
   const fileInput = React.useRef<HTMLInputElement>(null);
 
   const setHideTopbar = useApp((s) => s.setHideTopbar);
@@ -145,6 +166,7 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
       saveInstalledSource({ id: storeId, kind: item.manifest.type, version, installedAt: new Date().toISOString(), source: 'market' });
       void recordInstall(storeId).catch(() => {});
       toast.success(`已安装「${item.manifest.name}」`);
+      void askAutoImageGen(1);
       setCreateOpen(false);
       setIntroCard(parsed.card);
     } catch (err) {
@@ -168,6 +190,87 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
       .sort((a, b) => Number(b.favorite ?? false) - Number(a.favorite ?? false) || b.updatedAt - a.updatedAt);
   }, [cards, query]);
 
+  const clearLongPress = React.useCallback(() => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+    longPressStart.current = null;
+  }, []);
+
+  React.useEffect(() => clearLongPress, [clearLongPress]);
+
+  const toggleSelect = React.useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  /** Begin a long-press: after 500ms the card joins the selection. */
+  const beginLongPress = React.useCallback(
+    (e: React.PointerEvent, id: string) => {
+      lastPointerType.current = e.pointerType;
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      longPressed.current = false;
+      clearLongPress();
+      longPressStart.current = { x: e.clientX, y: e.clientY };
+      longPressTimer.current = setTimeout(() => {
+        longPressed.current = true;
+        vibrate('tap');
+        toggleSelect(id);
+      }, LONG_PRESS_MS);
+    },
+    [clearLongPress, toggleSelect],
+  );
+
+  /**
+   * Cancel a pending long-press once the pointer actually moves away.
+   * Deliberately NOT onPointerLeave: the grid's stagger-in animation moves
+   * tiles under a stationary pointer, and that leave would cancel a
+   * legitimate long-press before the timer fires.
+   */
+  const cancelLongPressOnMove = React.useCallback(
+    (e: React.PointerEvent) => {
+      const start = longPressStart.current;
+      if (!start) return;
+      if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) {
+        clearLongPress();
+      }
+    },
+    [clearLongPress],
+  );
+
+  /** Switch views; the deck is for browsing, so selection is left behind. */
+  function switchView(next: 'grid' | 'list' | 'deck') {
+    vibrate('tap');
+    if (next === 'deck') setSelectedIds(new Set());
+    setView(next);
+  }
+
+  const handleDeleteSelected = React.useCallback(async () => {
+    const count = selectedIds.size;
+    if (count === 0) return;
+    const label =
+      count === 1
+        ? `「${cards.find((c) => selectedIds.has(c.id))?.data.name ?? ''}」`
+        : `${count} 张角色卡`;
+    if (
+      !(await confirmAction({
+        title: '确认操作',
+        description: `删除${label}？相关对话不会被删除，此操作无法撤销。`,
+      }))
+    )
+      return;
+    // One deletion per card, awaited in sequence: each removeCard reads the
+    // fresh list from the store, so the next call sees the previous deletion.
+    for (const id of selectedIds) await removeCard(id);
+    setSelectedIds(new Set());
+    toast.success(`已删除 ${count} 张角色卡`);
+  }, [selectedIds, cards, removeCard]);
+
   async function handleFiles(files: FileList | File[]) {
     const arr = Array.from(files);
     if (!arr.length) return;
@@ -182,11 +285,55 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
       setImportResult(res);
       if (res.cards.length) {
         toast.success(`已导入 ${res.cards.length} 张角色卡`, extras ? `另有 ${extras} 个世界书/预设已识别` : undefined);
+        // R07: RP-Hub asks after a card import whether to turn on auto image gen.
+        void askAutoImageGen(res.cards.length);
+      } else if (res.regexScripts.length) {
+        toast.success(`已导入 ${res.regexScripts.length} 条正则脚本`, '可在导入结果里附加到角色卡');
       } else if (res.outcomes.some((o) => o.kind === 'error')) {
         toast.error('导入失败', res.outcomes.find((o) => o.kind === 'error')?.message);
       }
     } finally {
       setImporting(false);
+    }
+  }
+
+  /** R07: ask once after an import whether replies should auto-generate images. */
+  async function askAutoImageGen(count: number) {
+    if (settings.imageGen.autoGenerate) return;
+    const ok = await confirmAction({
+      title: '开启自动生图？',
+      description: `已导入 ${count} 张角色卡，是否在每次助手回复后自动生成配图？`,
+      confirmText: '立即开启',
+      cancelText: '暂不开启',
+    });
+    if (!ok) return;
+    setSettings({ imageGen: { ...settings.imageGen, autoGenerate: true } });
+    toast.success('已开启自动生图', settings.imageGen.key ? undefined : '还需在设置里配置生图密钥');
+  }
+
+  /** P09: attach imported standalone regex scripts to one of the user's cards. */
+  async function attachRegexScripts(scripts: RPRegexScript[], cardId: string) {
+    const target = cards.find((c) => c.id === cardId);
+    if (!target) return;
+    const existing = (target.data.extensions?.regex_scripts as RPRegexScript[] | undefined) ?? [];
+    await updateCard(cardId, (c) => ({
+      ...c,
+      data: {
+        ...c.data,
+        extensions: { ...c.data.extensions, regex_scripts: [...existing, ...scripts] },
+      },
+    }));
+    toast.success(`已把 ${scripts.length} 条正则附加到「${target.data.name}」`);
+  }
+
+  /** P10: export a card with only the checked lorebook entries / regex scripts. */
+  function exportCardSelective(card: RPCard, selected: Record<string, string[]>) {
+    try {
+      const picked = selectiveCard(card, selected.lorebook ?? [], selected.regex ?? []);
+      downloadBlob(toJsonBlob(picked, card.spec === 'v3' ? 'v3' : 'v2'), safeFilename(`${card.data.name}-精选`, 'json'));
+      toast.success('已导出选中内容');
+    } catch (err) {
+      toast.error('导出失败', err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -296,18 +443,38 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
           phone were unreadable and crowded together.
         */}
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label={view === 'grid' ? '切换为列表视图' : '切换为网格视图'}
-            onClick={() => {
-              vibrate('tap');
-              setView((v) => (v === 'grid' ? 'list' : 'grid'));
-            }}
-          >
-            {view === 'grid' ? <List className="size-4" aria-hidden="true" /> : <LayoutGrid className="size-4" aria-hidden="true" />}
-            {view === 'grid' ? '列表' : '网格'}
-          </Button>
+          <div className="flex shrink-0 items-center gap-1" role="group" aria-label="卡库视图">
+            <Button
+              variant={view === 'grid' ? 'secondary' : 'ghost'}
+              size="sm"
+              aria-label="网格视图"
+              aria-pressed={view === 'grid'}
+              onClick={() => switchView('grid')}
+            >
+              <LayoutGrid className="size-4" aria-hidden="true" />
+              网格
+            </Button>
+            <Button
+              variant={view === 'list' ? 'secondary' : 'ghost'}
+              size="sm"
+              aria-label="列表视图"
+              aria-pressed={view === 'list'}
+              onClick={() => switchView('list')}
+            >
+              <List className="size-4" aria-hidden="true" />
+              列表
+            </Button>
+            <Button
+              variant={view === 'deck' ? 'secondary' : 'ghost'}
+              size="sm"
+              aria-label="叠卡视图"
+              aria-pressed={view === 'deck'}
+              onClick={() => switchView('deck')}
+            >
+              <Layers className="size-4" aria-hidden="true" />
+              叠卡
+            </Button>
+          </div>
           <input
             ref={fileInput}
             type="file"
@@ -329,8 +496,8 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
         </div>
       </div>
 
-      {/* Grid */}
-      <div className="rp-scroll min-h-0 flex-1 overflow-y-auto p-3 sm:p-5">
+      {/* Grid / list / deck */}
+      <div className={`rp-scroll min-h-0 flex-1 overflow-y-auto p-3 sm:p-5${selecting ? ' pb-24' : ''}`}>
         {filtered.length === 0 ? (
           <EmptyState
             icon={<IdCard className="size-6" aria-hidden="true" />}
@@ -353,6 +520,12 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
               )
             }
           />
+        ) : view === 'deck' ? (
+          <CharacterDeck
+            cards={filtered}
+            onOpen={(card) => setIntroCard(card)}
+            onStartChat={(card) => startChat(card)}
+          />
         ) : view === 'list' ? (
           /* Compact list: round portrait, name, and the card's own metadata —
              matches the second reference screenshot. */
@@ -362,23 +535,46 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
               const creator = card.data.creator;
               const version = card.data.character_version;
               const spec = card.specVersion || card.spec;
+              const isSelected = selectedIds.has(card.id);
               return (
                 <li key={card.id}>
-                  <div className="flex items-center gap-3 px-1 py-3 transition-colors hover:bg-[var(--rp-bg-sunken)]/50">
+                  <div
+                    className={`flex items-center gap-3 px-1 py-3 transition-colors hover:bg-[var(--rp-bg-sunken)]/50${isSelected ? ' bg-[var(--rp-accent-soft)]/40' : ''}`}
+                    onContextMenu={(e) => e.preventDefault()}
+                    onPointerDown={(e) => beginLongPress(e, card.id)}
+                    onPointerUp={clearLongPress}
+                    onPointerMove={cancelLongPressOnMove}
+                    onPointerCancel={clearLongPress}
+                    onClick={() => {
+                      if (selecting) toggleSelect(card.id);
+                    }}
+                  >
                     <button
                       type="button"
-                      onClick={() => {
+                      onClick={(e) => {
+                        if (longPressed.current) {
+                          longPressed.current = false;
+                          e.stopPropagation();
+                          return;
+                        }
+                        if (selecting) return;
                         vibrate('tap');
                         startChat(card);
                       }}
-                      aria-label={`和 ${card.data.name} 开始对话`}
-                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
+                      aria-label={selecting ? `选择 ${card.data.name}` : `和 ${card.data.name} 开始对话`}
+                      aria-pressed={selecting ? isSelected : undefined}
+                      className="flex min-w-0 flex-1 cursor-pointer select-none items-center gap-3 text-left [-webkit-touch-callout:none]"
                     >
-                      <span className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--rp-bg-sunken)] text-[16px] font-semibold text-[var(--rp-fg-muted)]">
+                      <span className="relative flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--rp-bg-sunken)] text-[16px] font-semibold text-[var(--rp-fg-muted)]">
                         {card.avatar ? (
                           <img src={card.avatar} alt="" className="size-full object-cover" loading="lazy" />
                         ) : (
                           card.data.name.slice(0, 1)
+                        )}
+                        {isSelected && (
+                          <span className="absolute inset-0 flex items-center justify-center bg-black/40">
+                            <Check className="size-5 text-white" aria-hidden="true" />
+                          </span>
                         )}
                       </span>
                       <span className="min-w-0 flex-1">
@@ -407,6 +603,7 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
                         <span className="sr-only">{spec}</span>
                       </span>
                     </button>
+                    {!selecting && (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button
@@ -439,6 +636,7 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
+                    )}
                   </div>
                 </li>
               );
@@ -447,6 +645,7 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
         ) : (
           <ul className="rp-anim-stagger grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {filtered.map((card) => {
+              const isSelected = selectedIds.has(card.id);
               /*
                * Pure poster card, matching the reference: the art fills the
                * tile, the name sits on a bottom gradient scrim, and the ⋮ menu
@@ -457,24 +656,41 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
               return (
                 <li key={card.id}>
                   <article
-                    className="rp-tap-card group relative aspect-[3/4] w-full overflow-hidden rounded-2xl bg-[var(--rp-bg-sunken)]"
+                    className={`rp-tap-card group relative aspect-[3/4] w-full select-none overflow-hidden rounded-2xl bg-[var(--rp-bg-sunken)] [-webkit-touch-callout:none]${isSelected ? ' ring-2 ring-[var(--rp-accent)] ring-offset-2 ring-offset-[var(--rp-bg)]' : ''}`}
                     onContextMenu={(e) => {
-                      // Long-press / right-click → action menu.
                       e.preventDefault();
+                      // Touch long-press belongs to selection mode; only a
+                      // mouse right-click opens the action menu here.
+                      if (lastPointerType.current !== 'mouse') return;
+                      if (longPressed.current) return;
                       vibrate('tap');
                       setMenuCard(card);
+                    }}
+                    onPointerDown={(e) => beginLongPress(e, card.id)}
+                    onPointerUp={clearLongPress}
+                    onPointerMove={cancelLongPressOnMove}
+                    onPointerCancel={clearLongPress}
+                    onClick={() => {
+                      if (selecting) toggleSelect(card.id);
                     }}
                   >
                     <button
                       type="button"
-                      onClick={() => {
+                      onClick={(e) => {
+                        if (longPressed.current) {
+                          longPressed.current = false;
+                          e.stopPropagation();
+                          return;
+                        }
+                        if (selecting) return;
                         vibrate('tap');
                         // Tap = open the detail sheet, NOT a new chat: the user
                         // reads who this is first, then starts from there.
                         setIntroCard(card);
                       }}
                       className="block size-full cursor-pointer"
-                      aria-label={`查看 ${card.data.name} 的角色详情`}
+                      aria-label={selecting ? `选择 ${card.data.name}` : `查看 ${card.data.name} 的角色详情`}
+                      aria-pressed={selecting ? isSelected : undefined}
                     >
                       {card.avatar ? (
                         <img
@@ -500,7 +716,8 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
                       {card.data.name}
                     </span>
 
-                    {/* ⋮ tucked in the top-right corner. */}
+                    {/* ⋮ tucked in the top-right corner (hidden while selecting). */}
+                    {!selecting && (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <button
@@ -539,6 +756,9 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
                         <DropdownMenuItem onSelect={() => void exportCard(card, 'charx')}>
                           <FileArchive className="size-3.5" aria-hidden="true" /> 导出 CharX
                         </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => setExportingCard(card)}>
+                          <Download className="size-3.5" aria-hidden="true" /> 选择性导出…
+                        </DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => setPublishingId(card.id)}>
                           <Store className="size-3.5" aria-hidden="true" /> 发布到商店
                         </DropdownMenuItem>
@@ -554,7 +774,19 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
+                    )}
 
+                    {isSelected && (
+                      <>
+                        <span
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-0 bg-black/25"
+                        />
+                        <span className="absolute right-2 top-2 flex size-6 items-center justify-center rounded-full bg-[var(--rp-accent)] text-[var(--rp-accent-fg)] shadow">
+                          <Check className="size-3.5" aria-hidden="true" />
+                        </span>
+                      </>
+                    )}
                     {card.favorite && (
                       <Star
                         className="pointer-events-none absolute left-2 top-2 size-4 fill-current text-[var(--rp-warn)] drop-shadow"
@@ -570,6 +802,22 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
           </ul>
         )}
       </div>
+      {/* Batch-delete bar: same pattern as the novel bookshelf. */}
+      {selecting && (
+        <div className="absolute inset-x-0 bottom-0 z-30 border-t border-[var(--rp-border)] bg-[var(--rp-bg-elevated)]/95 px-3 pb-[calc(env(safe-area-inset-bottom,0px)+10px)] pt-2.5 shadow-[0_-4px_16px_rgba(0,0,0,0.25)] backdrop-blur">
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" className="rounded-full" onClick={() => setSelectedIds(new Set())}>
+              <X className="size-3.5" aria-hidden="true" /> 取消
+            </Button>
+            <span className="min-w-0 flex-1 text-center text-[12.5px] text-[var(--rp-fg-muted)]">
+              已选 {selectedIds.size} 张
+            </span>
+            <Button variant="destructive" size="sm" className="rounded-full" onClick={handleDeleteSelected}>
+              <Trash2 className="size-3.5" aria-hidden="true" /> 删除
+            </Button>
+          </div>
+        </div>
+      )}
       {/* Long-press / context-menu card actions. */}
       <DropdownMenu open={menuCard !== null} onOpenChange={(o) => !o && setMenuCard(null)}>
         <DropdownMenuTrigger asChild>
@@ -605,6 +853,9 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={() => { void exportCard(menuCard, 'charx'); setMenuCard(null); }}>
                 <FileArchive className="size-3.5" aria-hidden="true" /> 导出 CharX
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => { setExportingCard(menuCard); setMenuCard(null); }}>
+                <Download className="size-3.5" aria-hidden="true" /> 选择性导出…
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -664,7 +915,46 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
         }}
       />
 
-      {importResult && !importing && <ImportDialog result={importResult} onClose={() => setImportResult(null)} />}
+      {importResult && !importing && (
+        <ImportDialog
+          result={importResult}
+          onClose={() => setImportResult(null)}
+          cards={cards.map((c) => ({ id: c.id, name: c.data.name }))}
+          onAttachRegex={(scripts, cardId) => {
+            void attachRegexScripts(scripts, cardId);
+          }}
+        />
+      )}
+
+      {exportingCard && (
+        <ExportSelectionModal
+          open
+          onOpenChange={(v) => !v && setExportingCard(null)}
+          title={`选择性导出「${exportingCard.data.name}」`}
+          description="只导出勾选的世界书条目与正则脚本，其余内容不随卡片出去。"
+          groups={[
+            {
+              id: 'lorebook',
+              label: '世界书条目',
+              items: (exportingCard.data.character_book?.entries ?? []).map((e, i) => ({
+                id: loreItemId(i),
+                label: (e as { comment?: string }).comment || (e as { content?: string }).content?.slice(0, 30) || `条目 ${i + 1}`,
+                hint: ((e as { keys?: string[] }).keys ?? []).slice(0, 2).join('、'),
+              })),
+            },
+            {
+              id: 'regex',
+              label: '正则脚本',
+              items: ((exportingCard.data.extensions?.regex_scripts as RPRegexScript[] | undefined) ?? []).map((s) => ({
+                id: regexItemId(s),
+                label: s.scriptName,
+                hint: s.findRegex.slice(0, 24),
+              })),
+            },
+          ]}
+          onExport={(selected) => exportCardSelective(exportingCard, selected)}
+        />
+      )}
 
       <PublishWizard kind="card" subjectId={publishingId ?? ''} open={!!publishingId} onClose={() => setPublishingId(null)} />
     </div>

@@ -106,6 +106,45 @@ async function blobToDataUrl(blob: Blob): Promise<string> {
   return `data:${blob.type || 'image/png'};base64,${btoa(binary)}`;
 }
 
+/**
+ * Compress a user-picked picture before it is stored on the message (I01/I03,
+ * RP-Hub's `compressImage(dataUrl, 1600, 0.86)`): longest side ≤ 1600px,
+ * JPEG quality 0.86 on a white background so transparency does not go black.
+ * Animated GIFs are left untouched; runtimes without canvas (unit tests)
+ * fall back to the raw data URL.
+ */
+export async function compressImageFile(file: Blob, maxDim = 1600, quality = 0.86): Promise<string> {
+  if (file.type === 'image/gif') return blobToDataUrl(file);
+  try {
+    if (typeof document === 'undefined' || typeof createImageBitmap === 'undefined') {
+      return blobToDataUrl(file);
+    }
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+    if (scale >= 1 && file.type === 'image/jpeg') {
+      bitmap.close();
+      return blobToDataUrl(file);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      bitmap.close();
+      return blobToDataUrl(file);
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const out: Blob | null = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+    if (!out) return blobToDataUrl(file);
+    return blobToDataUrl(out);
+  } catch {
+    return blobToDataUrl(file);
+  }
+}
+
 /** Fetch a remote image and inline it, because provider URLs expire. */
 async function inlineRemote(url: string, fetchImpl: typeof fetch = fetch): Promise<string> {
   const res = await fetchImpl(url);

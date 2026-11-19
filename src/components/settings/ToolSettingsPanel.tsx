@@ -11,7 +11,8 @@ import { useApp } from '@/state/store.js';
 import type { ToolAggressiveness } from '@/core/tools/types.js';
 import { TOOL_RESULT_COUNT } from '@/core/tools/types.js';
 import { Button } from '@/components/ui/button';
-import { Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Slider, Switch } from '@/components/ui/input';
+import { Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Slider, Switch } from '@/components/ui/input';
+import { SecretInput } from '@/components/ui/SecretInput.js';
 import { toast } from '@/components/ui/toast.js';
 
 export function ToolSettingsPanel() {
@@ -94,13 +95,12 @@ export function ToolSettingsPanel() {
               <Label htmlFor="tavily-key" className="flex items-center gap-1.5">
                 <KeyRound className="size-3.5" aria-hidden="true" /> Tavily API Key
               </Label>
-              <Input
+              <SecretInput
                 id="tavily-key"
-                type="password"
                 value={tools.tavilyKey}
-                onChange={(e) => patch({ tavilyKey: e.target.value })}
+                onChange={(v) => patch({ tavilyKey: v })}
                 placeholder="tvly-…"
-                autoComplete="off"
+                ariaLabel="Tavily API Key"
               />
               <p className="text-[11px] text-[var(--rp-fg-subtle)]">
                 仅在浏览器直连可用时有效；Tauri 桌面端与安卓端不受 CORS 限制。

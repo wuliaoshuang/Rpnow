@@ -139,6 +139,22 @@ describe('server round-trip', () => {
     expect(key).toBe('ABCDEFGH1JK1MN0P');
   });
 
+  it('O10: reports check/upload/publish stages through onProgress', async () => {
+    const { fakeFetch } = makeHarness([]);
+    const stages: string[] = [];
+    await uploadBackup({
+      baseURL: 'https://x',
+      blobs: [await makeBlob({ a: 1 })],
+      manifest: { type: 'rpnow-backup', version: 1, createdAt: '', characters: [], scopes: [] },
+      fetchImpl: fakeFetch,
+      onProgress: (_done, _total, stage) => stages.push(stage),
+    });
+    expect(stages).toContain('check');
+    expect(stages).toContain('upload');
+    expect(stages).toContain('publish');
+    expect(stages[stages.length - 1]).toBe('done');
+  });
+
   it('downloads and decodes a blob', async () => {
     const { fakeFetch, stored } = makeHarness([]);
     const value = { 名字: '阿尔' };

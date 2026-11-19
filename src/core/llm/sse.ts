@@ -9,14 +9,40 @@
  *   - some providers send `event:` lines (Anthropic), some comments `: ping`.
  */
 
+/** SSE idle timeout (C06): 120s without a chunk ends the stream. */
+export const SSE_IDLE_TIMEOUT_MS = 120_000;
+
 /** Split a byte stream into SSE `data:` payload strings. */
-export async function* sseData(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+export async function* sseData(
+  body: ReadableStream<Uint8Array>,
+  opts?: { idleTimeoutMs?: number },
+): AsyncGenerator<string> {
+  const idleMs = opts?.idleTimeoutMs ?? SSE_IDLE_TIMEOUT_MS;
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      // Race each read against the idle timer: a provider that goes quiet
+      // for `idleMs` is treated as a failed stream, not an endless spinner.
+      // The timer is reset on every chunk that arrives.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          // Reject FIRST, then cancel: cancelling settles the pending read()
+          // with done:true, and if that resolution won the race the stream
+          // would end silently instead of reporting the timeout.
+          reject(new Error(`SSE 空闲超时（${Math.round(idleMs / 1000)} 秒无数据），已断开连接`));
+          void reader.cancel();
+        }, idleMs);
+      });
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await Promise.race([reader.read(), timeout]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      const { done, value } = result;
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       // Normalise CRLF so `\r\n\r\n` separators work too.
@@ -51,8 +77,11 @@ export function extractData(block: string): string | undefined {
 }
 
 /** Yield parsed JSON objects from an SSE body, stopping at `[DONE]`. */
-export async function* sseJson<T = unknown>(body: ReadableStream<Uint8Array>): AsyncGenerator<T> {
-  for await (const payload of sseData(body)) {
+export async function* sseJson<T = unknown>(
+  body: ReadableStream<Uint8Array>,
+  opts?: { idleTimeoutMs?: number },
+): AsyncGenerator<T> {
+  for await (const payload of sseData(body, opts)) {
     if (payload === '[DONE]') return;
     if (!payload.trim()) continue;
     try {

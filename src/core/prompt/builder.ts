@@ -39,10 +39,18 @@ import {
 } from '../types/preset.js';
 import { LATE_MACROS, substituteMacros, type MacroContext } from './macros.js';
 import { runRegexScript } from './regex-engine.js';
+import {
+  buildNextResponsePrompt,
+  injectWritingStyleIntoNextResponse,
+  parseWritingStyle,
+} from '../presets/writing-style.js';
+import { buildCotPreset, type CotPresetOptions } from '../presets/cot-preset.js';
 
 export interface PromptMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+  /** User-attached pictures (data URLs) for the multimodal request. */
+  imageUrls?: string[];
   /** Block that produced this message, for the "why is this here" inspector. */
   source?: string;
   /** True when the message came from a world book insertion. */
@@ -55,6 +63,10 @@ export interface ChatTurn {
   id?: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  /** User-attached pictures (data URLs). Only the newest user turn is sent
+   *  to the model as multimodal content — older pictures were already seen
+   *  in their own turn, so re-sending them would only burn context. */
+  images?: string[];
   /** Messages excluded from the prompt (hidden) but still displayed. */
   hidden?: boolean;
   /** Swipe list; the selected swipe is `.content`. */
@@ -82,7 +94,7 @@ export interface PromptBuildInput {
   /** Chat history, oldest first. */
   messages: ChatTurn[];
   /** User persona description (the `personaDescription` block). */
-  persona?: { name: string; description: string };
+  persona?: { name: string; description: string; preferences?: string };
   /** Which prompt_order group to use (100000 normal, 100001 group chat). */
   orderGroup?: number;
   /** Macro context seed values; `char`/`user` are filled in from card/persona. */
@@ -107,6 +119,30 @@ export interface PromptBuildInput {
   preferCharacterJailbreak?: boolean;
   /** Extra system text appended by plugins. */
   extraSystem?: string;
+  /**
+   * F02 注入顺序锚点：破限文本，固定放在整个提示词最前（在 system_top
+   * 世界书之前），与它在 prompt_order 里的位置无关。
+   */
+  jailbreakFirst?: string;
+  /**
+   * F02 注入顺序锚点：User Info 文本，固定放在角色前导
+   *（charDescription / charPersonality / scenario / personaDescription）
+   * 之后、聊天记录之前。没有 `userInfo` 预设区块时也生效。
+   */
+  userInfoAfterChar?: string;
+  /**
+   * F06 COT 预设动态生成选项。预设里启用 `cotPreset` 区块时，builder
+   * 按这些选项（未填的按 extraSystem 里的记忆/UI 模板/剧情面板痕迹
+   * 推断）现场生成 COT 预设文本，而不是用一段写死的文本。
+   */
+  cot?: CotPresetOptions;
+  /**
+   * C11 抗截断禁用 COT：Gemini 抗截断（`output_reply` 工具回传正文）开启
+   * 时，COT 预设会拉长提示词、挤占本已吃紧的输出预算，反而更容易截断，
+   * 所以整段跳过（连静态文本也不注入）。由 orchestrator 在算出
+   * `useReplyTool` 后传入。
+   */
+  disableCot?: boolean;
   /** Max depth for atDepth insertions relative to history length. */
   now?: Date;
 }
@@ -375,6 +411,45 @@ export function buildPrompt(input: PromptBuildInput): PromptBuildResult {
   const wi = input.worldInfo;
   let examplesSent = false;
 
+  // --- F01/F02/F03/F06 固定注入规则 -------------------------------------
+  // prompt_order 只决定骨架区块的相对顺序，下面几类有固定锚点，不随
+  // prompt_order 乱序：
+  //   F01  role 为 user/assistant 的预设区块 → 角色前导（charDescription）之前；
+  //   F02  `jailbreakFirst` → 整个提示词最前；`userInfo` → 角色前导之后；
+  //   F03  `writingStyle` 解析后拼进 `nextResponse`（聊天记录之后）；
+  //   F06  `cotPreset` 按需动态生成，放在 nextResponse 之前。
+  const CHAR_LEAD_IDS = new Set(['charDescription', 'charPersonality', 'scenario', 'personaDescription']);
+  const preCharRole: PromptMessage[] = [];
+  const userInfoMsgs: PromptMessage[] = [];
+  const frontMsgs: PromptMessage[] = [];
+  let charLeadSeen = false;
+  let sawUserInfoEntry = false;
+  let writingStyleText = '';
+  let nextResponseTemplate = '';
+  let cotEnabled = false;
+  let staticCotText = '';
+  if (input.jailbreakFirst?.trim()) {
+    frontMsgs.push({ role: 'system', content: input.jailbreakFirst.trim(), source: 'preset:jailbreakFirst' });
+  }
+
+  /** Render the `[User Info]` block from the persona (RP-Hub format). */
+  const renderUserInfoText = (): string => {
+    if (input.userInfoAfterChar?.trim()) return input.userInfoAfterChar.trim();
+    const p = input.persona;
+    if (!p || (!p.name && !p.description && !p.preferences)) return '';
+    const lines = ['[User Info]', `Name: ${p.name ?? ''}`, `Description: ${p.description ?? ''}`];
+    if (p.preferences) lines.push(`Preferences: ${p.preferences}`);
+    return lines.join('\n');
+  };
+
+  /** Insert messages just before the history marker (or append if none). */
+  const insertBeforeHistory = (msgs: PromptMessage[]) => {
+    if (!msgs.length) return;
+    const idx = out.findIndex((m) => m.content === '\u0000HISTORY\u0000');
+    if (idx === -1) out.push(...msgs);
+    else out.splice(idx, 0, ...msgs);
+  };
+
   const pushSystem = (content: string, source: string) => {
     if (!content?.trim()) return;
     out.push({ role: 'system', content: content.trim(), source });
@@ -387,6 +462,67 @@ export function buildPrompt(input: PromptBuildInput): PromptBuildResult {
   for (const { entry, enabled } of ordered) {
     if (!enabled) {
       blocks.push({ identifier: entry.identifier, name: entry.name, enabled: false, chars: 0, source: 'disabled' });
+      continue;
+    }
+
+    // F02: User Info 在角色前导之后——角色前导走完、遇到下一个非前导
+    // 区块时，把攒着的 User Info 插在它前面。
+    if (charLeadSeen && userInfoMsgs.length && !CHAR_LEAD_IDS.has(entry.identifier)) {
+      out.push(...userInfoMsgs);
+      userInfoMsgs.length = 0;
+    }
+
+    // F02/F03/F06 特殊标识符：不走通用 system 流程，按固定锚点处理。
+    if (entry.identifier === 'jailbreakFirst') {
+      const text = applyPromptRegex(substituteMacros(entry.content ?? '', baseCtx), input.regex, 5);
+      if (text.trim()) frontMsgs.push({ role: 'system', content: text.trim(), source: 'preset:jailbreakFirst' });
+      blocks.push({ identifier: entry.identifier, name: entry.name, enabled: true, chars: text.trim().length, source: 'preset:jailbreakFirst' });
+      continue;
+    }
+    if (entry.identifier === 'userInfo') {
+      sawUserInfoEntry = true;
+      const text = renderUserInfoText();
+      if (text.trim()) userInfoMsgs.push({ role: 'system', content: text.trim(), source: 'preset:userInfo' });
+      blocks.push({ identifier: entry.identifier, name: entry.name, enabled: true, chars: text.trim().length, source: 'preset:userInfo' });
+      continue;
+    }
+    if (entry.identifier === 'writingStyle') {
+      const parsed = parseWritingStyle(entry.content ?? '');
+      if (parsed) writingStyleText = writingStyleText ? `${writingStyleText}\n${parsed}` : parsed;
+      blocks.push({ identifier: entry.identifier, name: entry.name, enabled: true, chars: parsed.length, source: 'preset:writingStyle' });
+      continue;
+    }
+    if (entry.identifier === 'nextResponse') {
+      nextResponseTemplate = entry.content ?? '';
+      blocks.push({ identifier: entry.identifier, name: entry.name, enabled: true, chars: nextResponseTemplate.length, source: 'preset:nextResponse' });
+      continue;
+    }
+    if (entry.identifier === 'cotPreset') {
+      // C11: 抗截断场景下整段禁用 COT 预设（见 PromptBuildInput.disableCot）。
+      if (input.disableCot) {
+        blocks.push({ identifier: entry.identifier, name: entry.name, enabled: false, chars: 0, source: 'preset:cotPreset:disabled-anti-truncation' });
+        continue;
+      }
+      cotEnabled = true;
+      if (entry.content?.trim()) staticCotText = entry.content;
+      blocks.push({ identifier: entry.identifier, name: entry.name, enabled: true, chars: (entry.content ?? '').length, source: 'preset:cotPreset' });
+      continue;
+    }
+
+    // F01: role 为 user/assistant 的普通预设区块（破限预注入等）先攒起来，
+    // 在角色前导之前统一插入；不随 prompt_order 的位置乱序。
+    if (
+      entry.role !== 'system' &&
+      entry.identifier !== 'chatHistory' &&
+      entry.identifier !== 'dialogueExamples' &&
+      entry.injection_position !== 1
+    ) {
+      let text = substituteMacros(entry.content ?? '', baseCtx);
+      text = applyPromptRegex(text, input.regex, 5);
+      if (text.trim()) {
+        preCharRole.push({ role: entry.role, content: text.trim(), source: entry.identifier });
+      }
+      blocks.push({ identifier: entry.identifier, name: entry.name, enabled: true, chars: text.trim().length, source: 'preset:role' });
       continue;
     }
 
@@ -487,11 +623,49 @@ export function buildPrompt(input: PromptBuildInput): PromptBuildResult {
     } else {
       out.push({ role: entry.role ?? 'system', content: text, source: entry.identifier });
     }
+    if (CHAR_LEAD_IDS.has(entry.identifier)) charLeadSeen = true;
+  }
+
+  // F01 收尾：role 区块（破限预注入等）在循环里只攒起来，循环结束
+  // 后再统一插到第一段角色前导区块之前——这样无论它们在 prompt_order
+  // 里排在哪，结果位置都一样。
+  if (preCharRole.length) {
+    const leadIdx = out.findIndex((m) => m.source && CHAR_LEAD_IDS.has(m.source));
+    if (leadIdx >= 0) out.splice(leadIdx, 0, ...preCharRole);
+    else insertBeforeHistory(preCharRole);
+    preCharRole.length = 0;
+  }
+  // F02 收尾：循环里没来得及插出的 User Info 放在聊天记录之前
+  //（角色前导本就在聊天记录之前，所以位置仍在前导之后）。
+  if (userInfoMsgs.length) {
+    insertBeforeHistory(userInfoMsgs);
+    userInfoMsgs.length = 0;
+  }
+  if (input.userInfoAfterChar?.trim() && !sawUserInfoEntry) {
+    const text = input.userInfoAfterChar.trim();
+    const leadIdx = (() => {
+      let idx = -1;
+      out.forEach((m, i) => {
+        if (m.source && CHAR_LEAD_IDS.has(m.source)) idx = i;
+      });
+      return idx;
+    })();
+    const msg: PromptMessage = { role: 'system', content: text, source: 'preset:userInfo' };
+    if (leadIdx >= 0) out.splice(leadIdx + 1, 0, msg);
+    else insertBeforeHistory([msg]);
+    blocks.push({ identifier: 'userInfo', name: '用户信息', enabled: true, chars: text.length, source: 'input:userInfoAfterChar' });
   }
 
   // --- world info at non-block positions --------------------------------
   const injected: PromptBuildResult['injected'] = [];
   const atDepthFromWI: PromptMessage[] = [];
+  // RP-Hub-native positions, handled with their own semantics (not as plain
+  // system messages): `system_top` / `global_note` head the system prompt,
+  // `user_top` / `assistant_top` prepend to the newest user / assistant turn.
+  const systemTopFromWI: PromptMessage[] = [];
+  const globalNoteFromWI: PromptMessage[] = [];
+  const userTopFromWI: string[] = [];
+  const assistantTopFromWI: string[] = [];
   if (wi?.byPosition) {
     // Positions handled by dedicated preset blocks:
     const handled = new Set<number>([WI_POSITION.before, WI_POSITION.after, WI_POSITION.outlet]);
@@ -519,6 +693,24 @@ export function buildPrompt(input: PromptBuildInput): PromptBuildResult {
             injection: true,
             depth: item.depth,
           });
+        } else if (pos === WI_POSITION.systemTop) {
+          systemTopFromWI.push({
+            role: 'system',
+            content: text,
+            source: `worldInfo:${WI_POSITION_LABELS[pos]}`,
+            injection: true,
+          });
+        } else if (pos === WI_POSITION.globalNote) {
+          globalNoteFromWI.push({
+            role: 'system',
+            content: text,
+            source: `worldInfo:${WI_POSITION_LABELS[pos]}`,
+            injection: true,
+          });
+        } else if (pos === WI_POSITION.userTop) {
+          userTopFromWI.push(text);
+        } else if (pos === WI_POSITION.assistantTop) {
+          assistantTopFromWI.push(text);
         } else {
           out.push({
             role: 'system',
@@ -573,11 +765,17 @@ export function buildPrompt(input: PromptBuildInput): PromptBuildResult {
   const historyMsgs = histTurns.map<PromptMessage>((t, i) => {
     const isAssistant = t.role !== 'user' && t.role !== 'system';
     const substituted = substituteMacros(t.content, baseCtx);
+    // I03: only the newest user turn carries its pictures to the model
+    // (RP-Hub sends the latest user message as multimodal content).
+    // Assistant `images` are generated illustrations, never user attachments.
+    const isNewestUser = t.role === 'user' && histTurns.findLastIndex((x) => x.role === 'user') === i;
+    const imageUrls = isNewestUser ? (t.images ?? []).filter(Boolean) : [];
     return {
       role: t.role === 'system' ? 'assistant' : t.role,
       content: isAssistant
         ? applyPromptRegex(substituted, input.regex, 2, Math.max(0, histTurns.length - 1 - i))
         : substituted,
+      ...(imageUrls.length ? { imageUrls } : {}),
       source: 'history',
     };
   });
@@ -634,6 +832,69 @@ export function buildPrompt(input: PromptBuildInput): PromptBuildResult {
     const role = (depthPrompt.role ?? 'system') as PromptMessage['role'];
     withDepth.splice(idx, 0, { role, content: text, source: 'card:depth_prompt', injection: true });
     injected.push({ comment: '角色卡深度提示', position: '按深度插入', chars: text.length, bookName: '角色卡' });
+  }
+
+  // RP-Hub `user_top` / `assistant_top`: prepend to the newest message of
+  // that role in the finished prompt (after depth injections, like RP-Hub's
+  // `injectContextMessages`). No matching message → the entries are dropped,
+  // exactly as RP-Hub does when there is no user / assistant turn yet.
+  const prependToNewest = (role: PromptMessage['role'], texts: string[]) => {
+    if (!texts.length) return;
+    for (let i = withDepth.length - 1; i >= 0; i--) {
+      if (withDepth[i].role === role) {
+        withDepth[i] = { ...withDepth[i], content: `${texts.join('\n\n')}\n\n${withDepth[i].content}` };
+        return;
+      }
+    }
+  };
+  prependToNewest('user', userTopFromWI);
+  prependToNewest('assistant', assistantTopFromWI);
+
+  // RP-Hub `system_top` / `global_note`: the very top of the system prompt,
+  // ahead of every preset block (system_top first, then global_note). They
+  // stay separate system messages (injection flag) so the inspector can show
+  // which book entry produced them.
+  if (systemTopFromWI.length || globalNoteFromWI.length) {
+    withDepth.unshift(...systemTopFromWI, ...globalNoteFromWI);
+  }
+  // F02 破限最前：连 system_top 世界书都在它之后（RP-Hub 顺序）。
+  if (frontMsgs.length) withDepth.unshift(...frontMsgs);
+
+  // F06 COT 预设动态生成 + F03 文风 `<next_response>`：都放在聊天记录
+  // 之后、生成之前。COT 先、next_response 最后。C11：disableCot 时上面
+  // 的 cotEnabled 已是 false，cotText 恒为空，这里不再重复判断。
+  let cotText = staticCotText;
+  if (cotEnabled && !cotText) {
+    const extra = input.extraSystem ?? '';
+    cotText = buildCotPreset({
+      ...(input.cot ?? {}),
+      model: input.cot?.model ?? input.macro?.model,
+      memoryEnabled: input.cot?.memoryEnabled ?? /memory_citation|memory_fragment/i.test(extra),
+      uiTemplateEnabled: input.cot?.uiTemplateEnabled ?? /ui_template_updates/i.test(extra),
+      storyPanelsEnabled: input.cot?.storyPanelsEnabled ?? /story_panels/i.test(extra),
+    });
+  }
+  if (cotText?.trim()) {
+    withDepth.push({ role: 'system', content: cotText.trim(), source: 'preset:cotPreset' });
+  }
+  let nextResponseText = '';
+  if (nextResponseTemplate?.trim() || writingStyleText) {
+    if (nextResponseTemplate?.trim()) {
+      const base = nextResponseTemplate.trim();
+      nextResponseText = writingStyleText
+        ? injectWritingStyleIntoNextResponse(base, writingStyleText)
+        : /<next_response/i.test(base)
+          ? base
+          : buildNextResponsePrompt({ writingStyle: base });
+    } else {
+      nextResponseText = buildNextResponsePrompt({
+        writingStyle: writingStyleText,
+        cotEnabled: Boolean(cotText),
+      });
+    }
+  }
+  if (nextResponseText.trim()) {
+    withDepth.push({ role: 'system', content: nextResponseText.trim(), source: 'preset:nextResponse' });
   }
 
   const totalChars = withDepth.reduce((s, m) => s + m.content.length, 0);

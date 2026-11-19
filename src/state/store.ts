@@ -19,6 +19,7 @@ import type { RPUITemplate } from '../core/uitemplate/types.js';
 import type { NovelState } from '../core/novel/types.js';
 import type { MemoryRecord } from '../core/memory/types.js';
 import {
+  activeBranchMemories,
   createBranch as createBranchEngine,
   deleteBranch as deleteBranchEngine,
   renameBranch as renameBranchEngine,
@@ -378,20 +379,30 @@ export const useApp = create<AppState>((set, get) => ({
   createBranch: async (chatId, fromIndex, name) => {
     const chat = get().chats.find((c) => c.id === chatId);
     if (!chat) return null;
-    const out = createBranchEngine(chat, fromIndex, name);
+    // G10 分支记忆接线：把当前 live 记忆传给引擎（引擎据此给新分支只留
+    // 它能看到的记录、并把旧线的视图存回快照），再把新线的记忆视图写回
+    // store.memories[chatId] 并持久化。
+    const liveMemories = get().memories[chatId] ?? [];
+    const out = createBranchEngine(chat, fromIndex, name, liveMemories);
     if (!out) return null;
     const chats = get().chats.map((c) => (c.id === chatId ? out.chat : c));
-    set({ chats });
+    const memories = { ...get().memories, [chatId]: activeBranchMemories(out.chat, liveMemories) };
+    set({ chats, memories });
     await idbStorage.set(KEY.chats, chats);
+    await idbStorage.set('rpnow:memories', memories);
     return out.branch.id;
   },
   switchBranch: async (chatId, branchId) => {
     const chat = get().chats.find((c) => c.id === chatId);
     if (!chat) return;
-    const next = switchBranchEngine(chat, branchId);
+    // 同上：传 live 记忆让引擎存好旧线快照，写回目标线的记忆视图。
+    const liveMemories = get().memories[chatId] ?? [];
+    const next = switchBranchEngine(chat, branchId, liveMemories);
     const chats = get().chats.map((c) => (c.id === chatId ? next : c));
-    set({ chats });
+    const memories = { ...get().memories, [chatId]: activeBranchMemories(next, liveMemories) };
+    set({ chats, memories });
     await idbStorage.set(KEY.chats, chats);
+    await idbStorage.set('rpnow:memories', memories);
   },
   renameBranch: async (chatId, branchId, name) => {
     const chat = get().chats.find((c) => c.id === chatId);

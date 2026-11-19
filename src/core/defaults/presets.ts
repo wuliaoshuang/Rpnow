@@ -19,6 +19,7 @@ import type {
   RPPromptEntry,
   RPPromptOrderGroup,
 } from '../types/preset.js';
+import { buildCorePreset } from '../presets/managed.js';
 
 export const PM_DUMMY_ID = 100001;
 
@@ -180,6 +181,9 @@ export const BUILTIN_PRESETS: RPCompletionPreset[] = [
     stream: true,
     sourceFormat: 'rpnow',
   },
+  // F04 核心预设：破限（最前）+ 破限预注入 User 1/2、AI 1/2。
+  // 预注入的 user/assistant 区块由 builder 按 F01 固定插在角色前导之前。
+  buildCorePreset(),
 ];
 
 // -------------------------------------------------- context / instruct / reasoning

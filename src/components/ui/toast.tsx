@@ -8,16 +8,68 @@
  */
 
 import * as React from 'react';
-import { CheckCircle2, Info, TriangleAlert, X } from 'lucide-react';
+import {
+  ArrowLeftRight,
+  CheckCircle2,
+  Copy,
+  Cpu,
+  Download,
+  GitBranch,
+  Image,
+  Info,
+  Loader2,
+  Pencil,
+  RotateCcw,
+  Save,
+  Square,
+  Star,
+  Trash2,
+  TriangleAlert,
+  Upload,
+  X,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 type ToastKind = 'success' | 'error' | 'info';
+
+/**
+ * RP-Hub picks the toast icon from the message keywords (正在/复制/删除/导出/
+ * 导入/收藏/图片/重试/改名/分支/模型/停止/切换/保存…), not just the kind.
+ * The first matching keyword wins; an explicit `icon` passed to `toast.*`
+ * overrides the keyword scan.
+ */
+const KEYWORD_ICONS: Array<{ words: string[]; Icon: React.ComponentType<{ className?: string }> }> = [
+  { words: ['正在', '加载', '生成中', '处理中'], Icon: Loader2 },
+  { words: ['复制', '已复制'], Icon: Copy },
+  { words: ['删除', '已删除'], Icon: Trash2 },
+  { words: ['导出'], Icon: Download },
+  { words: ['导入'], Icon: Upload },
+  { words: ['收藏'], Icon: Star },
+  { words: ['图片', '生图'], Icon: Image },
+  { words: ['重试'], Icon: RotateCcw },
+  { words: ['改名', '重命名'], Icon: Pencil },
+  { words: ['分支'], Icon: GitBranch },
+  { words: ['模型'], Icon: Cpu },
+  { words: ['停止'], Icon: Square },
+  { words: ['切换'], Icon: ArrowLeftRight },
+  { words: ['保存', '已保存'], Icon: Save },
+];
+
+function iconFor(title: string, description?: string): React.ComponentType<{ className?: string }> | null {
+  const haystack = `${title} ${description ?? ''}`;
+  for (const { words, Icon } of KEYWORD_ICONS) {
+    if (words.some((w) => haystack.includes(w))) return Icon;
+  }
+  return null;
+}
 
 interface ToastItem {
   id: number;
   kind: ToastKind;
   title: string;
   description?: string;
+  /** Explicit icon (component); when absent the keyword map decides. */
+  icon?: React.ComponentType<{ className?: string }>;
 }
 
 type Listener = (items: ToastItem[]) => void;
@@ -30,8 +82,8 @@ function emit() {
   for (const fn of [...listeners]) fn([...items]);
 }
 
-function push(kind: ToastKind, title: string, description?: string, ttl = 4200) {
-  const item: ToastItem = { id: ++seq, kind, title, description };
+function push(kind: ToastKind, title: string, description?: string, ttl = 4200, icon?: React.ComponentType<{ className?: string }>) {
+  const item: ToastItem = { id: ++seq, kind, title, description, icon };
   items = [...items, item];
   emit();
   if (ttl > 0) {
@@ -46,9 +98,12 @@ export function dismiss(id: number) {
 }
 
 export const toast = {
-  success: (title: string, description?: string) => push('success', title, description),
-  error: (title: string, description?: string) => push('error', title, description, 8000),
-  info: (title: string, description?: string) => push('info', title, description),
+  success: (title: string, description?: string, icon?: React.ComponentType<{ className?: string }>) =>
+    push('success', title, description, 4200, icon),
+  error: (title: string, description?: string, icon?: React.ComponentType<{ className?: string }>) =>
+    push('error', title, description, 8000, icon),
+  info: (title: string, description?: string, icon?: React.ComponentType<{ className?: string }>) =>
+    push('info', title, description, 4200, icon),
 };
 
 export function Toaster() {
@@ -67,7 +122,8 @@ export function Toaster() {
       className="pointer-events-none fixed inset-x-0 bottom-20 z-[90] flex flex-col items-center gap-2 px-3 md:bottom-6 md:items-end md:pr-6"
     >
       {list.map((t) => {
-        const Icon = t.kind === 'success' ? CheckCircle2 : t.kind === 'error' ? TriangleAlert : Info;
+        const KindIcon = t.kind === 'success' ? CheckCircle2 : t.kind === 'error' ? TriangleAlert : Info;
+        const Icon = t.icon ?? iconFor(t.title, t.description) ?? KindIcon;
         return (
           <div
             key={t.id}

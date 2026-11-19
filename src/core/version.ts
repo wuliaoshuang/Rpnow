@@ -35,6 +35,43 @@ export interface UpdateCheckResult {
 
 const IGNORED_KEY = 'rpnow:ignored-update-version';
 
+/** Poll cadence for the version check (RP-Hub: every 20s while visible). */
+export const UPDATE_POLL_INTERVAL_MS = 20_000;
+/** Announcement dialog: the close button stays disabled this long (RP-Hub: 10s). */
+export const ANNOUNCEMENT_COUNTDOWN_SECONDS = 10;
+
+const SEEN_ANNOUNCEMENT_KEY = 'rpnow:seen-announcement-id';
+
+/**
+ * The announcement id the user has already seen (a versionCode — RP-Hub's
+ * announcement id is its version id too). An announcement is only shown
+ * once per id; the id is written when the announcement dialog is closed.
+ */
+export function getSeenAnnouncementId(): number | null {
+  try {
+    const v = localStorage.getItem(SEEN_ANNOUNCEMENT_KEY);
+    return v ? Number(v) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setSeenAnnouncementId(id: number): void {
+  try {
+    localStorage.setItem(SEEN_ANNOUNCEMENT_KEY, String(id));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearSeenAnnouncementId(): void {
+  try {
+    localStorage.removeItem(SEEN_ANNOUNCEMENT_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** The versionCode the user chose to ignore (non-forced updates only). */
 export function getIgnoredVersionCode(): number | null {
   try {

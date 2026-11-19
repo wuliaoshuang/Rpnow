@@ -66,6 +66,7 @@ import {
   Switch,
   Textarea,
 } from '@/components/ui/input.js';
+import { SecretInput } from '@/components/ui/SecretInput.js';
 import {
   Badge,
   DropdownMenu,
@@ -364,6 +365,13 @@ export function SettingsPage({
                 checked={settings.chat.preventTruncation}
                 onChange={(v) => setSettings({ chat: { ...settings.chat, preventTruncation: v } })}
               />
+              <ToggleRow
+                id="style-filter"
+                label="文风过滤"
+                hint="过滤助手回复里的八股套话（例如“语气很平”“极其”“指尖发白”）；被过滤的片段可以在消息操作栏里查看。关闭后原样显示。"
+                checked={settings.chat.styleFilterEnabled ?? true}
+                onChange={(v) => setSettings({ chat: { ...settings.chat, styleFilterEnabled: v } })}
+              />
               <div className="space-y-1.5">
                 <Label htmlFor="reasoning-effort">推理强度</Label>
                 <Select
@@ -402,7 +410,7 @@ export function SettingsPage({
               <ToggleRow
                 id="immersive-mode"
                 label="沉浸模式"
-                hint="隐藏部分界面边框，让正文占满屏幕。"
+                hint="隐藏聊天标题与消息时间，消息列收窄，专注阅读；两侧按钮还在，随时可以退出。"
                 checked={settings.render.immersiveMode}
                 onChange={(v) => setSettings({ render: { ...settings.render, immersiveMode: v } })}
               />
@@ -501,12 +509,31 @@ export function SettingsPage({
                 </div>
                 <Slider
                   value={[settings.lorebook.scanDepth]}
-                  min={1}
+                  min={0}
                   max={20}
                   step={1}
                   onValueChange={([v]) => setSettings({ lorebook: { ...settings.lorebook, scanDepth: v } })}
                   aria-label="世界书扫描深度"
                 />
+                <p className="text-[11px] text-[var(--rp-fg-subtle)]">
+                  0 表示不按关键词扫描（仅常驻条目生效）。
+                </p>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="lorebook-max-depth">条目扫描深度上限（maxDepth）</Label>
+                <Input
+                  id="lorebook-max-depth"
+                  inputMode="numeric"
+                  value={String(settings.lorebook.maxDepth ?? 0)}
+                  onChange={(e) => {
+                    const v = Math.min(50, Math.max(0, Math.floor(Number(e.target.value.replace(/\D/g, '')) || 0)));
+                    setSettings({ lorebook: { ...settings.lorebook, maxDepth: v } });
+                  }}
+                  aria-label="条目扫描深度上限，0 表示不限"
+                />
+                <p className="text-[11px] text-[var(--rp-fg-subtle)]">
+                  0 表示不限；大于 0 时，任何条目的实际扫描深度都不会超过这个值。
+                </p>
               </div>
               <ToggleRow
                 id="recursive"
@@ -828,6 +855,8 @@ function ModelSettings() {
   const [providerKey, setProviderKey] = useState('openai');
   const [form, setForm] = useState<Partial<LLMConnection>>(() => defaultModelForm('openai'));
   const [testing, setTesting] = useState(false);
+  /** N08: last connection-test latency in ms (null = not tested yet). */
+  const [testLatencyMs, setTestLatencyMs] = useState<number | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
   const [query, setQuery] = useState('');
@@ -891,6 +920,8 @@ function ModelSettings() {
   async function testConnection() {
     if (!llm) return;
     setTesting(true);
+    // N08: time the round trip so the user sees the latency in ms.
+    const startedAt = performance.now();
     try {
       const id = uid('probe');
       // Build a throwaway connection so we do not need to persist first.
@@ -908,9 +939,13 @@ function ModelSettings() {
         messages: [{ role: 'user', content: 'Say OK' }],
         maxTokens: 8,
       });
-      toast.success('连接成功', res ? `模型回复：${res.text.slice(0, 40)}` : undefined);
+      const latencyMs = Math.round(performance.now() - startedAt);
+      setTestLatencyMs(latencyMs);
+      toast.success('连接成功', `延迟 ${latencyMs} 毫秒${res ? ` · 模型回复：${res.text.slice(0, 40)}` : ''}`);
     } catch (err) {
-      toast.error('连接失败', err instanceof Error ? err.message : String(err));
+      const latencyMs = Math.round(performance.now() - startedAt);
+      setTestLatencyMs(latencyMs);
+      toast.error('连接失败', `${err instanceof Error ? err.message : String(err)}（${latencyMs} 毫秒后失败）`);
     } finally {
       setTesting(false);
     }
@@ -1043,12 +1078,10 @@ function ModelSettings() {
             API 密钥
             {info?.keyOptional && <span className="ml-1 font-normal text-[var(--rp-fg-subtle)]">（本地服务可留空）</span>}
           </Label>
-          <Input
+          <SecretInput
             id="ckey"
-            type="password"
-            autoComplete="off"
             value={form.apiKey ?? ''}
-            onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
+            onChange={(v) => setForm((f) => ({ ...f, apiKey: v }))}
             placeholder="sk-…"
           />
         </div>
@@ -1086,6 +1119,11 @@ function ModelSettings() {
             {testing ? <Loader2 className="size-3.5 animate-spin" /> : <FlaskConical className="size-3.5" aria-hidden="true" />}
             测试连接
           </Button>
+          {testLatencyMs !== null && (
+            <p className="text-center text-[11.5px] tabular-nums text-[var(--rp-fg-muted)]">
+              上次测试延迟 {testLatencyMs} 毫秒
+            </p>
+          )}
           <Button className="h-12 w-full rounded-full text-[15px]" onClick={saveForm}>
             <Save className="size-4" aria-hidden="true" /> 保存
           </Button>
@@ -1260,12 +1298,10 @@ function ImageSettings() {
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="ikey">API Key</Label>
-            <Input
+            <SecretInput
               id="ikey"
-              type="password"
-              autoComplete="off"
               value={form.apiKey ?? ''}
-              onChange={(e) => setForm((f) => ({ ...f, apiKey: e.target.value }))}
+              onChange={(v) => setForm((f) => ({ ...f, apiKey: v }))}
               placeholder={providerKey === 'novelai' ? 'pst-…' : 'sk-…'}
             />
             {providerKey === 'novelai' && (
