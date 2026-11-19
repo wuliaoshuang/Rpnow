@@ -57,7 +57,8 @@ export function loadStudioDraft(chatId: string): ImageStudioDraft | null {
       ucPreset: typeof parsed.ucPreset === 'number' && Number.isFinite(parsed.ucPreset) ? parsed.ucPreset : undefined,
       cfgRescale:
         typeof parsed.cfgRescale === 'number' && Number.isFinite(parsed.cfgRescale) ? parsed.cfgRescale : undefined,
-      dynamicThresholding: typeof parsed.dynamicThresholding === 'boolean' ? parsed.dynamicThresholding : undefined,
+      variety: typeof parsed.variety === 'boolean' ? parsed.variety : undefined,
+      transparentBg: typeof parsed.transparentBg === 'boolean' ? parsed.transparentBg : undefined,
       qualityToggle: typeof parsed.qualityToggle === 'boolean' ? parsed.qualityToggle : undefined,
     };
   } catch {

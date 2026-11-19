@@ -28,7 +28,7 @@ import { Badge, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMen
 import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/image/nai.js';
 import { loadStudioDraft, saveStudioDraft } from '@/core/image/studioDraft.js';
-import { estimateAnlasCost, isOpusFreeGeneration, NAI_NOISE_SCHEDULES, NAI_SAMPLERS, NAI_UC_PRESETS, SIZE_MAP } from '@/core/image/types.js';
+import { estimateAnlasCost, maxNSamplesForArea, NAI_NOISE_SCHEDULES, NAI_SAMPLERS, NAI_UC_PRESETS, opusFreeStatus, SIZE_MAP } from '@/core/image/types.js';
 import { buildTagInjection } from '@/core/image/tagContext.js';
 import { describeEmptyTagResult, TAG_CONVERT_MAX_TOKENS } from '@/core/image/tagFailure.js';
 import { BUILTIN_PRESETS } from '@/core/defaults/presets.js';
@@ -49,6 +49,61 @@ export interface ImageStudioProps {
   chat: RPChat;
   onAttach: (dataUrl: string) => void;
   onUseAsAvatar: (dataUrl: string) => void;
+}
+
+/**
+ * A slider + typeable number, the way NovelAI's own panel does it: drag
+ * the bar for a quick change, tap the number to type an exact value.
+ * `value` undefined means "use the provider default" (shown as placeholder).
+ */
+function ParamSlider({
+  id, label, min, max, step, value, placeholder, onChange, hint,
+}: {
+  id: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  value: number | undefined;
+  placeholder: string;
+  onChange: (v: number | undefined) => void;
+  hint?: string;
+}) {
+  const shown = value ?? Number(placeholder);
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <div className="flex items-center gap-2">
+        <input
+          id={`${id}-slider`}
+          type="range"
+          aria-label={`${label}（拖动条）`}
+          min={min}
+          max={max}
+          step={step}
+          value={shown}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="h-1.5 min-w-0 flex-1 cursor-pointer accent-[var(--rp-accent)]"
+        />
+        <Input
+          id={id}
+          type="number"
+          inputMode="decimal"
+          min={min}
+          max={max}
+          step={step}
+          value={value ?? ''}
+          onChange={(e) => {
+            const v = e.target.value === '' ? undefined : Math.min(max, Math.max(min, Number(e.target.value) || 0));
+            onChange(v);
+          }}
+          placeholder={placeholder}
+          className="w-16 shrink-0 text-right"
+        />
+      </div>
+      {hint ? <p className="text-[11px] text-[var(--rp-fg-subtle)]">{hint}</p> : null}
+    </div>
+  );
 }
 
 export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsAvatar }: ImageStudioProps) {
@@ -82,7 +137,8 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   const [nSamples, setNSamples] = React.useState<number | undefined>(undefined);
   const [ucPreset, setUcPreset] = React.useState<number | undefined>(undefined);
   const [cfgRescale, setCfgRescale] = React.useState<number | undefined>(undefined);
-  const [dynamicThresholding, setDynamicThresholding] = React.useState<boolean | undefined>(undefined);
+  const [variety, setVariety] = React.useState<boolean | undefined>(undefined);
+  const [transparentBg, setTransparentBg] = React.useState<boolean | undefined>(undefined);
   const [qualityToggle, setQualityToggle] = React.useState<boolean | undefined>(undefined);
   const [busy, setBusy] = React.useState(false);
   const [results, setResults] = React.useState<string[]>([]);
@@ -127,7 +183,8 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
       setNSamples(draft.nSamples);
       setUcPreset(draft.ucPreset);
       setCfgRescale(draft.cfgRescale);
-      setDynamicThresholding(draft.dynamicThresholding);
+      setVariety(draft.variety);
+      setTransparentBg(draft.transparentBg);
       setQualityToggle(draft.qualityToggle);
       return;
     }
@@ -164,10 +221,11 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
       nSamples,
       ucPreset,
       cfgRescale,
-      dynamicThresholding,
+      variety,
+      transparentBg,
       qualityToggle,
     });
-  }, [open, chat.id, prompt, positive, artist, negative, size, connectionId, model, steps, genScale, sampler, seed, noiseSchedule, nSamples, ucPreset, cfgRescale, dynamicThresholding, qualityToggle]);
+  }, [open, chat.id, prompt, positive, artist, negative, size, connectionId, model, steps, genScale, sampler, seed, noiseSchedule, nSamples, ucPreset, cfgRescale, variety, transparentBg, qualityToggle]);
 
   const adapter = imageService?.adapters().find((a) => a.key === connections.find((c) => c.id === connectionId)?.provider);
 
@@ -177,16 +235,21 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   const effectiveModel = model || selectedConn?.defaultModel || modelOptions[0] || '';
   /** V5 强制用 karras 噪声计划，噪声计划那一栏要锁掉。 */
   const isV5Model = effectiveModel.startsWith('nai-diffusion-5');
-  /** NovelAI 时预估这张图要多少 Anlas，点生成之前就让用户看到。 */
+  /** NovelAI 时预估这张图要多少 Anlas，点生成之前就让用户看到。
+   * 免费规则是像素面积（宽×高 ≤ 1,048,576 px），不是“两边 ≤1024”：
+   * 832×1216 也在免费额度内。V4.5 免费不限量，V5 从 Opus 额度电池里扣。 */
   const isNovelConn = selectedConn?.provider === 'novelai';
   const naiSize = SIZE_MAP[size].nai;
   const estSteps = steps ?? 23;
-  const estAnlas = isNovelConn
-    ? estimateAnlasCost({ width: naiSize[0], height: naiSize[1], steps: estSteps, nSamples: nSamples ?? 1 })
+  const estNSamples = nSamples ?? 1;
+  const estFree = isNovelConn
+    ? opusFreeStatus({ model: effectiveModel, width: naiSize[0], height: naiSize[1], steps: estSteps, nSamples: estNSamples })
     : null;
-  const estFreeOnOpus = isNovelConn
-    ? isOpusFreeGeneration({ model: effectiveModel, width: naiSize[0], height: naiSize[1], steps: estSteps, nSamples: nSamples ?? 1 })
-    : false;
+  const estAnlas = isNovelConn
+    ? estimateAnlasCost({ width: naiSize[0], height: naiSize[1], steps: estSteps, model: effectiveModel, nSamples: estNSamples, opusFree: estFree !== null })
+    : null;
+  /** 当前尺寸允许的最多张数（官网按像素面积限：小图 6–8 张，普通图 4 张）。 */
+  const maxNSamples = maxNSamplesForArea(naiSize[0] * naiSize[1]);
 
   // Assistant floors, newest first (floor number = position in the message list).
   const assistantFloors = React.useMemo(() => {
@@ -242,7 +305,8 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
         nSamples,
         ucPreset,
         cfgRescale,
-        dynamicThresholding,
+        variety,
+        transparentBg,
         qualityToggle,
         watermark: false,
       });
@@ -553,55 +617,40 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
           <div className="space-y-3 rounded-xl border border-[var(--rp-border)] p-3">
             <p className="text-[13px] font-medium">生图参数</p>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="img-steps">步数</Label>
-                <Input
-                  id="img-steps"
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  max={50}
-                  value={steps ?? ''}
-                  onChange={(e) => {
-                    const v = e.target.value === '' ? undefined : Math.min(50, Math.max(1, Math.round(Number(e.target.value) || 28)));
-                    setSteps(v);
-                  }}
-                  placeholder="28"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="img-scale">CFG 强度</Label>
-                <Input
-                  id="img-scale"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  max={10}
-                  step={0.5}
-                  value={genScale ?? ''}
-                  onChange={(e) => {
-                    const v = e.target.value === '' ? undefined : Math.min(10, Math.max(0, Number(e.target.value) || 6));
-                    setGenScale(v);
-                  }}
-                  placeholder="6"
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="img-samples">生成张数</Label>
-                <Input
-                  id="img-samples"
-                  type="number"
-                  inputMode="numeric"
-                  min={1}
-                  max={8}
-                  value={nSamples ?? ''}
-                  onChange={(e) => {
-                    const v = e.target.value === '' ? undefined : Math.min(8, Math.max(1, Math.round(Number(e.target.value) || 1)));
-                    setNSamples(v);
-                  }}
-                  placeholder="1"
-                />
-              </div>
+              {/* 步数 / CFG：官网是拖动条 + 可点数字，照着做。默认值按官网：
+                  步数 23，CFG 强度 V4.5 是 5、V5 是 7。 */}
+              <ParamSlider
+                id="img-steps"
+                label="步数"
+                min={1}
+                max={50}
+                step={1}
+                value={steps}
+                placeholder="23"
+                onChange={(v) => setSteps(v === undefined ? undefined : Math.min(50, Math.max(1, Math.round(v))))}
+                hint="Opus 免费上限是 28 步。"
+              />
+              <ParamSlider
+                id="img-scale"
+                label="CFG 强度"
+                min={0}
+                max={10}
+                step={0.1}
+                value={genScale}
+                placeholder={isV5Model ? '7' : '5'}
+                onChange={(v) => setGenScale(v === undefined ? undefined : Math.min(10, Math.max(0, v)))}
+              />
+              <ParamSlider
+                id="img-samples"
+                label="生成张数"
+                min={1}
+                max={maxNSamples}
+                step={1}
+                value={nSamples}
+                placeholder="1"
+                onChange={(v) => setNSamples(v === undefined ? undefined : Math.min(maxNSamples, Math.max(1, Math.round(v))))}
+                hint={`当前尺寸最多 ${maxNSamples} 张；多于 1 张一定花 Anlas。`}
+              />
               <div className="space-y-1.5">
                 <Label htmlFor="img-sampler">采样器</Label>
                 <Select value={sampler ?? 'k_euler_ancestral'} onValueChange={setSampler}>
@@ -637,6 +686,16 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                 </Select>
                 {isV5Model && <p className="text-[11px] text-[var(--rp-fg-subtle)]">V5 固定用 karras。</p>}
               </div>
+              <ParamSlider
+                id="img-cfgrescale"
+                label="CFG Rescale"
+                min={0}
+                max={1}
+                step={0.01}
+                value={cfgRescale}
+                placeholder="0"
+                onChange={(v) => setCfgRescale(v === undefined ? undefined : Math.min(1, Math.max(0, v)))}
+              />
               <div className="space-y-1.5">
                 <Label htmlFor="img-ucpreset">负面预设</Label>
                 <Select value={String(ucPreset ?? 0)} onValueChange={(v) => setUcPreset(Number(v))}>
@@ -681,34 +740,30 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                 </div>
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="img-cfgrescale">CFG Rescale</Label>
-                <Input
-                  id="img-cfgrescale"
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  max={1}
-                  step={0.1}
-                  value={cfgRescale ?? ''}
-                  onChange={(e) => {
-                    const v = e.target.value === '' ? undefined : Math.min(1, Math.max(0, Number(e.target.value) || 0));
-                    setCfgRescale(v);
-                  }}
-                  placeholder="0"
-                />
-              </div>
-              <div className="space-y-1.5">
                 <Label>其它开关</Label>
                 <div className="flex flex-wrap gap-3 pt-1.5 text-[13px]">
-                  <label className="flex cursor-pointer items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      checked={dynamicThresholding ?? false}
-                      onChange={(e) => setDynamicThresholding(e.target.checked)}
-                      className="size-4 accent-[var(--rp-accent)]"
-                    />
-                    Decrisper
-                  </label>
+                  {!isV5Model && (
+                    <label className="flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={variety ?? false}
+                        onChange={(e) => setVariety(e.target.checked)}
+                        className="size-4 accent-[var(--rp-accent)]"
+                      />
+                      Variety+
+                    </label>
+                  )}
+                  {isV5Model && (
+                    <label className="flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={transparentBg ?? false}
+                        onChange={(e) => setTransparentBg(e.target.checked)}
+                        className="size-4 accent-[var(--rp-accent)]"
+                      />
+                      透明背景
+                    </label>
+                  )}
                   <label className="flex cursor-pointer items-center gap-1.5">
                     <input
                       type="checkbox"
@@ -719,6 +774,8 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                     质量标签
                   </label>
                 </div>
+                {!isV5Model && <p className="text-[11px] text-[var(--rp-fg-subtle)]">Variety+ 只在 V4.5 有；Decrisper 和 SMEA 是 V3 的，V4.5/V5 不发。</p>}
+                {isV5Model && <p className="text-[11px] text-[var(--rp-fg-subtle)]">透明背景只在 V5 有，出图是带透明通道的 PNG。</p>}
               </div>
             </div>
           </div>
@@ -782,7 +839,11 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
             </Button>
             {isNovelConn && estAnlas !== null && (
               <p className="text-[11px] text-[var(--rp-fg-muted)]">
-                {estFreeOnOpus ? 'Opus 免费（V4.5、≤1024、≤28 步）' : `约 ${estAnlas} Anlas`}
+                {estFree === 'free'
+                  ? 'Opus 免费（V4.5、面积 ≤1,048,576 px、≤28 步、单张）'
+                  : estFree === 'battery'
+                    ? 'V5 额度（Opus 电池里扣，不花 Anlas）'
+                    : `约 ${estAnlas} Anlas`}
               </p>
             )}
           </div>
