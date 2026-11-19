@@ -13,7 +13,7 @@
  */
 
 import * as React from 'react';
-import { ChevronDown, ChevronRight, Plus, Search, Trash2, Info } from 'lucide-react';
+import { ChevronDown, ChevronRight, GripVertical, Plus, Search, Trash2, Info } from 'lucide-react';
 import { cn, uid } from '@/lib/utils';
 import {
   newEntry as makeEntry,
@@ -51,6 +51,25 @@ export function LorebookEditor({ book, lorebook, embedded, onChange, onSave, onD
   const [name, setName] = React.useState(book?.name ?? lorebook?.name ?? '');
   const [query, setQuery] = React.useState('');
   const [openId, setOpenId] = React.useState<string | null>(null);
+  /** R10: HTML5 drag sort — the id of the entry being dragged, if any. */
+  const [dragId, setDragId] = React.useState<string | null>(null);
+  const [dropId, setDropId] = React.useState<string | null>(null);
+
+  /** Move one entry before another (or to the end) and persist the new order. */
+  const moveEntry = (fromId: string, toId: string | null) => {
+    const from = entries.findIndex((e) => e.id === fromId);
+    if (from < 0) return;
+    const next = [...entries];
+    const [moved] = next.splice(from, 1);
+    if (toId === null) {
+      next.push(moved);
+    } else {
+      const to = next.findIndex((e) => e.id === toId);
+      next.splice(to < 0 ? next.length : to, 0, moved);
+    }
+    // Keep the stored `order` in step with the visible order.
+    emit(next.map((e, i) => ({ ...e, order: i })));
+  };
 
   // Propagate upward on every change (embedded mode is a controlled sub-form).
   const emit = React.useCallback(
@@ -146,12 +165,71 @@ export function LorebookEditor({ book, lorebook, embedded, onChange, onSave, onD
           </p>
         </div>
       ) : (
-        <ul className="space-y-1.5">
+        <ul
+          className="space-y-1.5"
+          onDragOver={(e) => {
+            if (!dragId) return;
+            e.preventDefault();
+          }}
+          onDrop={(e) => {
+            // Dropping on the list itself (not on a row) moves to the end.
+            e.preventDefault();
+            if (!dragId) return;
+            moveEntry(dragId, null);
+            setDragId(null);
+            setDropId(null);
+          }}
+        >
           {filtered.map((entry) => {
             const open = openId === entry.id;
+            const dragging = dragId === entry.id;
+            // Dragging only makes sense on the unfiltered list: a filtered
+            // row has no well-defined neighbours in the stored order.
+            const sortable = query.trim() === '';
             return (
-              <li key={entry.id} className="overflow-hidden rounded-lg border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)]">
+              <li
+                key={entry.id}
+                className={cn(
+                  'overflow-hidden rounded-lg border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)]',
+                  dragging && 'opacity-50',
+                  dropId === entry.id && 'border-[var(--rp-accent)]',
+                )}
+                onDragOver={(e) => {
+                  if (!sortable || !dragId || dragId === entry.id) return;
+                  e.preventDefault();
+                  setDropId(entry.id);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (!sortable || !dragId || dragId === entry.id) return;
+                  moveEntry(dragId, entry.id);
+                  setDragId(null);
+                  setDropId(null);
+                }}
+              >
                 <div className="flex items-center gap-2 px-2.5 py-2">
+                  {/* R10: drag handle — grab to reorder entries. */}
+                  <span
+                    draggable={sortable}
+                    onDragStart={(e) => {
+                      e.dataTransfer.effectAllowed = 'move';
+                      e.dataTransfer.setData('text/plain', entry.id);
+                      setDragId(entry.id);
+                    }}
+                    onDragEnd={() => {
+                      setDragId(null);
+                      setDropId(null);
+                    }}
+                    className={cn(
+                      'flex shrink-0 cursor-grab touch-none items-center text-[var(--rp-fg-subtle)] active:cursor-grabbing',
+                      !sortable && 'cursor-not-allowed opacity-40',
+                    )}
+                    title={sortable ? '拖动排序' : '搜索时不能拖动排序'}
+                    aria-label={`拖动排序条目 ${entry.comment || '(无标题)'}`}
+                  >
+                    <GripVertical className="size-4" aria-hidden="true" />
+                  </span>
                   <button
                     type="button"
                     onClick={() => setOpenId(open ? null : entry.id)}
@@ -168,6 +246,7 @@ export function LorebookEditor({ book, lorebook, embedded, onChange, onSave, onD
                       <span className="block truncate text-[11px] text-[var(--rp-fg-subtle)]">
                         {entry.constant ? '常驻' : entry.keys.length ? entry.keys.join(' / ') : '无关键词'}
                         {entry.position === WI_POSITION.atDepth ? ` · @${entry.depth}` : ` · ${WI_POSITION_LABELS[entry.position]}`}
+                        {entry.scanDepth != null ? ` · 扫描 ${entry.scanDepth} 条` : ''}
                       </span>
                     </span>
                   </button>
@@ -295,6 +374,26 @@ export function LorebookEditor({ book, lorebook, embedded, onChange, onSave, onD
                           type="number"
                           value={entry.order}
                           onChange={(e) => updateEntry(entry.id, { order: Number(e.target.value) })}
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor={`sd-${entry.id}`}>扫描深度（留空则继承整本 / 全局）</Label>
+                        <Input
+                          id={`sd-${entry.id}`}
+                          type="number"
+                          min={0}
+                          max={20}
+                          value={entry.scanDepth ?? ''}
+                          placeholder="默认"
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            if (raw === '') {
+                              updateEntry(entry.id, { scanDepth: null });
+                              return;
+                            }
+                            const v = Math.max(0, Math.min(20, Number(raw) || 0));
+                            updateEntry(entry.id, { scanDepth: v });
+                          }}
                         />
                       </div>
                     </div>

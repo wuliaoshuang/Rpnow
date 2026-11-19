@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildPrompt, normalizeExamples, resolveOrder, runRegex, PM_DUMMY_ID_CHAT_COMPLETION } from './builder.js';
 import { substituteMacros } from './macros.js';
+import { WI_POSITION } from '../types/card.js';
 import type { RPCard } from '../types/card.js';
 import type { RPCompletionPreset } from '../types/preset.js';
 import { BUILTIN_PRESETS } from '../defaults/presets.js';
@@ -151,6 +152,94 @@ describe('buildPrompt — card/preset/worldbook relationship', () => {
     expect(idx).toBeGreaterThan(-1);
     // Inserted near the end of the message array, not appended to the front.
     expect(idx).toBeGreaterThan(res.messages.length - 6);
+  });
+
+  it('puts system_top world info first, ahead of every preset block', () => {
+    const res = buildPrompt({
+      card: makeCard(),
+      preset: basePreset(),
+      messages: history,
+      worldInfo: {
+        byPosition: new Map([
+          [WI_POSITION.systemTop, [{ content: 'TOP-LORE', comment: 'top' }]],
+        ]),
+      },
+    });
+    expect(res.messages[0].role).toBe('system');
+    expect(res.messages[0].content).toContain('TOP-LORE');
+    expect(res.messages[0].source).toContain('worldInfo');
+    expect(res.injected[0].position).toBe('系统最顶层');
+  });
+
+  it('puts global_note right after system_top and before preset blocks', () => {
+    const res = buildPrompt({
+      card: makeCard(),
+      preset: basePreset(),
+      messages: history,
+      worldInfo: {
+        byPosition: new Map([
+          [WI_POSITION.globalNote, [{ content: 'NOTE-LORE', comment: 'note' }]],
+          [WI_POSITION.systemTop, [{ content: 'TOP-LORE', comment: 'top' }]],
+        ]),
+      },
+    });
+    expect(res.messages[0].content).toContain('TOP-LORE');
+    expect(res.messages[1].content).toContain('NOTE-LORE');
+    // Both still precede the preset's own main text.
+    const mainIdx = res.messages.findIndex((m) => m.content.includes("Write Aria's next reply"));
+    expect(mainIdx).toBeGreaterThan(1);
+    expect(res.injected.map((i) => i.position)).toContain('全局备注');
+  });
+
+  it('prepends user_top world info to the newest user message', () => {
+    const res = buildPrompt({
+      card: makeCard(),
+      preset: basePreset(),
+      messages: history,
+      worldInfo: {
+        byPosition: new Map([
+          [WI_POSITION.userTop, [{ content: 'USER-TOP-LORE', comment: 'ut' }]],
+        ]),
+      },
+    });
+    const userMsg = res.messages.find((m) => m.role === 'user' && m.content.includes('Hi there'));
+    expect(userMsg).toBeDefined();
+    expect(userMsg!.content.startsWith('USER-TOP-LORE\n\nHi there')).toBe(true);
+    expect(res.injected[0].position).toBe('用户消息顶部');
+  });
+
+  it('prepends assistant_top world info to the newest assistant message', () => {
+    const res = buildPrompt({
+      card: makeCard(),
+      preset: basePreset(),
+      messages: history,
+      worldInfo: {
+        byPosition: new Map([
+          [WI_POSITION.assistantTop, [{ content: 'ASST-TOP-LORE', comment: 'at' }]],
+        ]),
+      },
+    });
+    const asstMsg = res.messages.find((m) => m.role === 'assistant' && m.content.includes('Welcome!'));
+    expect(asstMsg).toBeDefined();
+    expect(asstMsg!.content.startsWith('ASST-TOP-LORE\n\nWelcome!')).toBe(true);
+    expect(res.injected[0].position).toBe('助手消息顶部');
+  });
+
+  it('drops user_top / assistant_top when there is no matching message', () => {
+    const res = buildPrompt({
+      card: makeCard(),
+      preset: basePreset(),
+      messages: [],
+      worldInfo: {
+        byPosition: new Map([
+          [WI_POSITION.userTop, [{ content: 'USER-TOP-LORE', comment: 'ut' }]],
+          [WI_POSITION.assistantTop, [{ content: 'ASST-TOP-LORE', comment: 'at' }]],
+        ]),
+      },
+    });
+    const text = res.messages.map((m) => m.content).join('\n');
+    expect(text).not.toContain('USER-TOP-LORE');
+    expect(text).not.toContain('ASST-TOP-LORE');
   });
 
   it('resolves outlets via the provided lookup', () => {
@@ -317,5 +406,30 @@ describe('macros', () => {
 
   it('replaces legacy <USER>/<BOT> tags', () => {
     expect(substituteMacros('<USER> meets <BOT>', ctx)).toBe('Sam meets Aria');
+  });
+});
+
+describe('buildPrompt — multimodal user pictures (I03)', () => {
+  it('attaches pictures only to the newest user turn, never to assistant turns', () => {
+    const res = buildPrompt({
+      card: makeCard(),
+      preset: basePreset(),
+      messages: [
+        { role: 'user', content: 'first', images: ['data:image/png;base64,AAA'] },
+        { role: 'assistant', content: 'reply', images: ['data:image/png;base64,BBB'] },
+        { role: 'user', content: 'second', images: ['data:image/png;base64,CCC', 'data:image/png;base64,DDD'] },
+      ],
+    });
+    const first = res.messages.find((m) => m.content === 'first');
+    const reply = res.messages.find((m) => m.content === 'reply');
+    const second = res.messages.find((m) => m.content === 'second');
+    expect(first?.imageUrls).toBeUndefined();
+    expect(reply?.imageUrls).toBeUndefined();
+    expect(second?.imageUrls).toEqual(['data:image/png;base64,CCC', 'data:image/png;base64,DDD']);
+  });
+
+  it('leaves plain history without imageUrls', () => {
+    const res = buildPrompt({ card: makeCard(), preset: basePreset(), messages: history });
+    expect(res.messages.every((m) => m.imageUrls === undefined)).toBe(true);
   });
 });

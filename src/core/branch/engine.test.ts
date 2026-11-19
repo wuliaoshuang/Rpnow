@@ -1,15 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import {
+  activeBranchMemories,
+  branchMemories,
   buildBranchTree,
   createBranch,
   currentMessages,
   deleteBranch,
   exportBranches,
   importBranches,
+  memoriesForBranch,
   renameBranch,
   switchBranch,
 } from './engine.js';
 import { MAIN_BRANCH, type RPBranch, type RPChat, type RPChatMessage } from '../types/chat.js';
+import type { MemoryRecord } from '../memory/types.js';
+
+function mem(no: number, turn: number, userId: string, assistantId: string): MemoryRecord {
+  return {
+    classicMemory: true,
+    no,
+    turn,
+    summary: `第 ${turn} 轮总结`,
+    sourceUserIds: [userId],
+    sourceAssistantIds: [assistantId],
+    sourceUserText: '用户输入',
+    timestamp: 0,
+    enabled: true,
+  };
+}
 
 function msg(id: string, role: 'user' | 'assistant', content: string): RPChatMessage {
   return { id, role, content, createdAt: 0 };
@@ -241,8 +259,7 @@ describe('importBranches', () => {
   });
 });
 
-describe('exportBranches', () => {
-  it('writes a manifest line then one line per message', () => {
+describe('exportBranches', () => {  it('writes a manifest line then one line per message', () => {
     const first = createBranch(chat(base()), 1)!;
     const jsonl = exportBranches(first.chat);
     const lines = jsonl.trim().split('\n');
@@ -260,5 +277,79 @@ describe('exportBranches', () => {
     expect(records.some((r) => r.branch === MAIN_BRANCH)).toBe(true);
     expect(records.some((r) => r.branch === first.branch.id)).toBe(true);
     expect(records.every((r) => r.role === 'user' || r.role === 'assistant')).toBe(true);
+  });
+});
+
+describe('memoriesForBranch (G10)', () => {
+  it('keeps only records anchored to the branch messages', () => {
+    const records = [mem(1, 1, 'u1', 'a1'), mem(2, 2, 'u2', 'a2')];
+    const view = memoriesForBranch(records, base().slice(0, 2));
+    expect(view.map((r) => r.no)).toEqual([1]);
+    // The input list is untouched.
+    expect(records).toHaveLength(2);
+  });
+
+  it('filters group children and drops empty groups', () => {
+    const group: MemoryRecord = {
+      ...mem(10, 2, 'u2', 'a2'),
+      secondaryCompressed: true,
+      turnStart: 1,
+      turnEnd: 2,
+      sourceMemories: [mem(1, 1, 'u1', 'a1'), mem(2, 2, 'u2', 'a2')],
+    };
+    const view = memoriesForBranch([group], base().slice(0, 2));
+    expect(view).toHaveLength(1);
+    expect(view[0].sourceMemories!.map((r) => r.no)).toEqual([1]);
+    expect(memoriesForBranch([group], [])).toHaveLength(0);
+  });
+
+  it('keeps the original M numbers in the view', () => {
+    const view = memoriesForBranch([mem(7, 1, 'u1', 'a1')], base().slice(0, 2));
+    expect(view[0].no).toBe(7);
+  });
+});
+
+describe('branch memory isolation (G10)', () => {
+  const mainRecords = [mem(1, 1, 'u1', 'a1'), mem(2, 2, 'u2', 'a2')];
+
+  it('forks a snapshot limited to the forked floors and stashes the main view', () => {
+    const out = createBranch(chat(base()), 1, undefined, mainRecords)!;
+    expect(out.branch.memories!.map((r) => r.no)).toEqual([1]);
+    // The main line's full list waits in mainMemories, untouched.
+    expect(out.chat.mainMemories!.map((r) => r.no)).toEqual([1, 2]);
+    // The caller's list was not mutated.
+    expect(mainRecords).toHaveLength(2);
+  });
+
+  it('branch work never leaks into the main line on switch', () => {
+    const created = createBranch(chat(base()), 1, undefined, mainRecords)!;
+    const branchId = created.branch.id;
+    // While on the branch a new summary is written for a branch-only round.
+    const branchView = [
+      ...activeBranchMemories(created.chat),
+      mem(3, 3, 'u3', 'a3'),
+    ];
+    const backOnMain = switchBranch(created.chat, MAIN_BRANCH, branchView);
+    // The branch keeps its own record…
+    expect(branchMemories(backOnMain, branchId)!.map((r) => r.no)).toEqual([1, 3]);
+    // …and the main line still has exactly what it had.
+    expect(activeBranchMemories(backOnMain).map((r) => r.no)).toEqual([1, 2]);
+    // Switching back restores the branch view.
+    const backOnBranch = switchBranch(backOnMain, branchId, activeBranchMemories(backOnMain));
+    expect(activeBranchMemories(backOnBranch).map((r) => r.no)).toEqual([1, 3]);
+  });
+
+  it('works without a live list once snapshots exist', () => {
+    const created = createBranch(chat(base()), 1, undefined, mainRecords)!;
+    const backOnMain = switchBranch(created.chat, MAIN_BRANCH);
+    expect(activeBranchMemories(backOnMain).map((r) => r.no)).toEqual([1, 2]);
+    expect(activeBranchMemories(switchBranch(backOnMain, created.branch.id)).map((r) => r.no)).toEqual([1]);
+  });
+
+  it('deleting a branch drops its snapshot with it', () => {
+    const created = createBranch(chat(base()), 1, undefined, mainRecords)!;
+    const removed = deleteBranch(created.chat, created.branch.id);
+    expect(removed.branches).toHaveLength(0);
+    expect(activeBranchMemories(removed).map((r) => r.no)).toEqual([1, 2]);
   });
 });

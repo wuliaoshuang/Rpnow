@@ -1,5 +1,16 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { APP_VERSION, APP_VERSION_CODE, checkForUpdate, getIgnoredVersionCode, setIgnoredVersionCode } from './version.js';
+import {
+  ANNOUNCEMENT_COUNTDOWN_SECONDS,
+  APP_VERSION,
+  APP_VERSION_CODE,
+  checkForUpdate,
+  clearSeenAnnouncementId,
+  getIgnoredVersionCode,
+  getSeenAnnouncementId,
+  setIgnoredVersionCode,
+  setSeenAnnouncementId,
+  UPDATE_POLL_INTERVAL_MS,
+} from './version.js';
 
 describe('version', () => {
   it('current version is 1.0.0 / code 1', () => {
@@ -18,6 +29,26 @@ describe('version', () => {
     setIgnoredVersionCode(5);
     expect(getIgnoredVersionCode()).toBe(5);
     vi.unstubAllGlobals();
+  });
+
+  it('seen announcement id round-trips through localStorage', () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    });
+    expect(getSeenAnnouncementId()).toBeNull();
+    setSeenAnnouncementId(2);
+    expect(getSeenAnnouncementId()).toBe(2);
+    clearSeenAnnouncementId();
+    expect(getSeenAnnouncementId()).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it('polls every 20s and the announcement countdown is 10s (RP-Hub parity)', () => {
+    expect(UPDATE_POLL_INTERVAL_MS).toBe(20_000);
+    expect(ANNOUNCEMENT_COUNTDOWN_SECONDS).toBe(10);
   });
 });
 

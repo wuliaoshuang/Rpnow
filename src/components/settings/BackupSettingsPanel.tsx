@@ -10,7 +10,8 @@
 import * as React from 'react';
 import { CloudUpload, Loader2, RefreshCw, RotateCcw } from 'lucide-react';
 import { useApp } from '@/state/store.js';
-import { downloadBackup, getBlob, isValidKey, makeBlob, normalizeKey, uploadBackup, type BackupManifest } from '@/core/backup/client.js';
+import { downloadBackup, getBlob, isValidKey, makeBlob, normalizeKey, uploadBackup, BACKUP_STAGE_LABELS, RESTORE_STAGE_LABELS, type BackupManifest, type BackupProgressStage, type RestoreProgressStage } from '@/core/backup/client.js';
+import { setWritesPaused, runAsRestoreWrite } from '@/core/storage/index.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { RPChat } from '@/core/types/chat.js';
 import type { MemoryRecord } from '@/core/memory/types.js';
@@ -33,7 +34,14 @@ export function BackupSettingsPanel() {
   const saveMemories = useApp((s) => s.saveMemories);
 
   const [busy, setBusy] = React.useState<'upload' | 'restore' | null>(null);
-  const [progress, setProgress] = React.useState<{ done: number; total: number } | null>(null);
+  // O10: progress now carries the current stage label (check/upload/publish
+  // for backup, manifest/cards/chats for restore) plus a detail line.
+  const [progress, setProgress] = React.useState<{
+    done: number;
+    total: number;
+    stageLabel: string;
+    detail?: string;
+  } | null>(null);
   const [key, setKey] = React.useState('');
   const [info, setInfo] = React.useState<string | null>(null);
 
@@ -43,7 +51,7 @@ export function BackupSettingsPanel() {
   const runUpload = async () => {
     if (!configured) return;
     setBusy('upload');
-    setProgress({ done: 0, total: 0 });
+    setProgress({ done: 0, total: 0, stageLabel: BACKUP_STAGE_LABELS.prepare, detail: '正在打包角色卡与对话…' });
     setInfo(null);
     try {
       const blobs = [];
@@ -69,7 +77,7 @@ export function BackupSettingsPanel() {
       scopes.push({ key: 'novel', hash: novelBlob.hash });
 
       const total = blobs.reduce((sum, b) => sum + b.bytes.length, 0);
-      setProgress({ done: 0, total });
+      setProgress({ done: 0, total, stageLabel: BACKUP_STAGE_LABELS.check });
 
       const manifest: BackupManifest = {
         type: 'rpnow-backup',
@@ -78,11 +86,18 @@ export function BackupSettingsPanel() {
         characters,
         scopes,
       };
+      const fmtKB = (n: number) => `${Math.round(n / 1024)} KB`;
       const backupKey = await uploadBackup({
         baseURL: serverURL,
         blobs,
         manifest,
-        onProgress: (done) => setProgress({ done, total }),
+        onProgress: (done, totalBytes, stage: BackupProgressStage) =>
+          setProgress({
+            done,
+            total: totalBytes,
+            stageLabel: BACKUP_STAGE_LABELS[stage],
+            detail: stage === 'done' ? undefined : `${fmtKB(done)} / ${fmtKB(totalBytes)}`,
+          }),
       });
       setInfo(`备份密钥：${backupKey}（15 天内有效，请妥善保存）`);
       toast.success('备份完成', `密钥 ${backupKey}`);
@@ -101,17 +116,27 @@ export function BackupSettingsPanel() {
       toast.error('密钥格式不正确', '需要 16 位字母数字（O 会按 0、I/L 会按 1 处理）');
       return;
     }
-    if (!(await confirmAction({ title: '确认操作', description: `确定要用密钥 ${normalized} 恢复吗？同名角色卡与聊天会被覆盖。` }))) return;
+    if (!(await confirmAction({ title: '确认操作', description: `确定要用密钥 ${normalized} 恢复吗？同名角色卡与聊天会被覆盖。恢复期间将暂停写入，避免新内容覆盖恢复中的数据。` }))) return;
     setBusy('restore');
     setInfo(null);
+    // O02: pause writes for the whole restore; the restore's own writes run
+    // inside runAsRestoreWrite below. Always resumed in `finally`.
+    setWritesPaused(true);
     try {
+      await runAsRestoreWrite(async () => {
+      setProgress({ done: 0, total: 0, stageLabel: RESTORE_STAGE_LABELS.manifest });
       const manifest = await downloadBackup(serverURL, normalized);
       let cardsRestored = 0;
       let chatsRestored = 0;
       let memoriesRestored = 0;
+      let done = 1;
+      const totalSteps = 1 + manifest.characters.length + manifest.scopes.length;
+      const setStage = (stage: RestoreProgressStage, step: number) =>
+        setProgress({ done: step, total: totalSteps, stageLabel: RESTORE_STAGE_LABELS[stage] });
 
       // Download every blob and write it back through the normal store actions,
       // so the rest of the app sees exactly the same state as a local edit.
+      setStage('cards', done);
       for (const ref of manifest.characters) {
         try {
           const card = (await getBlob(serverURL, ref.hash)) as RPCard;
@@ -121,8 +146,11 @@ export function BackupSettingsPanel() {
         } catch (err) {
           console.warn('[backup] 卡片块恢复失败', ref.hash, err);
         }
+        done++;
+        setStage('cards', done);
       }
 
+      setStage('chats', done);
       for (const scope of manifest.scopes) {
         try {
           if (scope.key === 'novel') {
@@ -148,16 +176,21 @@ export function BackupSettingsPanel() {
         } catch (err) {
           console.warn('[backup] 数据块恢复失败', scope.key, err);
         }
+        done++;
+        setStage('chats', done);
       }
 
       setInfo(
         `已恢复 ${cardsRestored} 张角色卡、${chatsRestored} 份对话、${memoriesRestored} 份记忆。`,
       );
       toast.success('恢复完成', `${cardsRestored} 张角色卡 · ${chatsRestored} 份对话`);
+      });
     } catch (err) {
       toast.error('恢复失败', err instanceof Error ? err.message : String(err));
     } finally {
+      setWritesPaused(false);
       setBusy(null);
+      setProgress(null);
     }
   };
 
@@ -205,7 +238,14 @@ export function BackupSettingsPanel() {
           <div className="h-1.5 overflow-hidden rounded-full bg-[var(--rp-bg-sunken)]">
             <div className="h-full rounded-full bg-[var(--rp-accent)] transition-all" style={{ width: `${percent}%` }} />
           </div>
-          <p className="text-[11px] tabular-nums text-[var(--rp-fg-subtle)]">{percent}%</p>
+          <p className="text-[11px] tabular-nums text-[var(--rp-fg-subtle)]">
+            {progress.stageLabel}
+            {progress.total > 0 ? ` · ${percent}%` : ''}
+            {progress.detail ? ` · ${progress.detail}` : ''}
+          </p>
+          {busy === 'restore' && (
+            <p className="text-[11px] text-[var(--rp-fg-subtle)]">恢复期间已暂停写入，避免新内容覆盖恢复中的数据。</p>
+          )}
         </div>
       )}
 

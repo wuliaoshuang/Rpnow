@@ -132,7 +132,7 @@ export class MemoryService {
         model: settings.summaryModel || conn.defaultModel || '',
         messages,
         maxTokens: 1200,
-        temperature: 0.3,
+        temperature: 0.2,
       });
       summary = (res.text ?? '').trim();
     } catch (err) {
@@ -184,13 +184,27 @@ export class MemoryService {
     const records = this.io.load(chat.id);
     const rounds = buildRounds(chat.messages);
     const compressible = rounds.filter((r) => r.turn >= settings.secondaryKeepRounds);
+    // Ranges already collapsed into a group summary. Without this guard every
+    // post-generation trigger would re-group the same children and mint a
+    // duplicate group record (the per-round children stay in the list).
+    const coveredRanges = (list: MemoryRecord[]): Array<[number, number]> =>
+      list
+        .filter((r) => r.secondaryCompressed)
+        .map((r) => [r.turnStart ?? r.turn, r.turnEnd ?? r.turn] as [number, number]);
+    const overlapsCovered = (start: number, end: number, ranges: Array<[number, number]>) =>
+      ranges.some(([s, e]) => start <= e && end >= s);
+    const alreadyCovered = coveredRanges(records);
     const groups: MemoryRecord[][] = [];
     for (let i = 0; i < compressible.length; i += settings.secondaryGroupSize) {
       const slice = compressible.slice(i, i + settings.secondaryGroupSize);
       const children = records.filter((r) =>
         !r.secondaryCompressed && slice.some((round) => round.turn === r.turn),
       );
-      if (children.length > 1) groups.push(children);
+      if (children.length <= 1) continue;
+      const startTurn = children[0].turn;
+      const endTurn = children[children.length - 1].turn;
+      if (overlapsCovered(startTurn, endTurn, alreadyCovered)) continue;
+      groups.push(children);
     }
     if (!groups.length) return [];
 
@@ -212,7 +226,7 @@ export class MemoryService {
             children,
           ),
           maxTokens: 1600,
-          temperature: 0.3,
+          temperature: 0.2,
         });
         const summary = (res.text ?? '').trim();
         if (!summary) continue;
@@ -235,7 +249,32 @@ export class MemoryService {
       }
     }
 
-    if (created.length) await this.io.save(chat.id, [...records, ...created]);
+    // Merge-save, not blind overwrite: the round summary this trigger runs
+    // alongside may have saved after we loaded `records`. Reloading keeps a
+    // concurrent summarise from being clobbered, and re-checking coverage
+    // drops a group a parallel trigger already created.
+    if (created.length) {
+      const fresh = this.io.load(chat.id);
+      const freshCovered = coveredRanges(fresh);
+      const novel = created.filter(
+        (g) => !overlapsCovered(g.turnStart ?? g.turn, g.turnEnd ?? g.turn, freshCovered),
+      );
+      // A round summary saved after our load may have taken the same `no` a
+      // group was numbered with; reassign colliding group numbers so no two
+      // records ever share an M-number.
+      const taken = new Set<number>();
+      for (const r of fresh) {
+        taken.add(r.no);
+        for (const c of r.sourceMemories ?? []) taken.add(c.no);
+      }
+      let nextNo = Math.max(0, ...taken) + 1;
+      for (const g of novel) {
+        if (taken.has(g.no)) g.no = nextNo++;
+        taken.add(g.no);
+      }
+      if (novel.length) await this.io.save(chat.id, [...fresh, ...novel]);
+      return novel;
+    }
     return created;
   }
 
@@ -298,7 +337,7 @@ export class MemoryService {
                 historyText,
               }),
               maxTokens: 1200,
-              temperature: 0.3,
+              temperature: 0.2,
             });
             const summary = (res.text ?? '').trim();
             if (summary) {

@@ -15,6 +15,7 @@ import * as React from 'react';
 import {
   BookMarked,
   Bot,
+  Braces,
   ChevronLeft,
   IdCard,
   MessageSquare,
@@ -34,6 +35,7 @@ export type Route =
   | 'cards'
   | 'lore'
   | 'presets'
+  | 'regex'
   | 'novel'
   | 'novel-chapters'
   | 'novel-settings'
@@ -42,6 +44,7 @@ export type Route =
   | 'plugins'
   | 'card-store'
   | 'plugin-store'
+  | 'usage'
   | 'settings';
 
 /** Novel book sub-routes (a book's workspace is split into pages, not tabs). */
@@ -58,6 +61,7 @@ export const NAV_ITEMS: NavItem[] = [
   { route: 'cards', label: '角色卡', icon: IdCard },
   { route: 'lore', label: '世界书', icon: BookMarked },
   { route: 'presets', label: '预设', icon: Sparkles },
+  { route: 'regex', label: '正则', icon: Braces },
   { route: 'novel', label: '小说', icon: BookOpenText },
   { route: 'plugins', label: '插件', icon: Puzzle },
   { route: 'settings', label: '设置', icon: SettingsIcon },

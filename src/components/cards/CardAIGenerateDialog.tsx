@@ -10,7 +10,19 @@ import * as React from 'react';
 import { Sparkles, Square } from 'lucide-react';
 import { useApp } from '@/state/store.js';
 import { useLLM } from '@/hooks/useKernel.js';
-import { buildCardGenMessages, parseCardSections } from '@/core/cardai/generate.js';
+import {
+  CARD_GEN_STATUS_TEXT,
+  CARD_GEN_TOTAL_SECTIONS,
+  buildCardGenMessages,
+  cardGenProgress,
+  cardGenSectionsSeen,
+  extractOutputReplyContent,
+  outputReplyToolDef,
+  parseCardSections,
+  shouldRetryCardGen,
+  type CardGenStatus,
+} from '@/core/cardai/generate.js';
+import { REPLY_TOOL_INSTRUCTION } from '@/core/tools/engine.js';
 import { cardFromSections } from '@/core/cardai/map.js';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/input';
@@ -33,7 +45,15 @@ export function CardAIGenerateDialog({
   const [prompt, setPrompt] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [streamText, setStreamText] = React.useState('');
+  /** P02: RP-Hub style progress — 60% for the 7 base sections, +20% for the
+      Regex Scripts section, 100% only when generation finishes. */
+  const [progress, setProgress] = React.useState(0);
+  const [status, setStatus] = React.useState<CardGenStatus>('preparing');
+  /** P03: true while the one Gemini truncation retry is running. */
+  const [retrying, setRetrying] = React.useState(false);
   const abortRef = React.useRef<AbortController | null>(null);
+
+  const sectionsDone = cardGenSectionsSeen(streamText).totalDone;
 
   // Esc closes (matching every other sheet in the app).
   React.useEffect(() => {
@@ -66,26 +86,77 @@ export function CardAIGenerateDialog({
     }
     setBusy(true);
     setStreamText('');
+    setProgress(0);
+    setStatus('waiting');
+    setRetrying(false);
     const controller = new AbortController();
     abortRef.current = controller;
+    const model = connection.defaultModel || '';
     try {
       const messages = buildCardGenMessages(prompt.trim());
       let text = '';
       const stream = llm.stream(connection.id, {
-        model: connection.defaultModel || '',
+        model,
         messages,
         stream: true,
         temperature: 1,
         signal: controller.signal,
       });
+      let sawText = false;
       for await (const ev of stream) {
         if (ev.type === 'text') {
+          if (!sawText) {
+            sawText = true;
+            setStatus('generating');
+          }
           text += ev.delta;
           setStreamText(text);
+          setProgress(cardGenProgress(text));
         } else if (ev.type === 'error') {
           throw new Error(ev.message);
         }
       }
+      // P03: Gemini often truncates the tail (<image> avatar block and/or the
+      // Regex Scripts section). One retry through the output_reply tool.
+      if (shouldRetryCardGen(text, model)) {
+        setRetrying(true);
+        setStatus('generating');
+        let retryText = '';
+        let toolText = '';
+        const retryStream = llm.stream(connection.id, {
+          model,
+          messages: [
+            ...messages,
+            { role: 'assistant', content: text },
+            {
+              role: 'user',
+              content: `${REPLY_TOOL_INSTRUCTION}\n上一次输出不完整（缺少头像或正则脚本章节），请把上面未完成的部分补全，重新输出完整角色卡（全部 10 节）。`,
+            },
+          ],
+          stream: true,
+          temperature: 1,
+          signal: controller.signal,
+          tools: [outputReplyToolDef()],
+          toolChoice: 'required',
+        });
+        for await (const ev of retryStream) {
+          if (ev.type === 'text') {
+            retryText += ev.delta;
+          } else if (ev.type === 'tool_call') {
+            toolText = extractOutputReplyContent(ev.call) ?? toolText;
+          } else if (ev.type === 'error') {
+            throw new Error(ev.message);
+          }
+        }
+        const replacement = toolText || retryText;
+        if (replacement && parseCardSections(replacement).name.trim()) {
+          text = replacement;
+          setStreamText(text);
+        }
+        setRetrying(false);
+      }
+      setProgress(cardGenProgress(text, true));
+      setStatus('done');
       const sections = parseCardSections(text);
       if (!sections.name.trim()) {
         throw new Error('模型没有返回角色名，请重试或换一个模型');
@@ -101,6 +172,7 @@ export function CardAIGenerateDialog({
       if ((err as Error).name === 'AbortError') {
         toast.info('已停止生成');
       } else {
+        setStatus('failed');
         toast.error('生成失败', err instanceof Error ? err.message : String(err));
       }
     } finally {
@@ -147,7 +219,27 @@ export function CardAIGenerateDialog({
 
           {busy && (
             <div className="space-y-1.5">
-              <p className="text-[11px] text-[var(--rp-fg-muted)]">正在生成…</p>
+              <div className="flex items-center justify-between text-[11px] text-[var(--rp-fg-muted)]">
+                <span>
+                  {CARD_GEN_STATUS_TEXT[status]}…{retrying ? '（检测到内容截断，正在重试）' : ''}
+                </span>
+                <span className="tabular-nums">
+                  {progress}% · 已完成 {sectionsDone}/{CARD_GEN_TOTAL_SECTIONS} 节
+                </span>
+              </div>
+              <div
+                role="progressbar"
+                aria-valuenow={progress}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label="生成进度"
+                className="h-1.5 overflow-hidden rounded-full bg-[var(--rp-bg-sunken)]"
+              >
+                <div
+                  className="h-full rounded-full bg-[var(--rp-accent)] transition-[width] duration-300"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
               <pre className="max-h-56 overflow-auto rounded-lg border border-[var(--rp-border)] bg-[var(--rp-bg-sunken)] p-2.5 text-[11px] leading-relaxed text-[var(--rp-fg-muted)] rp-scroll">
                 {streamText || '等待模型响应…'}
               </pre>

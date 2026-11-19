@@ -143,6 +143,32 @@ export interface Change {
   label: string;
   original: string;
   modified: string;
+  /** Which group this change belongs to (drives mono rendering + preview). */
+  kind: 'field' | 'worldInfo' | 'regex';
+  /** Text-field key, set only when kind is 'field' (e.g. 'first_mes'). */
+  field?: (typeof EDIT_TEXT_FIELDS)[number];
+}
+
+/** Finish reasons that mean the model output was cut off mid-way (P06). */
+export function isTruncatedFinishReason(reason: string | undefined): boolean {
+  // OpenAI/Gemini report 'length'; Anthropic reports the same cutoff as
+  // 'max_tokens' and the adapter passes it through verbatim.
+  return reason === 'length' || reason === 'max_tokens';
+}
+
+/**
+ * Snapshot of everything `apply` would overwrite (P08).
+ *
+ * The editor's live `data` is what the diff draft replaces, and `savedData`
+ * is the stored card the editor was opened from. Both are captured at
+ * generate time; if either moved before apply, the diff is stale and must
+ * be regenerated. `JSON.stringify` is deterministic here because both
+ * snapshots come from the same object lineage (no key reordering in
+ * between), and `updatedAt`/`favorite` are deliberately excluded — they
+ * change without the editable content changing.
+ */
+export function snapshotCardForEdit(live: RPCard, saved: RPCard | null): string {
+  return JSON.stringify({ data: live.data ?? {}, savedData: saved?.data ?? null });
 }
 
 /** Compute the changes a diff would make, for the confirmation UI. */
@@ -156,7 +182,7 @@ export function diffCard(card: RPCard, diff: CardDiff): { card: RPCard; changes:
     const original = String((next.data as unknown as Record<string, unknown>)[key] ?? '');
     if (original === field.text) continue;
     (next.data as unknown as Record<string, unknown>)[key] = field.text;
-    changes.push({ label: EDIT_FIELD_LABELS[Number(field.id) - 1], original, modified: field.text });
+    changes.push({ label: EDIT_FIELD_LABELS[Number(field.id) - 1], original, modified: field.text, kind: 'field', field: key });
   }
 
   const entries = next.data.character_book?.entries ?? [];
@@ -176,7 +202,7 @@ export function diffCard(card: RPCard, diff: CardDiff): { card: RPCard; changes:
         useRegex: false,
         probability: 100,
       } as never);
-      changes.push({ label: '世界书新增', original: '', modified: String(w.content ?? '') });
+      changes.push({ label: '世界书新增', original: '', modified: String(w.content ?? ''), kind: 'worldInfo' });
       continue;
     }
     const index = /^W(\d+)$/.exec(w.id)?.[1];
@@ -184,17 +210,17 @@ export function diffCard(card: RPCard, diff: CardDiff): { card: RPCard; changes:
     if (at < 0 || at >= entries.length) continue;
     const target = entries[at] as unknown as Record<string, unknown>;
     if (w.delete) {
-      changes.push({ label: `世界书删除：${String(target.comment)}`, original: String(target.content ?? ''), modified: '' });
+      changes.push({ label: `世界书删除：${String(target.comment)}`, original: String(target.content ?? ''), modified: '', kind: 'worldInfo' });
       entries.splice(at, 1);
       continue;
     }
     if (w.comment !== undefined) {
-      changes.push({ label: `世界书名：${String(target.comment)}`, original: String(target.comment), modified: w.comment });
+      changes.push({ label: `世界书名：${String(target.comment)}`, original: String(target.comment), modified: w.comment, kind: 'worldInfo' });
       target.comment = w.comment;
       target.name = w.comment;
     }
     if (w.content !== undefined) {
-      changes.push({ label: `世界书内容：${String(target.comment)}`, original: String(target.content ?? ''), modified: w.content });
+      changes.push({ label: `世界书内容：${String(target.comment)}`, original: String(target.content ?? ''), modified: w.content, kind: 'worldInfo' });
       target.content = w.content;
     }
     if (w.keys !== undefined) {
@@ -229,7 +255,7 @@ export function diffCard(card: RPCard, diff: CardDiff): { card: RPCard; changes:
         promptOnly: r.promptOnly === true,
         enabled: r.enabled ?? true,
       });
-      changes.push({ label: '正则新增', original: '', modified: String(r.regex ?? '') });
+      changes.push({ label: '正则新增', original: '', modified: String(r.regex ?? ''), kind: 'regex' });
       continue;
     }
     const index = /^R(\d+)$/.exec(r.id)?.[1];
@@ -237,16 +263,16 @@ export function diffCard(card: RPCard, diff: CardDiff): { card: RPCard; changes:
     if (at < 0 || at >= scripts.length) continue;
     const target = scripts[at];
     if (r.delete) {
-      changes.push({ label: `正则删除：${String(target.scriptName)}`, original: String(target.findRegex ?? ''), modified: '' });
+      changes.push({ label: `正则删除：${String(target.scriptName)}`, original: String(target.findRegex ?? ''), modified: '', kind: 'regex' });
       scripts.splice(at, 1);
       continue;
     }
     if (r.name !== undefined) {
-      changes.push({ label: `正则名：${String(target.scriptName)}`, original: String(target.scriptName), modified: r.name });
+      changes.push({ label: `正则名：${String(target.scriptName)}`, original: String(target.scriptName), modified: r.name, kind: 'regex' });
       target.scriptName = r.name;
     }
     if (r.regex !== undefined) {
-      changes.push({ label: `正则：${String(target.scriptName)}`, original: String(target.findRegex ?? ''), modified: r.regex });
+      changes.push({ label: `正则：${String(target.scriptName)}`, original: String(target.findRegex ?? ''), modified: r.regex, kind: 'regex' });
       target.findRegex = r.regex;
     }
     if (r.replacement !== undefined) target.replaceString = r.replacement;

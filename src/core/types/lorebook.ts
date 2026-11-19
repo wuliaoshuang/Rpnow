@@ -7,7 +7,7 @@
  * book and a standalone imported book go through identical code paths.
  */
 
-import { WI_LOGIC, WI_POSITION, type CharacterBookEntryExtensions, type RPCharacterBookEntry } from './card.js';
+import { WI_LOGIC, WI_POSITION, WI_POSITION_NATIVE_EXPORT, type CharacterBookEntryExtensions, type RPCharacterBookEntry } from './card.js';
 
 export type RPLorebook = {
   id: string;
@@ -85,12 +85,18 @@ export interface LorebookDefaults {
   scanDepth: number;
   tokenBudget: number;
   recursiveScanning: boolean;
+  /**
+   * Entry scan-depth cap (RP-Hub `maxDepth`, default 0 = no cap). When > 0,
+   * an entry's effective scan depth is `min(entry.scanDepth ?? global, maxDepth)`.
+   */
+  maxDepth: number;
 }
 
 export const DEFAULT_LOREBOOK_SETTINGS: LorebookDefaults = {
-  scanDepth: 4,
+  scanDepth: 2,
   tokenBudget: 25,
   recursiveScanning: true,
+  maxDepth: 0,
 };
 
 /** Default values for a freshly created entry. */
@@ -138,47 +144,53 @@ export function newEntry(partial: Partial<RPLorebookEntry> = {}): RPLorebookEntr
  * (numeric) is authoritative and the top-level string is only a fallback.
  */
 /**
- * Position names used by RP-Hub / other tools, mapped onto RPNow's
- * SillyTavern-compatible numeric positions.
+ * Position names used by RP-Hub / other tools, resolved onto RPNow's
+ * position enum.
  *
- * Two RP-Hub positions have no exact equivalent in the ST set:
- * `user_top` / `assistant_top` (prepend to the newest user/assistant message)
- * map to the closest ST slots, `EMTop` / `EMBottom`. The mapping is applied on
- * import and on AI generation so behaviour is consistent; the UI labels the
- * ST positions so the difference is visible.
+ * RP-Hub's seven positions are native here: `system_top` (8),
+ * `global_note` (9), `user_top` (10) and `assistant_top` (11) are real enum
+ * values with their own builder semantics — they are NOT approximated by the
+ * ST slots any more. ST-only aliases (`an_top`, `em_top`, …) still map to
+ * their ST positions, and RP-Hub's own aliases follow RP-Hub's normaliser
+ * (`an_top` / `author_note` / `an_bottom` → `global_note`).
  */
 export const POSITION_ALIASES: Record<string, number> = {
-  system_top: WI_POSITION.ANTop,
-  an_top: WI_POSITION.ANTop,
-  global_note: WI_POSITION.ANBottom,
-  an_bottom: WI_POSITION.ANBottom,
+  system_top: WI_POSITION.systemTop,
+  an_top: WI_POSITION.globalNote,
+  author_note: WI_POSITION.globalNote,
+  global_note: WI_POSITION.globalNote,
+  an_bottom: WI_POSITION.globalNote,
   before_char: WI_POSITION.before,
   before_character: WI_POSITION.before,
   after_char: WI_POSITION.after,
   after_character: WI_POSITION.after,
   at_depth: WI_POSITION.atDepth,
   emotioncheck: WI_POSITION.atDepth,
-  user_top: WI_POSITION.EMTop,
+  user_top: WI_POSITION.userTop,
   em_top: WI_POSITION.EMTop,
-  assistant_top: WI_POSITION.EMBottom,
+  assistant_top: WI_POSITION.assistantTop,
   em_bottom: WI_POSITION.EMBottom,
 };
 
 /** Resolve any accepted position spelling to a numeric position. */
 export function resolvePosition(value: unknown): number | undefined {
-  if (typeof value === 'number' && value >= 0 && value <= 7) return Math.round(value);
+  if (typeof value === 'number' && value >= 0 && value <= 11) return Math.round(value);
   if (typeof value === 'string') {
     const key = value.trim().toLowerCase();
     if (key in POSITION_ALIASES) return POSITION_ALIASES[key];
     const n = Number(key);
-    if (Number.isFinite(n) && n >= 0 && n <= 7) return Math.round(n);
+    if (Number.isFinite(n) && n >= 0 && n <= 11) return Math.round(n);
   }
   return undefined;
 }
 
 export function fromCardEntry(raw: RPCharacterBookEntry, index: number): RPLorebookEntry {
   const ext: CharacterBookEntryExtensions = raw.extensions ?? {};
-  const numericPos = resolvePosition(ext.position);
+  // `rp_position` (written by toCardEntry for native positions) wins over the
+  // numeric ST slot, so an export → import round-trip restores the native
+  // position instead of its ST approximation.
+  const nativePos = resolvePosition(ext.rp_position);
+  const numericPos = nativePos ?? resolvePosition(ext.position);
   const fallback = resolvePosition(raw.position) ?? WI_POSITION.before;
   return newEntry({
     id: String(raw.id ?? `e_${index}`),
@@ -220,6 +232,7 @@ export function fromCardEntry(raw: RPCharacterBookEntry, index: number): RPLoreb
         ([k]) =>
           ![
             'position',
+            'rp_position',
             'depth',
             'role',
             'selectiveLogic',
@@ -258,6 +271,11 @@ export function fromCardEntry(raw: RPCharacterBookEntry, index: number): RPLoreb
  */
 export function toCardEntry(entry: RPLorebookEntry, index: number): RPCharacterBookEntry {
   const atDepth = entry.position === WI_POSITION.atDepth;
+  // Native RP-Hub positions (8–11) have no ST equivalent: export the closest
+  // ST number so ST readers still place the entry approximately, and keep the
+  // RP-Hub name in `rp_position` (plus the top-level string) so RPNow and
+  // RP-Hub readers restore the exact position on re-import.
+  const nativeExport = WI_POSITION_NATIVE_EXPORT[entry.position];
   return {
     id: index,
     keys: entry.keys,
@@ -268,11 +286,16 @@ export function toCardEntry(entry: RPLorebookEntry, index: number): RPCharacterB
     selective: entry.selective,
     insertion_order: entry.order,
     enabled: entry.enabled,
-    position: entry.position === WI_POSITION.after ? 'after_char' : 'before_char',
+    position: nativeExport
+      ? nativeExport.name
+      : entry.position === WI_POSITION.after
+        ? 'after_char'
+        : 'before_char',
     use_regex: entry.useRegex,
     case_sensitive: entry.caseSensitive,
     extensions: {
-      position: entry.position,
+      position: nativeExport ? nativeExport.st : entry.position,
+      ...(nativeExport ? { rp_position: nativeExport.name } : {}),
       // A few readers only honour `depth` when position is atDepth; keep the
       // value meaningful either way.
       depth: atDepth ? entry.depth : entry.depth,

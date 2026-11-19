@@ -14,6 +14,7 @@ import {
   ArrowUp,
   Download,
   FileJson,
+  GripVertical,
   Plus,
   RotateCcw,
   Save,
@@ -24,11 +25,18 @@ import {
 import { useApp } from '@/state/store.js';
 import type { RPCompletionPreset, RPPromptEntry } from '@/core/types/preset.js';
 import { BUILTIN_PRESETS } from '@/core/defaults/presets.js';
+import {
+  managedPresetIdentifier,
+  managedPresetOrder,
+  managedPresetToEntry,
+  type ManagedPreset,
+} from '@/core/presets/managed.js';
 import { normalizePreset } from '@/features/import/cardImport.js';
 import { applyCompletionRepairs } from '@/features/import/cardImport.js';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Textarea, Slider } from '@/components/ui/input.js';
 import { Badge, EmptyState } from '@/components/ui/misc.js';
+import { ExportSelectionModal } from '@/components/export/ExportSelectionModal.js';
 import { toast } from '@/components/ui/toast.js';
 import { downloadBlob, safeFilename, uid } from '@/lib/utils.js';
 import { cn } from '@/lib/utils.js';
@@ -59,21 +67,32 @@ export function PresetsPage() {
   }, [presets]);
   const [selectedId, setSelectedId] = useState<string>(settings.defaultPresetId ?? all[0]?.id ?? '');
   const [draft, setDraft] = useState<RPCompletionPreset | null>(null);
+  /** O07: selective export sheet (pick which presets leave the app). */
+  const [exportOpen, setExportOpen] = useState(false);
+  /** R10: HTML5 drag sort — identifier of the block being dragged, if any. */
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropId, setDropId] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const selected = all.find((p) => p.id === selectedId) ?? all[0];
   const isBuiltin = BUILTIN_PRESETS.some((p) => p.id === selected?.id);
   const working = draft ?? selected;
 
-  function startEdit(source: RPCompletionPreset) {
+  function forkPreset(source: RPCompletionPreset): RPCompletionPreset {
     // Editing a builtin forks it, so the original stays pristine.
+    const builtin = BUILTIN_PRESETS.some((p) => p.id === source.id);
     const fork: RPCompletionPreset = {
       ...structuredClone(source),
-      id: isBuiltin ? uid('preset') : source.id,
-      name: isBuiltin ? `${source.name}（副本）` : source.name,
+      id: builtin ? uid('preset') : source.id,
+      name: builtin ? `${source.name}（副本）` : source.name,
     };
     setDraft(fork);
     setSelectedId(fork.id ?? uid('preset'));
+    return fork;
+  }
+
+  function startEdit(source: RPCompletionPreset) {
+    forkPreset(source);
   }
 
   async function save() {
@@ -131,6 +150,23 @@ export function PresetsPage() {
     commitPreset(next);
   }
 
+  /** R10: drag a block before another (or to the end of the order). */
+  function moveBlockTo(identifier: string, beforeId: string | null) {
+    const next = structuredClone(working!);
+    const group = next.prompt_order.find((g) => String(g.character_id) === String(ORDER_ID)) ?? next.prompt_order[0];
+    if (!group) return;
+    const idx = group.order.findIndex((r) => r.identifier === identifier);
+    if (idx === -1) return;
+    const [moved] = group.order.splice(idx, 1);
+    if (beforeId === null) {
+      group.order.push(moved);
+    } else {
+      const to = group.order.findIndex((r) => r.identifier === beforeId);
+      group.order.splice(to < 0 ? group.order.length : to, 0, moved);
+    }
+    commitPreset(next);
+  }
+
   function setContent(identifier: string, content: string) {
     const next = structuredClone(working!);
     const entry = next.prompts.find((p) => p.identifier === identifier);
@@ -152,6 +188,60 @@ export function PresetsPage() {
     next.prompts.push(entry);
     const group = next.prompt_order.find((g) => String(g.character_id) === String(ORDER_ID)) ?? next.prompt_order[0];
     group?.order.push({ identifier: id, enabled: true });
+    commitPreset(next);
+  }
+
+  /** 在当前预设里加入/移除一个托管预设区块（F05）。没开编辑时先复制一份再改。 */
+  function toggleManaged(p: ManagedPreset) {
+    const base = draft ?? forkPreset(working);
+    const next = structuredClone(base);
+    const id = managedPresetIdentifier(p);
+    const existing = next.prompts.findIndex((e) => e.identifier === id);
+    const group = next.prompt_order.find((g) => String(g.character_id) === String(ORDER_ID)) ?? next.prompt_order[0];
+    if (existing >= 0) {
+      next.prompts.splice(existing, 1);
+      for (const g of next.prompt_order) {
+        const i = g.order.findIndex((r) => r.identifier === id);
+        if (i >= 0) g.order.splice(i, 1);
+      }
+    } else {
+      next.prompts.push(managedPresetToEntry(p));
+      const row = { identifier: id, enabled: true };
+      const jailIdx = group?.order.findIndex((r) => r.identifier === 'jailbreak') ?? -1;
+      if (group && jailIdx >= 0) group.order.splice(jailIdx, 0, row);
+      else group?.order.push(row);
+    }
+    commitPreset(next);
+  }
+
+  /** COT 预设（F06）是动态生成的占位区块：勾选后 builder 在组装提示词时
+   * 按当前上下文（记忆/UI 模板/剧情面板/模型）现场生成 COT 文本。 */
+  function toggleCot() {
+    const base = draft ?? forkPreset(working);
+    const next = structuredClone(base);
+    const id = 'cotPreset';
+    const existing = next.prompts.findIndex((e) => e.identifier === id);
+    const group = next.prompt_order.find((g) => String(g.character_id) === String(ORDER_ID)) ?? next.prompt_order[0];
+    if (existing >= 0) {
+      next.prompts.splice(existing, 1);
+      for (const g of next.prompt_order) {
+        const i = g.order.findIndex((r) => r.identifier === id);
+        if (i >= 0) g.order.splice(i, 1);
+      }
+    } else {
+      next.prompts.push({
+        identifier: id,
+        name: 'COT 预设（动态生成）',
+        system_prompt: true,
+        role: 'system',
+        marker: true,
+        enabled: true,
+      });
+      const row = { identifier: id, enabled: true };
+      const jailIdx = group?.order.findIndex((r) => r.identifier === 'jailbreak') ?? -1;
+      if (group && jailIdx >= 0) group.order.splice(jailIdx, 0, row);
+      else group?.order.push(row);
+    }
     commitPreset(next);
   }
 
@@ -177,6 +267,9 @@ export function PresetsPage() {
             />
             <Button variant="ghost" size="icon-sm" onClick={() => fileInput.current?.click()} aria-label="导入预设">
               <Upload className="size-4" aria-hidden="true" />
+            </Button>
+            <Button variant="ghost" size="icon-sm" onClick={() => setExportOpen(true)} aria-label="选择性导出预设" title="选择性导出">
+              <Download className="size-4" aria-hidden="true" />
             </Button>
           </div>
         </div>
@@ -316,7 +409,21 @@ export function PresetsPage() {
                 </Button>
               )}
             </div>
-            <ol className="space-y-1.5">
+            <ol
+              className="space-y-1.5"
+              onDragOver={(e) => {
+                if (!dragId) return;
+                e.preventDefault();
+              }}
+              onDrop={(e) => {
+                // Dropping on the list itself moves the block to the end.
+                e.preventDefault();
+                if (!dragId) return;
+                moveBlockTo(dragId, null);
+                setDragId(null);
+                setDropId(null);
+              }}
+            >
               {rows.map((row, i) => {
                 const entry = byId.get(row.identifier);
                 if (!entry) return null;
@@ -327,9 +434,44 @@ export function PresetsPage() {
                     className={cn(
                       'rounded-lg border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)]',
                       !row.enabled && 'opacity-60',
+                      dragId === row.identifier && 'opacity-50',
+                      dropId === row.identifier && 'border-[var(--rp-accent)]',
                     )}
+                    onDragOver={(e) => {
+                      if (!draft || !dragId || dragId === row.identifier) return;
+                      e.preventDefault();
+                      setDropId(row.identifier);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!draft || !dragId || dragId === row.identifier) return;
+                      moveBlockTo(dragId, row.identifier);
+                      setDragId(null);
+                      setDropId(null);
+                    }}
                   >
                     <div className="flex items-center gap-2 p-2">
+                      {/* R10: drag handle — only while editing a draft. */}
+                      {draft && (
+                        <span
+                          draggable
+                          onDragStart={(e) => {
+                            e.dataTransfer.effectAllowed = 'move';
+                            e.dataTransfer.setData('text/plain', row.identifier);
+                            setDragId(row.identifier);
+                          }}
+                          onDragEnd={() => {
+                            setDragId(null);
+                            setDropId(null);
+                          }}
+                          className="flex shrink-0 cursor-grab touch-none items-center text-[var(--rp-fg-subtle)] active:cursor-grabbing"
+                          title="拖动排序"
+                          aria-label={`拖动排序区块 ${entry.name}`}
+                        >
+                          <GripVertical className="size-4" aria-hidden="true" />
+                        </span>
+                      )}
                       <span className="w-5 text-center text-[11px] tabular-nums text-[var(--rp-fg-subtle)]">
                         {i + 1}
                       </span>
@@ -377,6 +519,57 @@ export function PresetsPage() {
                 );
               })}
             </ol>
+          </section>
+
+          {/* Managed preset library (F05) + dynamic COT preset (F06) */}
+          <section className="space-y-2">
+            <h3 className="text-[13px] font-semibold">托管预设库</h3>
+            <p className="text-[11.5px] leading-relaxed text-[var(--rp-fg-muted)]">
+              勾选后把该预设作为一个区块加入当前预设（内置预设会自动先复制一份）。
+              文风预设会按 &lt;writing_style&gt; 协议拼进聊天记录之后的下条回复指令里；
+              破限预注入的 user/assistant 区块固定插在角色前导之前。
+            </p>
+            <ul className="space-y-1.5">
+              {managedPresetOrder().map((p) => {
+                const id = managedPresetIdentifier(p);
+                const checked = byId.has(id);
+                return (
+                  <li
+                    key={p.key}
+                    className="flex items-start gap-2 rounded-lg border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-2"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleManaged(p)}
+                      className="mt-0.5 size-3.5 shrink-0 accent-[var(--rp-accent)]"
+                      aria-label={`启用托管预设「${p.name}」`}
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-[12.5px] font-medium">{p.name}</span>
+                      <span className="block text-[11px] leading-relaxed text-[var(--rp-fg-muted)]">
+                        {p.description}
+                      </span>
+                    </span>
+                  </li>
+                );
+              })}
+              <li className="flex items-start gap-2 rounded-lg border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-2">
+                <input
+                  type="checkbox"
+                  checked={byId.has('cotPreset')}
+                  onChange={toggleCot}
+                  className="mt-0.5 size-3.5 shrink-0 accent-[var(--rp-accent)]"
+                  aria-label="启用 COT 预设（动态生成）"
+                />
+                <span className="min-w-0">
+                  <span className="block text-[12.5px] font-medium">COT 预设（动态生成）</span>
+                  <span className="block text-[11px] leading-relaxed text-[var(--rp-fg-muted)]">
+                    组装提示词时按当前上下文（记忆、UI 模板、剧情面板、模型）现场生成思考协议，不存写死文本。
+                  </span>
+                </span>
+              </li>
+            </ul>
           </section>
 
           {/* Samplers */}
@@ -436,6 +629,33 @@ export function PresetsPage() {
           </p>
         </div>
       </div>
+
+      <ExportSelectionModal
+        open={exportOpen}
+        onOpenChange={setExportOpen}
+        title="选择性导出预设"
+        description="只导出勾选的预设（SillyTavern 格式数组）。"
+        groups={[
+          {
+            id: 'presets',
+            label: '对话补全预设',
+            items: all.map((p) => ({
+              id: p.id ?? p.name,
+              label: p.name,
+              hint: `${p.prompts.length} 区块`,
+            })),
+          },
+        ]}
+        onExport={(selected) => {
+          const ids = new Set(selected.presets ?? []);
+          const picked = all.filter((p) => ids.has(p.id ?? p.name));
+          downloadBlob(
+            new Blob([JSON.stringify(picked.map((p) => toStPreset(p)), null, 2)], { type: 'application/json' }),
+            safeFilename('预设精选', 'json'),
+          );
+          toast.success(`已导出 ${picked.length} 个预设`);
+        }}
+      />
     </div>
   );
 }

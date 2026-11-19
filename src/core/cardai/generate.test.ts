@@ -5,8 +5,13 @@ import {
   coerceRegexScripts,
   coerceWorldInfo,
   extractJsonObject,
+  cardGenMissingParts,
+  cardGenProgress,
+  cardGenSectionsSeen,
+  extractOutputReplyContent,
   parseCardSections,
   repairJson,
+  shouldRetryCardGen,
   stripCodeFence,
 } from './generate.js';
 
@@ -157,5 +162,61 @@ describe('coercers', () => {
 
   it('drops non-object entries', () => {
     expect(coerceRegexScripts([{ a: 1 }, null, 'x', 3])).toEqual([{ a: 1 }]);
+  });
+});
+
+describe('cardGenProgress (P02)', () => {
+  it('starts at 0 with no sections', () => {
+    expect(cardGenProgress('')).toBe(0);
+  });
+
+  it('counts the 7 base sections toward 60%', () => {
+    const text = ['## Name\nA', '## Description\nB', '## Personality\nC'].join('\n\n');
+    // 3 of 7 base sections -> round(60*3/7) = 26
+    expect(cardGenProgress(text)).toBe(26);
+    const seen = cardGenSectionsSeen(text);
+    expect(seen.baseDone).toBe(3);
+    expect(seen.totalDone).toBe(3);
+  });
+
+  it('adds 20% once Regex Scripts appears, capped at 80% while streaming', () => {
+    const base = ['## Name\nA', '## Description\nB', '## Personality\nC', '## Scenario\nD', '## First Message\nE', '## Post History Instructions\nF', '## Creator Notes\nG'].join('\n\n');
+    expect(cardGenProgress(base)).toBe(60);
+    expect(cardGenProgress(`${base}\n\n## Regex Scripts\n[]`)).toBe(80);
+  });
+
+  it('reaches 100% only when done', () => {
+    expect(cardGenProgress('## Name\nA', true)).toBe(100);
+    expect(cardGenProgress('', true)).toBe(100);
+  });
+});
+
+describe('shouldRetryCardGen (P03)', () => {
+  const full = SAMPLE;
+  it('does not retry a complete Gemini reply', () => {
+    expect(shouldRetryCardGen(full, 'gemini-2.5-flash')).toBe(false);
+  });
+
+  it('retries a Gemini reply missing the regex section', () => {
+    const cut = full.split('## Regex Scripts')[0];
+    expect(cardGenMissingParts(cut).missingRegex).toBe(true);
+    expect(shouldRetryCardGen(cut, 'gemini-2.5-flash')).toBe(true);
+  });
+
+  it('retries a Gemini reply missing the avatar prompt', () => {
+    const cut = full.replace('1boy, white hair, cloak', '');
+    expect(cardGenMissingParts(cut).missingImage).toBe(true);
+    expect(shouldRetryCardGen(cut, 'gemini-2.5-flash')).toBe(true);
+  });
+
+  it('never retries a non-Gemini model', () => {
+    const cut = full.split('## Regex Scripts')[0];
+    expect(shouldRetryCardGen(cut, 'gpt-4o')).toBe(false);
+  });
+
+  it('extracts output_reply tool content', () => {
+    expect(extractOutputReplyContent({ name: 'output_reply', arguments: JSON.stringify({ content: '## Name\nA' }) })).toBe('## Name\nA');
+    expect(extractOutputReplyContent({ name: 'other', arguments: '{}' })).toBeNull();
+    expect(extractOutputReplyContent({ name: 'output_reply', arguments: 'not json' })).toBeNull();
   });
 });

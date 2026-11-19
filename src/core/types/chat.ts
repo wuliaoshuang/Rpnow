@@ -8,7 +8,7 @@
  */
 
 import type { ActivationSnapshot } from '../lorebook/engine.js';
-import type { MemorySettings } from '../memory/types.js';
+import type { MemoryRecord, MemorySettings } from '../memory/types.js';
 import type { ToolSettings } from '../tools/types.js';
 
 export interface RPPersona {
@@ -45,11 +45,20 @@ export interface RPChatMessage {
     outputTokens?: number;
     /** Prompt tokens served from the provider's cache. */
     cachedTokens?: number;
+    /** Reasoning tokens, when the provider reports them (llm usage event). */
+    reasoningTokens?: number;
     /** Wall-clock time of the request, for the tok/s readout. */
     durationMs?: number;
   };
   /** Generated images attached to this message. */
   images?: string[];
+  /**
+   * B11: fragments the style filter removed from this reply (render-time
+   * filtering records them here for the "文风过滤详情" popover). Kept for
+   * forward compatibility with generation-time filtering; the bubble
+   * currently recomputes hits from the stored text at render time.
+   */
+  styleFilterHits?: string[];
   /** Arbitrary per-message plugin data. */
   meta?: Record<string, unknown>;
   /**
@@ -70,6 +79,14 @@ export interface RPBranch {
   /** Floor index in the parent branch this fork was cut from. */
   forkFloor: number;
   messages: RPChatMessage[];
+  /**
+   * This branch's own memory snapshot (G10). A branch never reads the
+   * chat-level memory list: it only sees records whose source messages are
+   * in its own history, snapshotted at fork time and saved back on switch.
+   * `undefined` means "not forked with memories" — legacy branches keep the
+   * old shared behaviour until a snapshot is stored.
+   */
+  memories?: MemoryRecord[];
 }
 
 /** Branch ids are stable strings; `main` is reserved. */
@@ -110,6 +127,12 @@ export interface RPChat {
   /** Currently viewed branch; `main` means the main line. */
   activeBranchId?: string;
   /**
+   * Main-line memory snapshot (G10). While a branch is active the live memory
+   * list belongs to that branch; the main line's records wait here untouched
+   * until the user switches back. Mirrors `mainMessages` for memories.
+   */
+  mainMemories?: MemoryRecord[];
+  /**
    * Group chat: every participant's card id, in speaking order. When set,
    * `cardId` still names the "host" card (avatar/background) but the prompt is
    * assembled from all members — see `buildGroupPrompt`.
@@ -130,6 +153,11 @@ export interface RPAppSettings {
   defaultConnectionId?: string;
   /** Default persona id. */
   defaultPersonaId?: string;
+  /**
+   * N07: first-run onboarding completed. False / missing = the welcome
+   * wizard shows on launch (identity name is required to finish it).
+   */
+  onboardingCompleted?: boolean;
   /** Active text area is bottom-anchored (chat-like) or free-scrolling. */
   /** Distance from top for the floating nav. */
   /** Lorebook defaults. */
@@ -137,6 +165,8 @@ export interface RPAppSettings {
     scanDepth: number;
     tokenBudget: number;
     recursiveScanning: boolean;
+    /** Entry scan-depth cap (RP-Hub `maxDepth`); 0 = no cap. */
+    maxDepth: number;
   };
   /** Memory (summarisation / recall) settings. */
   memory: MemorySettings;
@@ -262,8 +292,21 @@ export interface RPAppSettings {
     suggestionsEnabled?: boolean;
     /** 快速模型连接；不填则跟随当前对话的连接。 */
     fastConnectionId?: string;
+    /**
+     * N03 模型槽位：优质 / 均衡 / 快速三槽位（RP-Hub 的
+     * qualityModel/balancedModel/fastModel），快捷面板可切换；不填的槽位
+     * 在面板里显示“未配置”且不可点。槽位是全局设置，当前聊天用哪个槽位
+     * 存在 `chat.params.modelSlot` 里。
+     */
+    qualityModel?: string;
+    balancedModel?: string;
     /** 快速模型；不填则用该连接的默认模型。 */
     fastModel?: string;
+    /**
+     * B11/M07 文风过滤：过滤助手回复里的八股套话（默认开，RP-Hub 默认开）。
+     * 老存档里没有这个字段时按开算（各使用处用 `?? true`）。
+     */
+    styleFilterEnabled?: boolean;
   };
   /** Network. */
   network: {
@@ -279,7 +322,9 @@ export interface RPAppSettings {
 export const DEFAULT_SETTINGS: RPAppSettings = {
   locale: 'zh',
   themeId: 'rpnow.theme.midnight-rose',
-  lorebook: { scanDepth: 4, tokenBudget: 25, recursiveScanning: true },
+  /** N07: first launch shows the onboarding wizard until this is set. */
+  onboardingCompleted: false,
+  lorebook: { scanDepth: 2, tokenBudget: 25, recursiveScanning: true, maxDepth: 0 },
   memory: {
     mode: 'off',
     summaryModel: '',
@@ -361,7 +406,11 @@ export const DEFAULT_SETTINGS: RPAppSettings = {
     /** 聊天建议默认开；快速模型默认跟随当前对话的连接与模型。 */
     suggestionsEnabled: true,
     fastConnectionId: undefined,
+    qualityModel: '',
+    balancedModel: '',
     fastModel: '',
+    /** 文风过滤默认开（RP-Hub 默认开）。 */
+    styleFilterEnabled: true,
   },
   network: { proxyUrl: '', proxyEnabled: false },
   plugins: {},

@@ -14,11 +14,52 @@
 import { get as idbGet, set as idbSet, del as idbDel, keys as idbKeys, clear as idbClear } from 'idb-keyval';
 import type { StorageService } from '../agent/types.js';
 
+/**
+ * O02 云恢复写保护（RP-Hub `writesPaused`）。
+ *
+ * While a cloud restore (or a local backup import) is running, ordinary
+ * writes are discarded instead of landing mid-restore and being overwritten
+ * by — or overwriting — the restored data. Only writes made inside
+ * `runAsRestoreWrite` (i.e. the restore itself) go through.
+ *
+ * The flag is module-level on purpose: every store action funnels through
+ * `idbStorage.set` / `settingsStore.set`, so pausing here pauses the app.
+ */
+let writesPaused = false;
+/** Nesting depth of restore-owned write sections. */
+let restoreWriteDepth = 0;
+
+export function isWritesPaused(): boolean {
+  return writesPaused;
+}
+
+export function setWritesPaused(paused: boolean): void {
+  writesPaused = paused;
+}
+
+function writeAllowed(): boolean {
+  return !writesPaused || restoreWriteDepth > 0;
+}
+
+/** Run `fn` with restore-owned writes allowed (the restore itself). */
+export async function runAsRestoreWrite<T>(fn: () => Promise<T>): Promise<T> {
+  restoreWriteDepth++;
+  try {
+    return await fn();
+  } finally {
+    restoreWriteDepth--;
+  }
+}
+
 export const idbStorage: StorageService = {
   async get<T>(key: string): Promise<T | undefined> {
     return (await idbGet<T>(key)) ?? undefined;
   },
   async set<T>(key: string, value: T): Promise<void> {
+    if (!writeAllowed()) {
+      console.warn('[storage] 恢复期间暂停写入，已丢弃写入', key);
+      return;
+    }
     await idbSet(key, value);
   },
   async remove(key: string): Promise<void> {
@@ -53,6 +94,12 @@ export class SettingsStore {
   }
 
   set<T>(key: string, value: T): void {
+    // O02: settings writes are dropped while a restore is running, same as
+    // the IndexedDB writes above — except the restore's own writes.
+    if (!writeAllowed()) {
+      console.warn('[settings] 恢复期间暂停写入，已丢弃写入', key);
+      return;
+    }
     this.cache.set(key, value);
     try {
       localStorage.setItem(this.prefix + key, JSON.stringify(value));
@@ -106,8 +153,16 @@ export async function importAll(blob: Blob): Promise<void> {
     settings?: Record<string, unknown>;
   };
   if (doc.format !== 'rpnow-backup/1') throw new Error('不是 RPNow 的备份文件');
-  for (const [k, v] of Object.entries(doc.data ?? {})) await idbStorage.set(k, v);
-  for (const [k, v] of Object.entries(doc.settings ?? {})) {
-    localStorage.setItem(k, JSON.stringify(v));
+  // O02: local restore pauses writes too, so nothing lands mid-restore.
+  setWritesPaused(true);
+  try {
+    await runAsRestoreWrite(async () => {
+      for (const [k, v] of Object.entries(doc.data ?? {})) await idbStorage.set(k, v);
+    });
+    for (const [k, v] of Object.entries(doc.settings ?? {})) {
+      localStorage.setItem(k, JSON.stringify(v));
+    }
+  } finally {
+    setWritesPaused(false);
   }
 }

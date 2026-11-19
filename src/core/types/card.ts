@@ -60,6 +60,13 @@ export interface RPCharacterBookEntry {
 export interface CharacterBookEntryExtensions {
   /** Real insertion position. See {@link WI_POSITION}. */
   position?: number;
+  /**
+   * RP-Hub position name (`system_top` / `global_note` / `user_top` /
+   * `assistant_top`) for entries whose native position has no ST equivalent.
+   * Written on export alongside the closest ST number in `position`, so a
+   * re-import restores the native position instead of the approximation.
+   */
+  rp_position?: string;
   /** Depth offset for `atDepth` entries. */
   depth?: number;
   /** Message role for `atDepth` entries: 0 system, 1 user, 2 assistant. */
@@ -92,7 +99,18 @@ export interface CharacterBookEntryExtensions {
 
 /**
  * World Info insertion positions, exactly as SillyTavern's
- * `world_info_position` enum in `public/scripts/world-info.js`.
+ * `world_info_position` enum in `public/scripts/world-info.js` (0–7),
+ * plus RP-Hub's four native positions (8–11) which have no ST equivalent:
+ *
+ *   - `systemTop` / `globalNote`: RP-Hub's `system_top` / `global_note`,
+ *     the very top of the system prompt (before every preset block).
+ *   - `userTop` / `assistantTop`: RP-Hub's `user_top` / `assistant_top`,
+ *     prepended to the newest user / assistant message.
+ *
+ * Values 8–11 are RPNow-native. When a card is exported for ST readers,
+ * `toCardEntry` writes the closest ST number into `extensions.position`
+ * and keeps the RP-Hub name in `extensions.rp_position` (see
+ * `core/types/lorebook.ts`), so the round-trip stays lossless.
  */
 export const WI_POSITION = {
   before: 0,
@@ -103,8 +121,24 @@ export const WI_POSITION = {
   EMTop: 5,
   EMBottom: 6,
   outlet: 7,
+  /** RP-Hub `system_top`: the very top of the system prompt. */
+  systemTop: 8,
+  /** RP-Hub `global_note`: system prompt, right after `system_top`. */
+  globalNote: 9,
+  /** RP-Hub `user_top`: prepended to the newest user message. */
+  userTop: 10,
+  /** RP-Hub `assistant_top`: prepended to the newest assistant message. */
+  assistantTop: 11,
 } as const;
 export type WIPosition = (typeof WI_POSITION)[keyof typeof WI_POSITION];
+
+/** RP-Hub-native positions (8–11) and their closest ST equivalents. */
+export const WI_POSITION_NATIVE_EXPORT: Record<number, { st: number; name: string }> = {
+  [WI_POSITION.systemTop]: { st: WI_POSITION.ANTop, name: 'system_top' },
+  [WI_POSITION.globalNote]: { st: WI_POSITION.ANBottom, name: 'global_note' },
+  [WI_POSITION.userTop]: { st: WI_POSITION.EMTop, name: 'user_top' },
+  [WI_POSITION.assistantTop]: { st: WI_POSITION.EMBottom, name: 'assistant_top' },
+};
 
 export const WI_POSITION_LABELS: Record<number, string> = {
   [WI_POSITION.before]: '角色定义之前',
@@ -115,6 +149,10 @@ export const WI_POSITION_LABELS: Record<number, string> = {
   [WI_POSITION.EMTop]: '对话示例顶部',
   [WI_POSITION.EMBottom]: '对话示例底部',
   [WI_POSITION.outlet]: '出口（手动宏）',
+  [WI_POSITION.systemTop]: '系统最顶层',
+  [WI_POSITION.globalNote]: '全局备注',
+  [WI_POSITION.userTop]: '用户消息顶部',
+  [WI_POSITION.assistantTop]: '助手消息顶部',
 };
 
 /**

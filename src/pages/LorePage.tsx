@@ -12,6 +12,8 @@ import { useApp } from '@/state/store.js';
 import { emptyLorebook, type RPLorebook } from '@/core/types/lorebook.js';
 import { parseLorebookFile } from '@/core/card/parser.js';
 import { LorebookEditor } from '@/components/lore/LorebookEditor.js';
+import { ExportSelectionModal } from '@/components/export/ExportSelectionModal.js';
+import { lorebookExportDoc } from '@/core/export/selective.js';
 import { Button } from '@/components/ui/button';
 import { Badge, EmptyState } from '@/components/ui/misc.js';
 import { Input } from '@/components/ui/input.js';
@@ -25,6 +27,8 @@ export function LorePage() {
   const saveLorebook = useApp((s) => s.saveLorebook);
   const removeLorebook = useApp((s) => s.removeLorebook);
   const [editing, setEditing] = useState<RPLorebook | null>(null);
+  /** O07: selective export — the book whose entries are being picked. */
+  const [exportBook, setExportBook] = useState<RPLorebook | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
   async function importBook(files: FileList) {
@@ -154,32 +158,7 @@ export function LorePage() {
                     variant="ghost"
                     size="sm"
                     className="h-7 text-[11px]"
-                    onClick={() => {
-                      const doc = {
-                        name: book.name,
-                        entries: book.entries.map((e) => ({
-                          keys: e.keys,
-                          secondary_keys: e.secondaryKeys,
-                          comment: e.comment,
-                          content: e.content,
-                          constant: e.constant,
-                          insertion_order: e.order,
-                          enabled: e.enabled,
-                          position: 'before_char',
-                          extensions: {
-                            position: e.position,
-                            depth: e.depth,
-                            role: e.role,
-                            probability: e.probability,
-                            group: e.group,
-                          },
-                        })),
-                      };
-                      downloadBlob(
-                        new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }),
-                        safeFilename(book.name, 'json'),
-                      );
-                    }}
+                    onClick={() => setExportBook(book)}
                   >
                     <Download className="size-3" aria-hidden="true" /> 导出
                   </Button>
@@ -190,6 +169,39 @@ export function LorePage() {
         )}
       </div>
       <input type="hidden" aria-hidden="true" />
+      {/* O07: selective export — pick which entries of one book leave the app. */}
+      <ExportSelectionModal
+        open={exportBook !== null}
+        onOpenChange={(v) => !v && setExportBook(null)}
+        title={exportBook ? `导出世界书「${exportBook.name}」` : '导出世界书'}
+        description="只导出勾选的条目。"
+        groups={
+          exportBook
+            ? [
+                {
+                  id: 'entries',
+                  label: '条目',
+                  items: exportBook.entries.map((e) => ({
+                    id: e.id,
+                    label: e.comment || '(无标题)',
+                    hint: e.constant ? '常驻' : e.keys.join(' / ') || '无关键词',
+                  })),
+                },
+              ]
+            : []
+        }
+        onExport={(selected) => {
+          if (!exportBook) return;
+          const ids = new Set(selected.entries ?? []);
+          const picked = exportBook.entries.filter((e) => ids.has(e.id));
+          const doc = { ...lorebookExportDoc(exportBook), entries: picked };
+          downloadBlob(
+            new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }),
+            safeFilename(exportBook.name, 'json'),
+          );
+          toast.success(`已导出 ${picked.length} 个条目`);
+        }}
+      />
     </div>
   );
 }

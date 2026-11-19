@@ -3,7 +3,9 @@ import {
   describeCardForEdit,
   diffCard,
   EDIT_TEXT_FIELDS,
+  isTruncatedFinishReason,
   parseCardDiff,
+  snapshotCardForEdit,
 } from './diff.js';
 import type { RPCard } from '../types/card.js';
 
@@ -153,6 +155,71 @@ describe('diffCard', () => {
       const { card: next } = diffCard(card(), diff!);
       expect((next.data as unknown as Record<string, unknown>)[key]).toBe(`v${i}`);
     });
+  });
+});
+
+describe('diffCard change shape', () => {
+  it('tags text-field changes with kind and field', () => {
+    const { diff } = parseCardDiff({ fields: [{ id: '4', text: '新的开场白' }] })!;
+    const { changes } = diffCard(card(), diff!);
+    expect(changes).toHaveLength(1);
+    expect(changes[0].kind).toBe('field');
+    expect(changes[0].field).toBe('first_mes');
+  });
+
+  it('tags world-info and regex changes with kind', () => {
+    const { diff } = parseCardDiff({
+      world_info: [{ id: 'W1', content: '新内容' }],
+      regex_scripts: [{ id: 'R1', name: '新名' }],
+    })!;
+    const { changes } = diffCard(card(), diff!);
+    expect(changes.map((c) => c.kind)).toEqual(['worldInfo', 'regex']);
+    expect(changes.every((c) => c.field === undefined)).toBe(true);
+  });
+});
+
+describe('isTruncatedFinishReason', () => {
+  it('treats length and max_tokens as truncated', () => {
+    expect(isTruncatedFinishReason('length')).toBe(true);
+    expect(isTruncatedFinishReason('max_tokens')).toBe(true);
+  });
+
+  it('treats stop / tool_calls / undefined as fine', () => {
+    expect(isTruncatedFinishReason('stop')).toBe(false);
+    expect(isTruncatedFinishReason('tool_calls')).toBe(false);
+    expect(isTruncatedFinishReason(undefined)).toBe(false);
+  });
+});
+
+describe('snapshotCardForEdit', () => {
+  it('is stable for the same card', () => {
+    const c = card();
+    expect(snapshotCardForEdit(c, c)).toBe(snapshotCardForEdit(card(), card()));
+  });
+
+  it('moves when the live draft changes', () => {
+    const c = card();
+    const edited = card({ personality: '温柔' });
+    expect(snapshotCardForEdit(edited, c)).not.toBe(snapshotCardForEdit(c, c));
+  });
+
+  it('moves when the saved card changes even if the draft did not', () => {
+    const c = card();
+    const savedMoved = card({ personality: '温柔' });
+    expect(snapshotCardForEdit(c, savedMoved)).not.toBe(snapshotCardForEdit(c, c));
+  });
+
+  it('ignores updatedAt / favorite, which change without content changing', () => {
+    const c = card();
+    const touched = { ...card(), updatedAt: 99999, favorite: true };
+    expect(snapshotCardForEdit(touched, touched)).toBe(snapshotCardForEdit(c, c));
+  });
+
+  it('moves when a world-info entry changes', () => {
+    const c = card();
+    const edited = card();
+    (edited.data.character_book!.entries![0] as unknown as Record<string, unknown>).content = '雨镇';
+    expect(snapshotCardForEdit(edited, c)).not.toBe(snapshotCardForEdit(c, c));
   });
 });
 

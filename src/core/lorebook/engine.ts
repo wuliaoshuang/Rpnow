@@ -6,6 +6,8 @@
  *
  *  1. **Scan**: the last N messages (N = scanDepth) plus optional "match any"
  *     card fields are searched for entry keys. `constant` entries bypass keys.
+ *     `maxDepth` (RP-Hub, default 0 = no cap) caps the effective scan depth:
+ *     `min(entry.scanDepth ?? book.scanDepth ?? global, maxDepth)`.
  *  2. **Secondary keys**: when `selective` is on, `selectiveLogic` decides
  *     whether the secondary match is required.
  *  3. **Probability**: `probability < 100` makes activation stochastic.
@@ -240,6 +242,9 @@ export function activate(input: ActivationInput): ActivationResult {
 
   // Pass 0 = initial scan; later passes = recursion.
   const activatedKeys = new Map<string, ActivatedEntry>();
+  // RP-Hub `maxDepth`: caps every entry's effective scan depth. 0 (or an
+  // absent value, e.g. settings stored before this field existed) = no cap.
+  const maxDepth = input.defaults.maxDepth ?? 0;
   // Entries that activated with `preventRecursion` may still appear in the
   // recursion buffer (their own content stays visible), but nothing they
   // contain may trigger further entries. That reads more predictably than
@@ -262,6 +267,7 @@ export function activate(input: ActivationInput): ActivationResult {
 
     for (const book of books) {
       const bookDepth = book.scanDepth ?? defaults.scanDepth;
+      const cappedBookDepth = maxDepth > 0 ? Math.min(bookDepth, maxDepth) : bookDepth;
       const recursive = book.recursiveScanning ?? defaults.recursiveScanning;
 
       for (const entry of book.entries) {
@@ -341,8 +347,17 @@ export function activate(input: ActivationInput): ActivationResult {
           }
           if (!matched && !reason) continue;
         } else {
-          const scanEntry: RPLorebookEntry = { ...entry };
-          const text = buildScanText(messages, bookDepth, scanEntry, input.cardFields);
+          // The entry's own scanDepth wins over the book/global depth, but
+          // `maxDepth` caps both — an entry can never scan further back than
+          // the cap allows.
+          const scanEntry: RPLorebookEntry = {
+            ...entry,
+            scanDepth:
+              entry.scanDepth != null && maxDepth > 0
+                ? Math.min(entry.scanDepth, maxDepth)
+                : entry.scanDepth,
+          };
+          const text = buildScanText(messages, cappedBookDepth, scanEntry, input.cardFields);
           const hit = entry.keys.find((k) => keyMatches(text, k, entry));
           if (hit) {
             if (!secondarySatisfied(text, entry)) {
@@ -365,7 +380,7 @@ export function activate(input: ActivationInput): ActivationResult {
             }
           } else {
             matched = false;
-            reason = `未命中任何关键词（扫描最近 ${entry.scanDepth ?? bookDepth} 条消息）`;
+            reason = `未命中任何关键词（扫描最近 ${scanEntry.scanDepth ?? cappedBookDepth} 条消息）`;
           }
         }
 

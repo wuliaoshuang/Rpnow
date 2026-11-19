@@ -3,10 +3,12 @@ import {
   fetchAsDataUrl,
   hasImageMarkers,
   IMAGE_SIZES,
+  markerForTags,
   normalizeTags,
   parseImageMarkers,
   pollJob,
   rerollTags,
+  rewriteImageMarker,
   stripImageMarkers,
 } from './nai.js';
 
@@ -117,5 +119,28 @@ describe('fetchAsDataUrl', () => {
       new Response(new Blob(['abc'], { type: 'image/png' }), { status: 200 })) as unknown as typeof fetch;
     const url = await fetchAsDataUrl('https://x/y.png', fakeFetch);
     expect(url.startsWith('data:image/png;base64,')).toBe(true);
+  });
+});
+
+describe('markerForTags / rewriteImageMarker (I08)', () => {
+  it('builds the raw marker text', () => {
+    expect(markerForTags('1girl, smile')).toBe('image###1girl, smile###');
+  });
+
+  it('rewrites the old marker in stored prose after a reroll', () => {
+    const text = '她推开门。image###1girl, smile###风铃响了。';
+    expect(rewriteImageMarker(text, 'image###1girl, smile###', 'image###smile, 1girl###')).toBe(
+      '她推开门。image###smile, 1girl###风铃响了。',
+    );
+  });
+
+  it('leaves prose untouched when the marker was already stripped to （插图）', () => {
+    const text = '她推开门。（插图）风铃响了。';
+    expect(rewriteImageMarker(text, 'image###1girl, smile###', 'image###smile, 1girl###')).toBe(text);
+  });
+
+  it('is a no-op when the marker did not change', () => {
+    const text = 'image###a, b###';
+    expect(rewriteImageMarker(text, 'image###a, b###', 'image###a, b###')).toBe(text);
   });
 });

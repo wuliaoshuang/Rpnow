@@ -11,7 +11,7 @@
 import * as React from 'react';
 import { createPortal } from 'react-dom';
 import { useState } from 'react';
-import { ChevronLeft, ChevronRight, Copy, Eye, EyeOff, FastForward, GitBranch, MoreHorizontal, RefreshCw, Trash2, Pencil, Volume2, X } from 'lucide-react';import { cn, formatRelativeTime } from '@/lib/utils';
+import { ChevronLeft, ChevronRight, Copy, Eye, EyeOff, FastForward, GitBranch, ListFilter, MoreHorizontal, RefreshCw, Trash2, Pencil, Volume2, X } from 'lucide-react';import { cn, formatRelativeTime } from '@/lib/utils';
 import type { RPChatMessage } from '@/core/types/chat.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { RPCompletionPreset } from '@/core/types/preset.js';
@@ -22,14 +22,33 @@ import { SLOT, useSlots } from '@/core/plugin/slots.js';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/misc';
 import { Hint } from '@/components/ui/misc';
 import { renderMessageText } from '@/features/chat/orchestrator.js';
+import { filterBlockedStyleText, getStyleFilterHitSegments } from '@/core/styleFilter.js';
 import { useApp } from '@/state/store.js';
 import { substituteMacros } from '@/core/prompt/macros.js';
 import { speakMessage } from '@/components/chat/ReadAloudButton.js';
 import type { TTSService } from '@/core/tts/types.js';
 import { TemplateCard } from '@/components/chat/TemplateCard.js';
+import { ToolTimeline, extractToolTrace } from '@/components/chat/ToolTimeline.js';
+import { hasUnclosedHtml } from '@/components/chat/streamingHtml.js';
 import type { RPUITemplate } from '@/core/uitemplate/types.js';
 import type { RPRegexScript } from '@/core/types/card.js';
 import { getPresetRegexScripts } from '@/core/prompt/preset-extensions.js';
+
+/**
+ * Image grid layout by picture count (I02, RP-Hub's 1–3 grid):
+ * 1 → single column; 2 → two columns; 3 → first picture spans both columns;
+ * 4–5 → two columns; 6+ → three columns so 9 attachments still fit.
+ * Pair with `imageGridItemClass(count, i)` for the 3-picture first span.
+ */
+export function imageGridClass(count: number): string {
+  if (count <= 1) return 'grid-cols-1';
+  if (count >= 6) return 'grid-cols-3';
+  return 'grid-cols-2';
+}
+
+export function imageGridItemClass(count: number, index: number): string {
+  return count === 3 && index === 0 ? 'col-span-2' : '';
+}
 
 /**
  * 预设显示层正则（三载体并集，已按 find/replace 去重）。
@@ -57,6 +76,8 @@ export interface MessageBubbleProps {
   message: RPChatMessage;
   card: RPCard;
   personaName?: string;
+  /** User avatar (B13): persona avatar, else a first-letter gradient block. */
+  personaAvatar?: string;
   /** Position in the visible message list, used for forking. */
   index: number;
   allowExternalMedia: boolean;
@@ -91,6 +112,8 @@ export interface MessageBubbleProps {
   depth?: number;
   /** Immersive mode: translucent bubbles over the character art. */
   immersive?: boolean;
+  /** M02 沉浸模式：隐藏消息上方的时间/说话人名行。 */
+  hideMeta?: boolean;
   /** Per-message token usage (shown on the newest assistant bubble). */
   usage?: {
     inputTokens?: number;
@@ -115,6 +138,7 @@ export function MessageBubble({
   message,
   card,
   personaName,
+  personaAvatar,
   index,
   allowExternalMedia,
   showReasoning,
@@ -134,6 +158,7 @@ export function MessageBubble({
   sandboxHtml,
   depth,
   immersive,
+  hideMeta,
   usage,
   quotaText,
   streaming,
@@ -144,9 +169,34 @@ export function MessageBubble({
   const tts = useKernelService<TTSService>(SERVICE.TTS);
   const extraActions = useSlots(SLOT.MESSAGE_ACTIONS);
   const memories = useApp((s) => (chatId ? s.memories[chatId] : undefined));
-  const [reasoningOpen, setReasoningOpen] = React.useState(false);
+  /**
+   * C04: reasoning 自动折叠 + 记住手动展开。默认折叠；正文到达时自动折叠
+   * （除非本条被手动展开过）；用户手动展开一次后记入 localStorage，下次
+   * 的 reasoning 块默认就是展开的，自动折叠也不再把它合上。
+   */
+  const [reasoningOpen, setReasoningOpen] = React.useState<boolean>(() => {
+    try {
+      return typeof localStorage !== 'undefined' && localStorage.getItem('rpnow:reasoning-open') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const reasoningUserToggledRef = React.useRef(false);
+  React.useEffect(() => {
+    const text = (message.content ?? '').trim();
+    if (!text || text === '…') return;
+    if (reasoningUserToggledRef.current) return;
+    try {
+      if (localStorage.getItem('rpnow:reasoning-open') === '1') return;
+    } catch {
+      /* ignore */
+    }
+    setReasoningOpen(false);
+  }, [message.content]);
   const [editing, setEditing] = React.useState(false);
   const [citation, setCitation] = useState<{ no: number; summary: string; turn: number } | null>(null);
+  /** B11: "文风过滤详情" popover open state. */
+  const [styleFilterOpen, setStyleFilterOpen] = useState(false);
 
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
@@ -189,8 +239,18 @@ export function MessageBubble({
       }),
     [message.content, card.data, personaName],
   );
+  /*
+   * B11/M07 文风过滤（渲染层）：只过滤助手回复，引用对话不动；被删的片段记在 hits 里给下面的弹层用。存储的原文不动，关掉开关即恢复原文。
+   */
+  const styleFiltered = React.useMemo(() => {
+    if (isUser || isSystem || (settings.chat.styleFilterEnabled ?? true) === false) return { text: expanded, hits: [] as string[] };
+    const hits: string[] = [];
+    const text = filterBlockedStyleText(expanded, { enabled: true, collect: hits });
+    const stored = message.styleFilterHits ?? [];
+    return { text, hits: hits.length ? hits : stored };
+  }, [expanded, isUser, isSystem, settings.chat.styleFilterEnabled, message.styleFilterHits]);
   const html = React.useMemo(() => {
-    const processed = renderMessageText(expanded, scripts, 2, depth);
+    const processed = renderMessageText(styleFiltered.text, scripts, 2, depth);
     try {
       return renderer?.render(processed, {
         allowExternalMedia,
@@ -200,7 +260,7 @@ export function MessageBubble({
     } catch {
       return escapeHtml(processed);
     }
-  }, [expanded, scripts, renderer, allowExternalMedia, sandboxHtml, depth]);
+  }, [styleFiltered.text, scripts, renderer, allowExternalMedia, sandboxHtml, depth]);
 
   const swipeCount = message.swipes?.length ?? 0;
   const swipeId = message.swipeId ?? 0;
@@ -221,6 +281,8 @@ export function MessageBubble({
       return `<button type="button" class="rp-cite" data-cite="${num}" data-known="${known ? '1' : '0'}" title="查看判断依据">[M${num}]</button>`;
     });
   }, [html, memories]);
+
+  const toolTrace = extractToolTrace(message);
 
   const openCitation = (event: React.MouseEvent<HTMLDivElement>) => {
     const el = (event.target as HTMLElement).closest?.('[data-cite]') as HTMLElement | null;
@@ -253,10 +315,26 @@ export function MessageBubble({
         swipeid: String(message.swipeId ?? 0),
       }}
     >
+      {/* B13: 用户消息显示头像（persona 头像，没有则取名字首字）；助手消息仍不画头像，把宽度留给正文。 */}
+      {isUser && (
+        <div className="flex shrink-0 pt-0.5" aria-hidden="true">
+          {personaAvatar ? (
+            <img
+              src={personaAvatar}
+              alt=""
+              className="size-8 rounded-full border border-[var(--rp-border)] object-cover"
+            />
+          ) : (
+            <span className="flex size-8 items-center justify-center rounded-full bg-[var(--rp-accent)] text-[13px] font-bold text-[var(--rp-accent-fg)]">
+              {(personaName || '用').slice(0, 1)}
+            </span>
+          )}
+        </div>
+      )}
       {/*
-        No avatar and no speaker name: the transcript gives the whole width to
-        the prose. Only the timestamp (and the 已隐藏 marker) stay, in small
-        type above the bubble.
+        No speaker name: the transcript gives the whole width to the prose.
+        Only the timestamp (and the 已隐藏 marker) stay, in small type above
+        the bubble.
       */}
       <div
         className={cn(
@@ -265,8 +343,9 @@ export function MessageBubble({
           settings.render.messageWidth === 'full' ? 'w-full' : 'max-w-[92%] sm:max-w-[86%]',
         )}
       >
-        {/* Meta line. In a group chat the speaker name leads, otherwise the
+        {/* Meta line (M02: hidden in immersive mode). In a group chat the speaker name leads, otherwise the
             transcript is a wall of un-attributed bubbles. */}
+        {!hideMeta && (
         <div
           className={cn(
             'flex items-center gap-2 text-[10.5px]',
@@ -289,13 +368,25 @@ export function MessageBubble({
             <span className="rounded bg-[var(--rp-bg-sunken)] px-1.5 py-px text-[10px]">已隐藏</span>
           )}
         </div>
+        )}
 
         {/* Reasoning */}
         {showReasoning && message.reasoning && (
           <div className={cn('w-full', isUser && 'flex justify-end')}>
             <button
               type="button"
-              onClick={() => setReasoningOpen((v) => !v)}
+              onClick={() => {
+                reasoningUserToggledRef.current = true;
+                setReasoningOpen((v) => {
+                  const next = !v;
+                  try {
+                    localStorage.setItem('rpnow:reasoning-open', next ? '1' : '0');
+                  } catch {
+                    /* ignore */
+                  }
+                  return next;
+                });
+              }}
               className="mb-1 inline-flex cursor-pointer items-center gap-1 rounded-md border border-[var(--rp-border)] bg-[var(--rp-bg-sunken)] px-2 py-1 text-[11px] text-[var(--rp-fg-muted)] transition hover:text-[var(--rp-fg)]"
               aria-expanded={reasoningOpen}
             >
@@ -308,6 +399,14 @@ export function MessageBubble({
                 {message.reasoning}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Tool timeline (C03/D09): which tools ran, with what args and what
+            came back. Sits under the reasoning disclosure, above the body. */}
+        {toolTrace && (
+          <div className={cn('w-full', isUser && 'flex justify-end')}>
+            <ToolTimeline trace={toolTrace} />
           </div>
         )}
 
@@ -336,13 +435,13 @@ export function MessageBubble({
           )}
         >
             {isUser && message.images?.length ? (
-              <div className="mb-2 grid grid-cols-2 gap-2">
+              <div className={cn('mb-2 grid gap-2', imageGridClass(message.images.length))}>
                 {message.images.map((src, i) => (
                   <img
                     key={i}
                     src={src}
                     alt={`附件 ${i + 1}`}
-                    className="w-full rounded-lg border border-[var(--rp-border)] object-cover"
+                    className={cn('w-full rounded-lg border border-[var(--rp-border)] object-cover', imageGridItemClass(message.images!.length, i))}
                     loading="lazy"
                   />
                 ))}
@@ -370,9 +469,9 @@ export function MessageBubble({
             */}
             {streaming && <span className="rp-caret" aria-hidden="true" />}
             {message.images?.length ? (
-              <div className="mt-2 grid gap-2">
+              <div className={cn('mt-2 grid gap-2', imageGridClass(message.images.length))}>
                 {message.images.map((src, i) => (
-                  <div key={i} className={cn('group/img relative', message.images!.length === 3 && i === 0 ? 'col-span-2' : '')}>
+                  <div key={i} className={cn('group/img relative', imageGridItemClass(message.images!.length, i))}>
                     <img
                       src={src}
                       alt={`生成图 ${i + 1}`}
@@ -398,6 +497,13 @@ export function MessageBubble({
               </div>
             ) : null}
           </div>
+
+        {/* B04: 流式中 HTML 未闭合时提示，而不是把半截面板当成最终渲染。 */}
+        {streaming && hasUnclosedHtml(styleFiltered.text) && (
+          <p className="w-full text-[11px] text-amber-600 dark:text-amber-400" role="status">
+            HTML 未闭合，继续生成中…
+          </p>
+        )}
 
         {/* UI templates below the body */}
         {templates
@@ -447,6 +553,58 @@ export function MessageBubble({
             reappear. 重新生成 + 继续 for assistant floors; everything else
             lives behind 更多.
           */}
+          {/*
+            B11: 文风过滤详情——只在本条回复真被过滤出内容时显示，点出弹层列出被删的片段（关键词加粗）。不只限最新楼，RP-Hub 同样。
+          */}
+          {!isUser && styleFiltered.hits.length > 0 && (
+            <div className="relative">
+              {styleFilterOpen && (
+                <div
+                  className="absolute bottom-full left-1/2 z-30 mb-2 w-[min(20rem,calc(100vw-1.5rem))] -translate-x-1/2 overflow-hidden rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] shadow-xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="border-b border-[var(--rp-border)] bg-[var(--rp-bg-sunken)]/60 px-3 py-2">
+                    <span className="text-xs font-bold">文风过滤详情</span>
+                  </div>
+                  <div className="rp-scroll max-h-56 space-y-1.5 overflow-y-auto p-2.5">
+                    {styleFiltered.hits.map((fragment, filterIndex) => (
+                      <div
+                        key={`style-filter-${filterIndex}`}
+                        className="flex items-start gap-1.5 rounded-xl border border-[var(--rp-border)] bg-[var(--rp-bg-sunken)]/60 px-2.5 py-2"
+                      >
+                        <span className="w-3 flex-none text-right text-[11px] font-semibold leading-5">{filterIndex + 1}</span>
+                        <span className="min-w-0 break-words text-xs leading-5 text-[var(--rp-fg-muted)]">
+                          {getStyleFilterHitSegments(fragment).map((segment, segmentIndex) => (
+                            <span
+                              key={segmentIndex}
+                              className={segment.matched ? 'font-semibold text-[var(--rp-accent)]' : undefined}
+                            >
+                              {segment.text}
+                            </span>
+                          ))}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <Hint label={`查看本条回复过滤的 ${styleFiltered.hits.length} 处内容`}>
+                <button
+                  type="button"
+                  aria-label={`查看本条回复过滤的 ${styleFiltered.hits.length} 处内容`}
+                  aria-expanded={styleFilterOpen}
+                  onClick={() => setStyleFilterOpen((v) => !v)}
+                  className={cn(
+                    'flex size-8 cursor-pointer items-center justify-center rounded-lg transition-colors',
+                    actionPlate,
+                  )}
+                >
+                  <ListFilter className="size-4" aria-hidden="true" />
+                </button>
+              </Hint>
+            </div>
+          )}
+
           {isLast && !isUser && (
             <Hint label="重新生成">
               <button

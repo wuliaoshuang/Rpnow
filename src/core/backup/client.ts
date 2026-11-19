@@ -31,7 +31,26 @@ export interface BackupManifest {
   scopes: Array<{ key: string; hash: string }>;
 }
 
-/** Normalise a user-entered backup key. */
+/** O10: backup progress stages (RP-Hub shows stage + percent + detail). */
+export type BackupProgressStage = 'prepare' | 'check' | 'upload' | 'publish' | 'done';
+
+export const BACKUP_STAGE_LABELS: Record<BackupProgressStage, string> = {
+  prepare: '准备中',
+  check: '检查已有数据',
+  upload: '上传中',
+  publish: '发布备份清单',
+  done: '完成',
+};
+
+/** Restore progress stages, for the panel's restore run. */
+export type RestoreProgressStage = 'manifest' | 'cards' | 'chats' | 'done';
+
+export const RESTORE_STAGE_LABELS: Record<RestoreProgressStage, string> = {
+  manifest: '下载备份清单',
+  cards: '恢复角色卡',
+  chats: '恢复对话与记忆',
+  done: '完成',
+};
 export function normalizeKey(input: string): string {
   return input
     .toUpperCase()
@@ -112,7 +131,12 @@ export interface UploadParams {
   manifest: BackupManifest;
   /** Manifest blob hash, used as the `replaces` hint. */
   fetchImpl?: typeof fetch;
-  onProgress?: (done: number, total: number) => void;
+  /**
+   * O10: called with bytes done/total plus the current stage
+   * (`check` while asking the server what it already has, `upload` while
+   * sending missing blobs, `publish` while publishing the manifest).
+   */
+  onProgress?: (done: number, total: number, stage: BackupProgressStage) => void;
 }
 
 /** Upload missing blobs, then publish the manifest. Returns the backup key. */
@@ -126,14 +150,19 @@ export async function uploadBackup(params: UploadParams): Promise<string> {
   let done = 0;
   for (let i = 0; i < blobs.length; i += BACKUP_BATCH_SIZE) {
     const batch = blobs.slice(i, i + BACKUP_BATCH_SIZE);
+    params.onProgress?.(done, total, 'check');
     const missing = new Set(await checkBlobs(baseURL, batch.map((b) => b.hash), fetchImpl));
     for (const blob of batch) {
-      if (missing.has(blob.hash)) await putBlob(baseURL, blob, fetchImpl);
+      if (missing.has(blob.hash)) {
+        params.onProgress?.(done, total, 'upload');
+        await putBlob(baseURL, blob, fetchImpl);
+      }
       done += blob.bytes.length;
-      params.onProgress?.(done, total);
+      params.onProgress?.(done, total, 'upload');
     }
   }
 
+  params.onProgress?.(done, total, 'publish');
   const manifestBlob = await makeBlob(manifest);
   if (!manifestBlob.hash) throw new Error('清单生成失败');
   await putBlob(baseURL, manifestBlob, fetchImpl);
@@ -146,6 +175,7 @@ export async function uploadBackup(params: UploadParams): Promise<string> {
   if (!res.ok) throw new Error(`发布失败（${res.status}）`);
   const json = (await res.json()) as { key?: string };
   if (!json.key) throw new Error('服务器没有返回备份密钥');
+  params.onProgress?.(done, total, 'done');
   return normalizeKey(json.key);
 }
 

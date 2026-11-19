@@ -60,6 +60,23 @@ export function rerollTags(tags: string): { tags: string; swapped: boolean } {
   return { tags: parts.join(', '), swapped: true };
 }
 
+/** Build the raw marker text for a tag list. */
+export function markerForTags(tags: string): string {
+  return `image###${tags}###`;
+}
+
+/**
+ * Rewrite a marker in stored prose after a reroll (I08): if the message
+ * still contains the old marker, swap it for the new one. Replies usually
+ * store `(插图)` instead of the raw marker (see `stripImageMarkers`), in
+ * which case this is a no-op and the caller keeps the mapping in
+ * `meta.imageMarkers` instead.
+ */
+export function rewriteImageMarker(text: string, oldMarker: string, newMarker: string): string {
+  if (!oldMarker || oldMarker === newMarker) return text;
+  return text.split(oldMarker).join(newMarker);
+}
+
 /** Split tags into the model-facing form (comma + space). */
 export function normalizeTags(tags: string): string {
   return tags

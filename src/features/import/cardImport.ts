@@ -9,8 +9,9 @@
 
 import { parseCardFile, parseLorebookFile } from '@/core/card/parser.js';
 import { detectPresetKind } from '@/core/types/preset.js';
-import type { RPCard } from '@/core/types/card.js';
+import type { RPCard, RPRegexScript } from '@/core/types/card.js';
 import type { RPLorebook } from '@/core/types/lorebook.js';
+import { uid } from '@/lib/utils.js';
 import type {
   RPCompletionPreset,
   RPContextTemplate,
@@ -20,7 +21,7 @@ import type {
 
 export interface ImportOutcome {
   file: string;
-  kind: 'card' | 'lorebook' | 'preset' | 'unknown' | 'error';
+  kind: 'card' | 'lorebook' | 'preset' | 'regex' | 'unknown' | 'error';
   name?: string;
   message?: string;
   warnings?: string[];
@@ -33,7 +34,69 @@ export interface ImportResult {
   contextTemplates: RPContextTemplate[];
   instructTemplates: RPInstructTemplate[];
   reasoningTemplates: RPReasoningTemplate[];
+  /** Standalone regex scripts (P09): a regex-only JSON lands here, not on a card. */
+  regexScripts: RPRegexScript[];
   outcomes: ImportOutcome[];
+}
+
+/**
+ * Normalise one raw regex script into the card shape (`extensions.regex_scripts`).
+ * Returns null when the entry has no usable pattern.
+ */
+export function normalizeRegexScript(raw: unknown, index = 0): RPRegexScript | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const rec = raw as Record<string, unknown>;
+  const findRegex = typeof rec.findRegex === 'string' ? rec.findRegex : typeof rec.find_regex === 'string' ? rec.find_regex : '';
+  if (!findRegex.trim()) return null;
+  const placement = Array.isArray(rec.placement)
+    ? rec.placement.filter((p): p is number => typeof p === 'number')
+    : typeof rec.placement === 'number'
+      ? [rec.placement]
+      : [2];
+  return {
+    id: typeof rec.id === 'string' && rec.id ? rec.id : uid('regex'),
+    scriptName:
+      typeof rec.scriptName === 'string' && rec.scriptName.trim()
+        ? rec.scriptName.trim()
+        : typeof rec.name === 'string' && rec.name.trim()
+          ? rec.name.trim()
+          : `正则 ${index + 1}`,
+    findRegex,
+    replaceString: typeof rec.replaceString === 'string' ? rec.replaceString : typeof rec.replace_string === 'string' ? rec.replace_string : '',
+    trimStrings: Array.isArray(rec.trimStrings) ? rec.trimStrings.map(String) : undefined,
+    placement: placement.length ? placement : [2],
+    disabled: rec.disabled === true,
+    markdownOnly: rec.markdownOnly === true,
+    promptOnly: rec.promptOnly === true,
+    runOnEdit: rec.runOnEdit === true ? true : undefined,
+    substituteRegex: typeof rec.substituteRegex === 'number' ? rec.substituteRegex : undefined,
+    minDepth: typeof rec.minDepth === 'number' ? rec.minDepth : null,
+    maxDepth: typeof rec.maxDepth === 'number' ? rec.maxDepth : null,
+  };
+}
+
+/**
+ * Recognise a regex-only document (P09): `{regex_scripts:[…]}`, a bare array
+ * of `{scriptName, findRegex, …}` entries, or `{extensions:{regex_scripts:[…]}}`.
+ * Anything that also looks like a card, lorebook or preset is not regex-only
+ * and returns null so the other branches claim it.
+ */
+export function parseRegexOnlyJson(doc: unknown): RPRegexScript[] | null {
+  if (!doc || typeof doc !== 'object') return null;
+  let raw: unknown = null;
+  if (Array.isArray(doc)) {
+    raw = doc;
+  } else {
+    const rec = doc as Record<string, unknown>;
+    if (Array.isArray(rec.regex_scripts)) raw = rec.regex_scripts;
+    else if (Array.isArray(rec.regexScripts)) raw = rec.regexScripts;
+    else if (rec.extensions && typeof rec.extensions === 'object' && Array.isArray((rec.extensions as Record<string, unknown>).regex_scripts)) {
+      raw = (rec.extensions as Record<string, unknown>).regex_scripts;
+    }
+  }
+  if (!Array.isArray(raw) || !raw.length) return null;
+  const scripts = raw.map((entry, i) => normalizeRegexScript(entry, i)).filter((s): s is RPRegexScript => s !== null);
+  return scripts.length ? scripts : null;
 }
 
 /** Turn a parsed preset JSON document into the right typed record. */
@@ -229,6 +292,7 @@ export async function importFiles(files: File[]): Promise<ImportResult> {
     contextTemplates: [],
     instructTemplates: [],
     reasoningTemplates: [],
+    regexScripts: [],
     outcomes: [],
   };
 
@@ -254,6 +318,15 @@ export async function importFiles(files: File[]): Promise<ImportResult> {
           if (parsed.lorebook) {
             result.lorebooks.push(parsed.lorebook);
             result.outcomes.push({ file: file.name, kind: 'lorebook', name: parsed.lorebook.name });
+            continue;
+          }
+          if (parsed.regexScripts?.length) {
+            result.regexScripts.push(...parsed.regexScripts);
+            result.outcomes.push({
+              file: file.name,
+              kind: 'regex',
+              name: `${parsed.regexScripts.length} 条正则脚本`,
+            });
             continue;
           }
           if (parsed.cards?.length) {
@@ -292,6 +365,7 @@ interface StructuredParse {
   context?: RPContextTemplate;
   instruct?: RPInstructTemplate;
   reasoning?: RPReasoningTemplate;
+  regexScripts?: RPRegexScript[];
   warnings?: string[];
 }
 
@@ -322,6 +396,15 @@ async function tryParseStructured(file: File): Promise<StructuredParse | null> {
   if (!doc || typeof doc !== 'object') return null;
   const rec = doc as Record<string, unknown>;
 
+  // A bare array is a regex-only (or multi-card) document, never a lorebook:
+  // `'entries' in []` is true (Array.prototype.entries), so arrays must be
+  // claimed here before the lorebook shape check below.
+  if (Array.isArray(doc)) {
+    const regexScripts = parseRegexOnlyJson(doc);
+    if (regexScripts) return { regexScripts };
+    return null;
+  }
+
   // Preset families are structurally distinct.
   if (detectPresetKind(rec) !== 'unknown') {
     const base = file.name.replace(/\.[^.]+$/, '');
@@ -332,6 +415,12 @@ async function tryParseStructured(file: File): Promise<StructuredParse | null> {
   const looksLikeCard = 'spec' in rec || 'first_mes' in rec || ('name' in rec && 'description' in rec && !('entries' in rec));
   if (!looksLikeCard && ('entries' in rec || 'originalData' in rec)) {
     return { lorebook: parseLorebookFile(rec) };
+  }
+
+  // P09: a regex-only JSON (no card/lorebook/preset markers) imports on its own.
+  if (!looksLikeCard && !('entries' in rec)) {
+    const regexScripts = parseRegexOnlyJson(rec);
+    if (regexScripts) return { regexScripts };
   }
 
   if (looksLikeCard) {

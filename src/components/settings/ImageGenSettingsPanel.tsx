@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/misc.js';
 import { useApp } from '@/state/store.js';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Slider, Switch } from '@/components/ui/input';
+import { SecretInput } from '@/components/ui/SecretInput.js';
 import { toast } from '@/components/ui/toast.js';
 
 const MODELS = [
@@ -25,17 +26,57 @@ export function ImageGenSettingsPanel() {
   const cfg = settings.imageGen;
   const patch = (p: Partial<typeof cfg>) => setSettings({ imageGen: { ...cfg, ...p } });
   const [quota, setQuota] = React.useState<{ value: number } | null>(null);
+  /** N08: last image-service test latency in ms (null = not tested yet). */
+  const [testLatencyMs, setTestLatencyMs] = React.useState<number | null>(null);
+  const [testing, setTesting] = React.useState(false);
+  // Key already queried once — avoids re-querying on every blur.
+  const queriedKey = React.useRef('');
 
-  const queryQuota = async () => {
+  const queryQuota = async (opts?: { quiet?: boolean }) => {
     if (!cfg.key) return;
     setQuota(null);
     const q = await fetchQuota(cfg.key);
     if (q?.value === undefined) {
-      toast.info('该服务没有返回配额');
+      if (!opts?.quiet) toast.info('该服务没有返回配额');
       return;
     }
+    queriedKey.current = cfg.key;
     setQuota({ value: q.value });
-    toast.success('生图剩余次数', String(q.value));
+    if (!opts?.quiet) toast.success('生图剩余次数', String(q.value));
+  };
+
+  /** N08: test the image service and report latency + remaining quota. */
+  const testImageService = async () => {
+    if (!cfg.key) {
+      toast.error('请先填写生图密钥');
+      return;
+    }
+    setTesting(true);
+    const startedAt = performance.now();
+    try {
+      const q = await fetchQuota(cfg.key);
+      const latencyMs = Math.round(performance.now() - startedAt);
+      setTestLatencyMs(latencyMs);
+      if (q?.value !== undefined) {
+        queriedKey.current = cfg.key;
+        setQuota({ value: q.value });
+        toast.success('生图服务正常', `延迟 ${latencyMs} 毫秒 · 剩余 ${q.value} 次`);
+      } else {
+        toast.success('生图服务正常', `延迟 ${latencyMs} 毫秒（该服务没有返回配额）`);
+      }
+    } catch (err) {
+      const latencyMs = Math.round(performance.now() - startedAt);
+      setTestLatencyMs(latencyMs);
+      toast.error('生图服务连接失败', `${err instanceof Error ? err.message : String(err)}（${latencyMs} 毫秒后失败）`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  // I09: query once after the key is entered (blur), so the quota shows
+  // without the user hunting for the button; failures stay silent here.
+  const queryQuotaOnBlur = () => {
+    if (cfg.key && queriedKey.current !== cfg.key) void queryQuota({ quiet: true });
   };
 
   return (
@@ -58,22 +99,28 @@ export function ImageGenSettingsPanel() {
             <Label htmlFor="img-key" className="flex items-center gap-1.5">
               <KeyRound className="size-3.5" aria-hidden="true" /> 生图密钥
             </Label>
-            <Input
+            <SecretInput
               id="img-key"
-              type="password"
               value={cfg.key}
-              onChange={(e) => patch({ key: e.target.value })}
+              onChange={(v) => patch({ key: v })}
+              onBlur={queryQuotaOnBlur}
               placeholder="STA1N / NAI 密钥"
-              autoComplete="off"
+              ariaLabel="生图密钥"
             />
             <p className="text-[11px] text-[var(--rp-fg-subtle)]">
               需要密钥才会注入生图提示词，否则模型不会输出图片标记。
             </p>
-            <div className="mt-1 flex items-center gap-2">
+            <div className="mt-1 flex flex-wrap items-center gap-2">
               <Button size="sm" variant="outline" onClick={() => void queryQuota()}>
                 查询剩余次数
               </Button>
+              <Button size="sm" variant="outline" onClick={() => void testImageService()} disabled={testing}>
+                测试连接
+              </Button>
               {quota && <Badge variant="outline">{quota.value} 次</Badge>}
+              {testLatencyMs !== null && (
+                <span className="text-[11px] tabular-nums text-[var(--rp-fg-muted)]">延迟 {testLatencyMs} 毫秒</span>
+              )}
             </div>
           </div>
 
@@ -84,13 +131,22 @@ export function ImageGenSettingsPanel() {
                 value={cfg.model}
                 onValueChange={(v) => {
                   const next: Partial<typeof cfg> = { model: v };
-                  // V5 dropped the r18 / lolita25d / anime styles; fall back to
-                  // the neutral vertical style rather than shipping tags V5
-                  // rejects.
-                  if (isV5(v) && ['r18', 'lolita25d', 'anime'].includes(cfg.style)) {
-                    next.style = 'vertical';
-                    toast.info('V5 不支持该风格，已切回韩漫小清新风');
+                  const notes: string[] = [];
+                  if (isV5(v)) {
+                    // V5 dropped the r18 / lolita25d / anime styles; fall back
+                    // to the neutral vertical style rather than shipping tags
+                    // V5 rejects.
+                    if (['r18', 'lolita25d', 'anime'].includes(cfg.style)) {
+                      next.style = 'vertical';
+                      notes.push('该风格 V5 不支持，已切回韩漫小清新风');
+                    }
+                    // I10: V5 also resets the direction to vertical.
+                    if (cfg.size !== 'vertical') {
+                      next.size = 'vertical';
+                      notes.push('方向已切回竖图');
+                    }
                   }
+                  if (notes.length) toast.info(`V5：${notes.join('；')}`);
                   patch(next);
                 }}
               >
@@ -149,16 +205,6 @@ export function ImageGenSettingsPanel() {
             <p className="text-[10.5px] text-[var(--rp-fg-subtle)]">
               V5（nai-diffusion-5-full）不支持 r18 / lolita25d / anime。
             </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Label className="flex items-center gap-1.5">
-              <KeyRound className="size-3.5" aria-hidden="true" /> 生图密钥
-            </Label>
-            <Button size="sm" variant="outline" onClick={() => void queryQuota()}>
-              查询剩余次数
-            </Button>
-            {quota && <Badge variant="outline">{quota.value} 次</Badge>}
           </div>
 
           <div className="space-y-1">

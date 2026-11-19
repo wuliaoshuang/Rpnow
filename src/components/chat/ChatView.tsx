@@ -9,6 +9,7 @@
  */
 
 import * as React from 'react';
+import { createPortal } from 'react-dom';
 import {
   ArrowUp,
   Ban,
@@ -17,13 +18,14 @@ import {
   ChevronUp,
   Maximize2,
   ImagePlus,
+  Loader2,
   Menu,
   Plus,
   X,
   SlidersHorizontal,
   Wand2,
 } from 'lucide-react';
-import { cn, uid } from '@/lib/utils';
+import { cn, estimateTokens, uid } from '@/lib/utils';
 import { useApp } from '@/state/store.js';
 import type { RPChat, RPChatMessage } from '@/core/types/chat.js';
 import type { RPCard } from '@/core/types/card.js';
@@ -39,28 +41,41 @@ import { MemoryService } from '@/features/memory/service.js';
 import { MAIN_BRANCH } from '@/core/types/chat.js';
 import { BranchPanel } from '@/components/chat/BranchPanel.js';
 import { diffVariables, parseUpdates, stripUpdateBlocks, validateVariables } from '@/core/uitemplate/engine.js';
+import { analyseTemplates } from '@/core/uitemplate/analysis.js';
 import {
   fetchAsDataUrl,
   artistsForStyle,
   IMAGE_SIZES,
+  markerForTags,
   normalizeTags,
   parseImageMarkers,
   pollJob,
   rerollTags,
+  rewriteImageMarker,
   stripImageMarkers,
   submitJob,
 } from '@/core/image/nai.js';
 import { fetchTokenQuota } from '@/core/llm/quota.js';
-import { blobToDataUrl } from '@/core/card/parser.js';
+import { compressImageFile } from '@/core/image/types.js';
 import { parseCot } from '@/core/prompt/cot.js';
 import { stripCitations } from '@/core/memory/types.js';
+import { filterBlockedStyleText } from '@/core/styleFilter.js';
 import { pruneMemories } from '@/core/memory/engine.js';
+import {
+  formatTokens,
+  recordUsage,
+  useUsageHistory,
+  wrapLlmForUsage,
+} from '@/core/usage.js';
 import { vibrate, vibrateMessage } from '@/lib/haptics.js';
 import { BUILTIN_PRESETS } from '@/core/defaults/presets.js';
 import { toast } from '@/components/ui/toast.js';
 import { SLOT, SlotOutlet } from '@/core/plugin/slots.js';
 import { PromptInspector } from '@/components/chat/PromptInspector.js';
 import { ImageStudio } from '@/components/chat/ImageStudio.js';
+import { ModelPicker, type ModelPickerTarget } from '@/components/chat/ModelPicker.js';
+import { ChatQuickPanel } from '@/components/chat/ChatQuickPanel.js';
+import { MODEL_SLOTS, chatImmersive, slotIdForModel, slotModels } from '@/core/llm/modelSlots.js';
 import { isTouchDevice } from '@/lib/runtime.js';
 import type { Route } from '@/components/layout/AppShell.js';
 
@@ -132,6 +147,7 @@ export function ChatView({
   onOpenCards,
   onOpenSettings,
   onOpenList,
+  onNavigate,
   branchesOpen: branchesOpenProp,
   onBranchesOpenChange,
   inspectorOpen: inspectorOpenProp,
@@ -156,6 +172,7 @@ export function ChatView({
   const memories = useApp((s) => s.memories[chat.id]) ?? [];
   const uiTemplates = useApp((s) => s.uiTemplates);
   const updateCard = useApp((s) => s.updateCard);
+  const setSettings = useApp((s) => s.setSettings);
 
   const [input, setInput] = React.useState('');
   const [draftImages, setDraftImages] = React.useState<string[]>([]);
@@ -174,12 +191,46 @@ export function ChatView({
   const inspectorOpen = inspectorOpenProp ?? inspectorOpenLocal;
   const setInspectorOpen = onInspectorOpenChange ?? setInspectorOpenLocal;
   const [sheetOpen, setSheetOpen] = React.useState(false);
+  /** A07: character intro panel (floors / chars / compressed-size forecast). */
+  const [charPanelOpen, setCharPanelOpen] = React.useState(false);
   const [branchOpenLocal, setBranchOpenLocal] = React.useState(false);
   const branchOpen = branchesOpenProp ?? branchOpenLocal;
   const setBranchOpen = onBranchesOpenChange ?? setBranchOpenLocal;
   const [quota, setQuota] = React.useState<{ used: number; total: number } | null>(null);
   const [imageOpen, setImageOpen] = React.useState(false);
+  /** N02/N03/R04: 输入岛快捷面板与模型选择器。 */
+  const [quickPanelOpen, setQuickPanelOpen] = React.useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = React.useState(false);
+  const [modelPickerTarget, setModelPickerTarget] = React.useState<ModelPickerTarget>('chat');
   const abortRef = React.useRef<AbortController | null>(null);
+  /** C06: 流式增量 60ms 节流——delta 先攒进 ref，每 60ms 才 setDraft 一次。 */
+  const draftTextRef = React.useRef('');
+  const draftReasoningRef = React.useRef('');
+  const draftFlushedRef = React.useRef({ text: '', reasoning: '' });
+  const draftFlushTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushDraft = React.useCallback(() => {
+    draftFlushTimerRef.current = null;
+    const text = draftTextRef.current;
+    const reasoning = draftReasoningRef.current;
+    const last = draftFlushedRef.current;
+    if (text === last.text && reasoning === last.reasoning) return;
+    draftFlushedRef.current = { text, reasoning };
+    setDraft({ text, reasoning });
+  }, []);
+  /** C09: 等待计时——本轮生成开始的时间戳，配合下面的 interval 显示已等待秒数。 */
+  const genStartRef = React.useRef(0);
+  const [waitedSec, setWaitedSec] = React.useState(0);
+  React.useEffect(() => {
+    if (!busy) {
+      setWaitedSec(0);
+      return;
+    }
+    const start = genStartRef.current || Date.now();
+    const tick = () => setWaitedSec(Math.floor((Date.now() - start) / 1000));
+    tick();
+    const timer = window.setInterval(tick, 500);
+    return () => window.clearInterval(timer);
+  }, [busy]);
   /** Guards the one-buzz-per-reply haptic. */
   const replyBuzzedRef = React.useRef(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -456,17 +507,28 @@ export function ChatView({
     patch({ messages: [...chat.messages, msg] });
   };
 
+  /**
+   * Memory jobs (round summaries, secondary compression, backfill, recall
+   * embeddings) run through this wrapped service, so every one of them lands
+   * in the usage history. The main chat turn is recorded separately at the
+   * `sendTurn` call site below.
+   */
+  const memoryLlm = React.useMemo(
+    () => (llm ? wrapLlmForUsage(llm, { chatId: chat.id, label: card.data.name }) : null),
+    [llm, chat.id, card.data.name],
+  );
+
   /** Build the memory service bound to this chat's persisted records. */
   const memoryService = React.useMemo(
     () =>
       new MemoryService({
-        llm: llm!,
+        llm: memoryLlm!,
         connections,
         settings: settings.memory,
         load: (chatId) => useApp.getState().memories[chatId] ?? [],
         save: (chatId, records) => useApp.getState().saveMemories(chatId, records),
       }),
-    [llm, connections, settings.memory],
+    [memoryLlm, connections, settings.memory],
   );
 
   const buildCtx = (): ChatContext => ({
@@ -489,9 +551,14 @@ export function ChatView({
       userName: persona?.name || '用户',
       characterName: card.data.name,
     },
-    uiTemplates: settings.uiTemplate.enabled
-      ? uiTemplates.filter((t) => t.enabled && (t.scope === 'global' || t.scopeId === card.id))
-      : [],
+    // J06/J07: in sub-model mode the main model must NOT be told to emit
+    // `<ui_template_updates>` — the analysis runs after the turn instead
+    // (see the generate() tail). Withholding the templates here is what
+    // keeps the two modes from double-writing the same variables.
+    uiTemplates:
+      settings.uiTemplate.enabled && settings.uiTemplate.mainModelAnalysis
+        ? uiTemplates.filter((t) => t.enabled && (t.scope === 'global' || t.scopeId === card.id))
+        : [],
   });
 
   // ------------------------------------------------------------------ send
@@ -530,6 +597,15 @@ export function ChatView({
     abortRef.current = controller;
     replyBuzzedRef.current = false;
     const genStart = Date.now();
+    genStartRef.current = genStart;
+    // C06: 新一轮先清节流缓冲，避免上一轮的残字混进来。
+    draftTextRef.current = '';
+    draftReasoningRef.current = '';
+    draftFlushedRef.current = { text: '', reasoning: '' };
+    if (draftFlushTimerRef.current) {
+      clearTimeout(draftFlushTimerRef.current);
+      draftFlushTimerRef.current = null;
+    }
 
     try {
       const { result, activation } = await sendTurn({
@@ -545,13 +621,29 @@ export function ChatView({
             replyBuzzedRef.current = true;
             vibrateMessage();
           }
-          setDraft((d) => {
-            const cur = d ?? { text: '', reasoning: '' };
-            return kind === 'text'
-              ? { ...cur, text: cur.text + delta }
-              : { ...cur, reasoning: cur.reasoning + delta };
-          });
+          // C06: 60ms 节流——先攒进 ref，定时器到点才 setDraft，避免每个
+          // delta 都触发一次全树渲染。
+          if (kind === 'text') draftTextRef.current += delta;
+          else draftReasoningRef.current += delta;
+          if (!draftFlushTimerRef.current) {
+            draftFlushTimerRef.current = setTimeout(flushDraft, 60);
+          }
         },
+      });
+
+      // Usage history: one row per chat turn, with the provider-reported
+      // tokens and wall-clock time. Fire-and-forget — a failed write must
+      // never break the reply.
+      void recordUsage({
+        kind: 'chat',
+        model: chat.model || connection.defaultModel,
+        chatId: base.id,
+        label: card.data.name,
+        inputTokens: result.usage?.inputTokens,
+        cachedTokens: result.usage?.cachedTokens,
+        outputTokens: result.usage?.outputTokens,
+        reasoningTokens: result.usage?.reasoningTokens,
+        durationMs: Date.now() - genStart,
       });
 
       const targetIndex = opts.targetId
@@ -562,12 +654,20 @@ export function ChatView({
       // UI templates: apply <ui_template_updates> then strip the block so the
       // stored reply is clean prose. Inline image markers are then generated.
       const afterTemplates = applyTemplateUpdates(result.text);
-      const { text: replyText, images: replyImages, tags: replyTags } = await applyGeneratedImages(afterTemplates);
+      const { text: replyText, images: replyImages, tags: replyTags, markers: replyMarkers } = await applyGeneratedImages(afterTemplates);
       // Inline CoT (DeepSeek/GLM/Kimi over OpenAI-compatible routes) is split
       // out so it never reaches the transcript as prose.
       const cot = parseCot(replyText);
       const reasoningText = [result.reasoning, cot.reasoning].filter(Boolean).join('\n\n').trim();
-      const finalText = cot.main;
+      // 文风过滤生成时生效（第 15 组只做了渲染层）：过滤后的正文才会存进
+      // 消息、进记忆总结、进下一轮提示词；被删的片段记在 styleFilterHits
+      // 里，渲染层弹层继续用它展示（渲染层对已过滤的文本不再重复命中，
+      // 改读存量 hits）。
+      const styleFilterHits: string[] = [];
+      const finalText =
+        (settings.chat.styleFilterEnabled ?? true)
+          ? filterBlockedStyleText(cot.main, { enabled: true, collect: styleFilterHits })
+          : cot.main;
 
       /*
        * Group chats: attribute every reply to a speaker. With `auto` we rotate
@@ -585,6 +685,20 @@ export function ChatView({
         return all.find((c) => c.id === id)?.data.name;
       })();
 
+      /*
+       * Tool timeline (C03/D09): the loop collected `toolTrace` but nothing
+       * persisted it, so the transcript could never show which tools ran.
+       * Carry it on `meta` (a plain field, no type change) for the timeline
+       * in MessageBubble; no tool-calling behaviour changes here.
+       */
+      const replyMeta: Record<string, unknown> | undefined =
+        replyTags.length || result.toolTrace?.length
+          ? {
+              ...(replyTags.length ? { imageTags: replyTags, imageMarkers: replyMarkers } : {}),
+              ...(result.toolTrace?.length ? { toolTrace: result.toolTrace } : {}),
+            }
+          : undefined;
+
       if (targetIndex >= 0) {
         // Swipe: keep prior variants so the user can flip back.
         messages = base.messages.map((m, i) => {
@@ -596,10 +710,14 @@ export function ChatView({
             swipes,
             swipeId: swipes.length - 1,
             reasoning: reasoningText || undefined,
+            styleFilterHits: styleFilterHits.length ? styleFilterHits : undefined,
             model: connection.defaultModel,
             usage: result.usage ? { ...result.usage, durationMs: Date.now() - genStart } : undefined,
             images: replyImages.length ? replyImages : undefined,
-            meta: replyTags.length ? { imageTags: replyTags } : undefined,
+            meta: (() => {
+              const merged = { ...(m.meta ?? {}), ...(replyMeta ?? {}) };
+              return Object.keys(merged).length ? merged : undefined;
+            })(),
           };
         });
       } else {
@@ -610,11 +728,12 @@ export function ChatView({
             role: 'assistant',
             content: finalText,
             reasoning: reasoningText || undefined,
+            styleFilterHits: styleFilterHits.length ? styleFilterHits : undefined,
             createdAt: Date.now(),
             model: chat.model || connection.defaultModel,
             usage: result.usage ? { ...result.usage, durationMs: Date.now() - genStart } : undefined,
             images: replyImages.length ? replyImages : undefined,
-            meta: replyTags.length ? { imageTags: replyTags } : undefined,
+            meta: replyMeta,
             speaker: speakerForReply,
           },
         ];
@@ -687,24 +806,46 @@ export function ChatView({
             /* best-effort */
           });
       }
+
+      // J06/J07: sub-model UI template analysis runs after the turn, on the
+      // newest `analysisDepth` floors. Background, best-effort — the reply
+      // is already stored, so a slow analysis never blocks reading.
+      if (settings.uiTemplate.enabled && !settings.uiTemplate.mainModelAnalysis) {
+        void runSubModelAnalysis(messages).catch(() => {
+          /* best-effort */
+        });
+      }
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
-        // Keep whatever streamed so far as a partial message.
-        setDraft((d) => {
-          if (d?.text) {
-            appendMessage({
-              id: uid('m'),
-              role: 'assistant',
-              content: `${d.text}\n\n_(已中断)_`,
-              createdAt: Date.now(),
-            });
-          }
-          return null;
-        });
+        // Keep whatever streamed so far as a partial message. The text comes
+        // from the throttle refs (C06), not the throttled state — the last
+        // 60ms of deltas must not be lost when the user hits stop.
+        // C08: loop 把中止时未跑完的工具调用挂在 err.toolTrace 上（每条
+        // result 都是 {error:'生成已中止'}），一并存进这条消息的 meta，
+        // 时间线会把它标成出错。
+        const abortedTrace = (
+          err as Error & { toolTrace?: Array<{ name: string; args: unknown; result: unknown }> }
+        ).toolTrace;
+        const partialText = draftTextRef.current;
+        const partialReasoning = draftReasoningRef.current;
+        if (partialText) {
+          appendMessage({
+            id: uid('m'),
+            role: 'assistant',
+            content: `${partialText}\n\n_(已中断)_`,
+            reasoning: partialReasoning || undefined,
+            createdAt: Date.now(),
+            meta: abortedTrace?.length ? { toolTrace: abortedTrace } : undefined,
+          });
+        }
       } else {
         toast.error('生成失败', err instanceof Error ? err.message : String(err));
       }
     } finally {
+      if (draftFlushTimerRef.current) {
+        clearTimeout(draftFlushTimerRef.current);
+        draftFlushTimerRef.current = null;
+      }
       setBusy(false);
       setDraft(null);
       abortRef.current = null;
@@ -855,18 +996,48 @@ export function ChatView({
       toast.info('消息未改动');
       return;
     }
-    patch({ messages: chat.messages.map((m) => (m.id === messageId ? { ...m, content } : m)) });
+    const nextMessages = chat.messages.map((m) => (m.id === messageId ? { ...m, content } : m));
+    patch({ messages: nextMessages });
+    // B07: 按轮重算总结——被改的消息所属那一轮的记忆总结按新正文重写，
+    // 否则下次提示词里还是旧总结。没有对应记录（还没总结过）的轮次跳过；
+    // 重算失败不打断编辑，旧总结继续留用。
+    if (settings.memory.mode !== 'off') {
+      const record = (useApp.getState().memories[chat.id] ?? []).find((r) =>
+        [...(r.sourceUserIds ?? []), ...(r.sourceAssistantIds ?? [])].includes(messageId),
+      );
+      if (record) {
+        void memoryService
+          .regenerateRecord({
+            chat: { ...chat, messages: nextMessages },
+            card,
+            personaName: persona?.name || '用户',
+            record,
+            fallbackConnectionId: connection?.id,
+          })
+          .then((records) => {
+            if (records) toast.success('已重算本轮总结');
+          })
+          .catch(() => {
+            /* best-effort */
+          });
+      }
+    }
   }
 
   /**
-   * Apply `<ui_template_updates>` from a reply and return the clean body.
+   * Apply parsed `<ui_template_updates>` and persist the changed templates.
+   * Shared by the main-model path (updates embedded in the reply) and the
+   * sub-model path (updates from the post-turn analysis call) — only the
+   * `source` recorded in the change log differs.
    *
    * Validation failures are skipped (and warned) rather than dropping the reply:
    * the model's prose is still worth keeping even if the state update is bogus.
    */
-  function applyTemplateUpdates(text: string): string {
-    const updates = parseUpdates(text);
-    if (!updates?.length) return text;
+  function applyParsedUpdates(
+    updates: Array<{ id: string; variables: Record<string, unknown> }>,
+    source: 'main' | 'sub',
+    model?: string,
+  ): void {
     const store = useApp.getState();
     for (const update of updates) {
       const tpl = store.uiTemplates.find((t) => t.id === update.id);
@@ -885,15 +1056,57 @@ export function ChatView({
           {
             id: uid('chg'),
             time: Date.now(),
-            source: 'main' as const,
-            model: chat.model,
+            source,
+            model,
             changes,
           },
           ...tpl.changeLog,
         ].slice(0, 50),
       });
     }
+  }
+
+  /**
+   * Apply `<ui_template_updates>` from a reply and return the clean body.
+   */
+  function applyTemplateUpdates(text: string): string {
+    const updates = parseUpdates(text);
+    if (!updates?.length) return text;
+    applyParsedUpdates(updates, 'main', chat.model);
     return stripUpdateBlocks(text);
+  }
+
+  /**
+   * J06/J07 sub-model analysis: after a turn, ask the analysis model to read
+   * the most recent `analysisDepth` floors and update each enabled template.
+   * Background, best-effort — a slow or failing analysis must never block the
+   * reply the user is reading (same pattern as the memory summary above).
+   */
+  async function runSubModelAnalysis(messages: RPChatMessage[]): Promise<void> {
+    const cfg = settings.uiTemplate;
+    if (!cfg.enabled || cfg.mainModelAnalysis) return;
+    const templates = uiTemplates.filter((t) => t.enabled && (t.scope === 'global' || t.scopeId === card.id));
+    if (!templates.length) return;
+    const svc = memoryLlm ?? llm;
+    if (!svc || !connection) return;
+    const model = cfg.model || chat.model || connection.defaultModel || '';
+    try {
+      const updates = await analyseTemplates({
+        llm: svc,
+        connectionId: connection.id,
+        model,
+        fallbackModel: chat.model || connection.defaultModel,
+        templates,
+        messages,
+        depth: cfg.analysisDepth,
+        injectContext: cfg.injectContext,
+        personaName: persona?.name || '用户',
+        characterName: card.data.name,
+      });
+      if (updates.length) applyParsedUpdates(updates, 'sub', model || undefined);
+    } catch (err) {
+      console.warn('[ui-template] 副模型分析失败', err);
+    }
   }
 
   /**
@@ -903,15 +1116,16 @@ export function ChatView({
    * pictures live in `message.images` so they survive reloads without bloating
    * the prompt.
    */
-  async function applyGeneratedImages(text: string): Promise<{ text: string; images: string[]; tags: string[] }> {
+  async function applyGeneratedImages(text: string): Promise<{ text: string; images: string[]; tags: string[]; markers: string[] }> {
     const cfg = settings.imageGen;
-    if (!cfg.enabled || !cfg.key || !cfg.autoGenerate) return { text, images: [], tags: [] };
+    if (!cfg.enabled || !cfg.key || !cfg.autoGenerate) return { text, images: [], tags: [], markers: [] };
     const markers = parseImageMarkers(text);
-    if (!markers.length) return { text, images: [], tags: [] };
+    if (!markers.length) return { text, images: [], tags: [], markers: [] };
 
     const { width, height } = IMAGE_SIZES[cfg.size];
     const images: string[] = [];
     const tags: string[] = [];
+    const usedMarkers: string[] = [];
     for (const marker of markers) {
       const normalized = normalizeTags(marker.tags);
       const base = {
@@ -929,12 +1143,15 @@ export function ChatView({
         try {
           images.push(await fetchAsDataUrl(status.imageUrl));
           tags.push(normalized);
+          // Keep the marker exactly as the model wrote it (raw spacing), so
+          // a later reroll can find and rewrite it in the stored prose.
+          usedMarkers.push(text.slice(marker.start, marker.end));
         } catch {
           /* a missing picture must not discard the reply */
         }
       }
     }
-    return { text: stripImageMarkers(text), images, tags };
+    return { text: stripImageMarkers(text), images, tags, markers: usedMarkers };
   }
 
   // Provider quota is best-effort: unsupported providers simply show nothing.
@@ -985,6 +1202,36 @@ export function ChatView({
     return null;
   }, [chat.messages]);
 
+  /**
+   * Composer usage bar (L04): the newest recorded chat turn. Prefers the
+   * usage history (live-updated as turns complete); falls back to the newest
+   * message's stored usage for turns made before history existed.
+   */
+  const usageHistory = useUsageHistory();
+  const composerUsage = React.useMemo(() => {
+    // Newest chat turn by time, not by array position — the history is
+    // normally append-ordered, but never assume it.
+    let newest: (typeof usageHistory)[number] | null = null;
+    for (const r of usageHistory) {
+      if (r.kind !== 'chat') continue;
+      if (!newest || r.at > newest.at) newest = r;
+    }
+    return newest ?? latestUsage;
+  }, [usageHistory, latestUsage]);
+
+  /**
+   * C09 预估等待秒数：最近 5 次主对话的平均耗时（用量历史里有 durationMs）。
+   * 没有历史时不显示预估，只显示已等待秒数。
+   */
+  const estimatedSec = React.useMemo(() => {
+    const durations = usageHistory
+      .filter((r) => r.kind === 'chat' && r.durationMs)
+      .slice(-5)
+      .map((r) => r.durationMs as number);
+    if (!durations.length) return null;
+    return Math.max(1, Math.round(durations.reduce((a, b) => a + b, 0) / durations.length / 1000));
+  }, [usageHistory]);
+
 
   /** Templates visible for this character, with their live state. */
   const activeTemplates = settings.uiTemplate.enabled
@@ -1030,7 +1277,19 @@ export function ChatView({
           images[imageIndex] = dataUrl;
           const tagList = [...((m.meta?.imageTags as string[] | undefined) ?? [])];
           tagList[imageIndex] = next;
-          return { ...m, images, meta: { ...(m.meta ?? {}), imageTags: tagList } };
+          // I08: rewrite the picture's marker in the stored prose (when the
+          // raw marker is still there) and keep the tag↔marker mapping in
+          // sync for the next reroll.
+          const markerList = [...((m.meta?.imageMarkers as string[] | undefined) ?? [])];
+          const oldMarker = markerList[imageIndex];
+          const nextMarker = markerForTags(next);
+          if (oldMarker) markerList[imageIndex] = nextMarker;
+          return {
+            ...m,
+            ...(oldMarker ? { content: rewriteImageMarker(m.content, oldMarker, nextMarker) } : {}),
+            images,
+            meta: { ...(m.meta ?? {}), imageTags: tagList, ...(markerList.length ? { imageMarkers: markerList } : {}) },
+          };
         }),
       });
       toast.success('已重新生成');
@@ -1048,6 +1307,98 @@ export function ChatView({
   }
 
   const immersive = settings.render.useCharacterBackground && Boolean(card.avatar);
+  /**
+   * M02 沉浸模式：隐藏标题/消息时间、消息列收窄，专注阅读。跟上面那个
+   * `immersive`（角色封面背景）是两回事：封面背景管底图，沉浸模式管版式。
+   * N02: 快捷面板可按聊天覆盖沉浸模式（`chat.params.immersiveMode`），
+   * 没覆盖时跟随全局 `settings.render.immersiveMode`。
+   */
+  const immersiveMode = chatImmersive(chat, settings);
+
+  /**
+   * R04/N03: 模型选择器选定模型 → 设为本聊天模型；若该模型属于某个槽位，
+   * 记下槽位归属，否则清除槽位归属（自定义模型）。
+   */
+  const applyPickedModel = (modelId: string) => {
+    const slot = slotIdForModel(settings, modelId);
+    const params = { ...(chat.params ?? {}) };
+    if (slot) params.modelSlot = slot;
+    else delete params.modelSlot;
+    patch({ model: modelId, params });
+  };
+
+  /**
+   * R04/N03: 保存三槽位草稿（全局设置），并把当前槽位的模型设为本聊天
+   * 模型（RP-Hub `selectQuickModels` 的行为）；当前槽位为空时只存槽位。
+   */
+  const applySlotDrafts = (drafts: [string, string, string], activeSlot: number) => {
+    setSettings({
+      chat: {
+        ...settings.chat,
+        qualityModel: drafts[0],
+        balancedModel: drafts[1],
+        fastModel: drafts[2],
+      },
+    });
+    const active = drafts[activeSlot]?.trim();
+    if (active) {
+      patch({ model: active, params: { ...(chat.params ?? {}), modelSlot: MODEL_SLOTS[activeSlot].id } });
+    }
+  };
+
+  const openModelPicker = (target: ModelPickerTarget) => {
+    setModelPickerTarget(target);
+    setModelPickerOpen(true);
+    setQuickPanelOpen(false);
+  };
+
+  /**
+   * A07: character intro stats — floors, raw characters, and (when memory is
+   * on) a compressed-size forecast: the newest `keepRecentRounds` rounds stay
+   * verbatim, older rounds collapse into their memory summaries (already
+   * written summaries at face value, not-yet-summarised rounds at the average
+   * summary length so far, 150 chars/round before any summary exists).
+   */
+  const charStats = React.useMemo(() => {
+    const msgs = chat.messages;
+    const floors = msgs.length;
+    const chars = msgs.reduce((s, m) => s + (m.content ?? '').length, 0);
+    const tokens = estimateTokens(msgs.map((m) => m.content ?? '').join('\n'));
+    const memoryOn = settings.memory.mode !== 'off';
+    let compressed: number | null = null;
+    let compressedNote = '';
+    if (memoryOn) {
+      const keep = settings.memory.keepRecentRounds;
+      let assistantSeen = 0;
+      let recentChars = 0;
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (m.role === 'assistant') {
+          if (assistantSeen >= keep) break;
+          assistantSeen++;
+        }
+        recentChars += (m.content ?? '').length;
+        if (m.role === 'user' && assistantSeen >= keep) break;
+      }
+      const rounds = msgs.filter((m) => m.role === 'assistant').length;
+      const oldRounds = Math.max(0, rounds - keep);
+      let coveredRounds = 0;
+      let summaryChars = 0;
+      for (const rec of memories) {
+        const span = (rec.turnEnd ?? rec.turn) - (rec.turnStart ?? rec.turn) + 1;
+        coveredRounds += Math.max(1, span);
+        summaryChars += (rec.summary ?? '').length;
+      }
+      const pendingRounds = Math.max(0, oldRounds - coveredRounds);
+      const avgSummary = coveredRounds > 0 ? summaryChars / coveredRounds : 150;
+      compressed = Math.round(recentChars + summaryChars + pendingRounds * avgSummary);
+      compressedNote =
+        coveredRounds > 0
+          ? `按已有 ${coveredRounds} 轮记忆总结（平均每轮约 ${Math.round(avgSummary)} 字）估算`
+          : '暂无记忆总结，按每轮约 150 字估算';
+    }
+    return { floors, chars, tokens, memoryOn, compressed, compressedNote };
+  }, [chat.messages, memories, settings.memory]);
 
   /**
    * Chat title. Group chats are named by their cast joined with `&`; solo
@@ -1169,14 +1520,100 @@ export function ChatView({
           <Menu className="size-5" aria-hidden="true" />
         </button>
 
-        <div className="min-w-0 flex-1 text-center">
-          <p className="truncate text-[15px] font-semibold leading-tight">{chatTitle}</p>
-          {chat.activeBranchId && chat.activeBranchId !== MAIN_BRANCH && (
-            <p className="truncate text-[10.5px] text-[var(--rp-accent)]">
-              {chat.branches?.find((b) => b.id === chat.activeBranchId)?.name ?? '分支'}
-            </p>
+        {/* M02: 沉浸模式隐藏标题（名字/分支名），只留两侧按钮，进出设置不受影响。 */}
+        {!immersiveMode && (
+          <div className="min-w-0 flex-1 text-center">
+            <button
+              type="button"
+              onClick={() => setCharPanelOpen((v) => !v)}
+              aria-expanded={charPanelOpen}
+              aria-label="查看角色简介与聊天统计"
+              title="查看角色简介与聊天统计"
+              className="mx-auto block max-w-full cursor-pointer rounded-lg px-2 py-0.5 transition-colors hover:bg-[var(--rp-bg-sunken)]"
+            >
+              <span className="block truncate text-[15px] font-semibold leading-tight">{chatTitle}</span>
+              {chat.activeBranchId && chat.activeBranchId !== MAIN_BRANCH && (
+                <span className="block truncate text-[10.5px] text-[var(--rp-accent)]">
+                  {chat.branches?.find((b) => b.id === chat.activeBranchId)?.name ?? '分支'}
+                </span>
+              )}
+            </button>
+          </div>
+        )}
+        {immersiveMode && <div className="min-w-0 flex-1" aria-hidden="true" />}
+
+        {/* A07: character intro panel — floors / chars / compressed forecast.
+            Portaled to the body (same transformed-ancestor reason as the
+            message editor): inside the header it would paint under the
+            transcript and its buttons would be unclickable. */}
+        {charPanelOpen && !immersiveMode &&
+          createPortal(
+            <>
+              <button
+                type="button"
+                aria-label="关闭角色简介"
+                onClick={() => setCharPanelOpen(false)}
+                className="fixed inset-0 z-40 cursor-default bg-black/20"
+              />
+              <div
+                role="dialog"
+                aria-label="角色简介"
+                className="fixed left-1/2 top-[calc(env(safe-area-inset-top,0px)+3.75rem)] z-50 w-[min(24rem,calc(100vw-1.5rem))] -translate-x-1/2 rounded-xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-3 shadow-rp"
+              >
+              <div className="flex items-start gap-2.5">
+                {card.avatar ? (
+                  <img src={card.avatar} alt="" className="size-11 shrink-0 rounded-full border border-[var(--rp-border)] object-cover" />
+                ) : (
+                  <span className="flex size-11 shrink-0 items-center justify-center rounded-full bg-[var(--rp-accent)] text-[16px] font-bold text-[var(--rp-accent-fg)]">
+                    {card.data.name.slice(0, 1)}
+                  </span>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[14px] font-semibold">{card.data.name}</p>
+                  <p className="mt-0.5 text-[11.5px] tabular-nums leading-relaxed text-[var(--rp-fg-muted)]">
+                    {charStats.floors} 楼 · {charStats.chars.toLocaleString()} 字 · 约{' '}
+                    {charStats.tokens.toLocaleString()} tokens
+                  </p>
+                  {charStats.memoryOn && charStats.compressed !== null ? (
+                    <p className="text-[11.5px] tabular-nums leading-relaxed text-[var(--rp-fg-muted)]">
+                      记忆开启 → 压缩后约 {charStats.compressed.toLocaleString()} 字（预测）
+                      <span className="block text-[10.5px] text-[var(--rp-fg-subtle)]">{charStats.compressedNote}</span>
+                    </p>
+                  ) : (
+                    <p className="text-[11.5px] leading-relaxed text-[var(--rp-fg-subtle)]">记忆未开启</p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  aria-label="关闭"
+                  onClick={() => setCharPanelOpen(false)}
+                  className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded text-[var(--rp-fg-subtle)] hover:text-[var(--rp-fg)]"
+                >
+                  <X className="size-4" aria-hidden="true" />
+                </button>
+              </div>
+              {card.data.description?.trim() && (
+                <p className="rp-scroll mt-2 max-h-36 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-[var(--rp-bg-sunken)]/60 p-2 text-[12px] leading-relaxed text-[var(--rp-fg-muted)]">
+                  {card.data.description}
+                </p>
+              )}
+              <div className="mt-2.5 flex justify-end">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setCharPanelOpen(false);
+                    if (onOpenCards) onOpenCards();
+                    else onNavigate?.('cards');
+                  }}
+                >
+                  编辑角色
+                </Button>
+              </div>
+              </div>
+            </>,
+            document.body,
           )}
-        </div>
 
         {/* Single right-side control: opens the right side panel (对话设置).
             Regenerate lives in each assistant message's action row; scene
@@ -1210,7 +1647,12 @@ export function ChatView({
         id="chat"
         className={cn(
           'rp-no-scrollbar relative z-10 mx-auto flex min-h-0 w-full flex-1 flex-col gap-5 overflow-y-auto px-3 py-4 sm:px-5',
-          settings.render.messageWidth === 'narrow' ? 'max-w-3xl' : 'max-w-5xl',
+          // M02: 沉浸模式消息居中窄列（桌面 50vw；手机保持满宽，不挤压）。
+          immersiveMode
+            ? 'max-w-xl sm:max-w-[50vw]'
+            : settings.render.messageWidth === 'narrow'
+              ? 'max-w-3xl'
+              : 'max-w-5xl',
         )}
       >
         {chat.messages.length === 0 && !draft ? (
@@ -1269,6 +1711,7 @@ export function ChatView({
                 index={index}
                 card={card}
                 personaName={persona?.name}
+                personaAvatar={persona?.avatar}
                 allowExternalMedia={settings.render.allowExternalMedia}
                 showReasoning={settings.chat.showReasoning}
                 onRegenerate={regenerate}
@@ -1307,6 +1750,7 @@ export function ChatView({
                 chatId={chat.id}
                 sandboxHtml={settings.render.sandboxHtml}
                 immersive={immersive}
+                hideMeta={immersiveMode}
                 depth={Math.max(0, chat.messages.length - 1 - index)}
                 isLast={index === chat.messages.length - 1}
                 onContinue={continueStory}
@@ -1338,8 +1782,18 @@ export function ChatView({
                 preset={preset}
                 allowExternalMedia={settings.render.allowExternalMedia}
                 showReasoning={settings.chat.showReasoning}
+                hideMeta={immersiveMode}
                 streaming
               />
+            )}
+            {/* C09: 生成等待计时——已等待秒数 + 最近 5 次平均耗时预估。 */}
+            {busy && (
+              <div className="flex items-center gap-1.5 text-[11px] text-[var(--rp-fg-subtle)]" role="status">
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                <span>
+                  正在生成… 已等待 {waitedSec}s{estimatedSec ? ` / 约 ${estimatedSec}s` : ''}
+                </span>
+              </div>
             )}
           </>
         )}
@@ -1421,7 +1875,21 @@ export function ChatView({
             : 'calc(1.25rem + env(safe-area-inset-bottom, 0px))',
         }}
       >
-        <div className="w-full max-w-3xl">
+        <div className="relative w-full max-w-3xl">
+          {/* N02/N03: 输入岛快捷面板（温度/推理强度/流式/沉浸/模型槽位）。 */}
+          {quickPanelOpen && (
+            <div className="absolute bottom-full right-0 z-40 mb-2">
+              <ChatQuickPanel
+                chat={chat}
+                settings={settings}
+                presetTemperature={preset.temperature}
+                currentModel={chat.model || connection?.defaultModel || ''}
+                onPatchChat={patch}
+                onOpenModelPicker={openModelPicker}
+                onClose={() => setQuickPanelOpen(false)}
+              />
+            </div>
+          )}
           {draftImages.length > 0 && (
             <div className="mb-1.5 flex flex-wrap gap-1.5">
               {draftImages.map((src, i) => (
@@ -1467,6 +1935,22 @@ export function ChatView({
               )}
             >
               <Plus className="size-5" aria-hidden="true" />
+            </button>
+            {/* N02: 快捷面板开关（模型槽位/温度/推理强度/流式/沉浸）。 */}
+            <button
+              type="button"
+              onClick={() => setQuickPanelOpen((v) => !v)}
+              aria-label="快捷面板"
+              aria-expanded={quickPanelOpen}
+              className={cn(
+                'flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors',
+                immersive
+                  ? 'dark:text-white/80 dark:hover:bg-white/10 text-[var(--rp-fg-muted)] hover:bg-[var(--rp-fg)]/10'
+                  : 'text-[var(--rp-fg-muted)] hover:bg-[var(--rp-bg-sunken)]',
+                quickPanelOpen && 'bg-[var(--rp-accent)]/15 text-[var(--rp-accent)]',
+              )}
+            >
+              <SlidersHorizontal className="size-5" aria-hidden="true" />
             </button>
             <textarea
               ref={inputRef}
@@ -1519,7 +2003,14 @@ export function ChatView({
               className="hidden"
               onChange={async (e) => {
                 const files = Array.from(e.target.files ?? []);
-                const urls = await Promise.all(files.map((f) => blobToDataUrl(f)));
+                // RP-Hub caps each picture at 20MB; oversize files are skipped
+                // with a warning instead of failing the whole batch.
+                const tooBig = files.filter((f) => f.size > 20 * 1024 * 1024);
+                if (tooBig.length) toast.error('图片超过 20MB，已跳过', `${tooBig.length} 张`);
+                const kept = files.filter((f) => f.size <= 20 * 1024 * 1024);
+                // Compress to 1600px / JPEG 0.86 before storing on the message
+                // so a 9-picture turn does not bloat the chat or the prompt.
+                const urls = await Promise.all(kept.map((f) => compressImageFile(f)));
                 setDraftImages((list) => [...list, ...urls].slice(0, 9));
                 e.target.value = '';
               }}
@@ -1550,6 +2041,19 @@ export function ChatView({
               </button>
             )}
           </div>
+
+          {/* Latest usage bar (L04): tap to open the usage page. */}
+          {composerUsage && (composerUsage.inputTokens || composerUsage.outputTokens) ? (
+            <button
+              type="button"
+              onClick={() => onNavigate?.('usage')}
+              aria-label="查看用量统计"
+              className="mt-1.5 flex w-full cursor-pointer items-center justify-center gap-1 text-[11px] text-[var(--rp-fg-muted)] hover:text-[var(--rp-fg)]"
+            >
+              输入 {formatTokens(composerUsage.inputTokens)} · 缓存 {formatTokens(composerUsage.cachedTokens)} · 输出{' '}
+              {formatTokens(composerUsage.outputTokens)}
+            </button>
+          ) : null}
 
           {/*
             Keyboard helper row: only while the on-screen keyboard is up, so it
@@ -1688,6 +2192,18 @@ export function ChatView({
         open={inspectorOpen}
         onOpenChange={setInspectorOpen}
         ctx={() => buildCtx()}
+      />
+      {/* R04: 模型选择器弹窗（搜索 + 分类 + 三槽位草稿）。 */}
+      <ModelPicker
+        open={modelPickerOpen}
+        onClose={() => setModelPickerOpen(false)}
+        target={modelPickerTarget}
+        connection={connection}
+        currentModel={chat.model || connection?.defaultModel || ''}
+        slotModels={slotModels(settings)}
+        llm={llm ?? null}
+        onSelectModel={applyPickedModel}
+        onSaveSlots={applySlotDrafts}
       />
       <BranchPanel
         open={branchOpen}

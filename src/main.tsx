@@ -20,6 +20,7 @@ import { TokenStatsSheet } from './components/chat/TokenStatsSheet.js';
 import { CardsPage } from './pages/CardsPage.js';
 import { LorePage } from './pages/LorePage.js';
 import { PresetsPage } from './pages/PresetsPage.js';
+import { RegexPage } from './pages/RegexPage.js';
 import { NovelBookshelfPage } from './pages/NovelBookshelfPage.js';
 import { NovelChaptersPage } from './pages/NovelChaptersPage.js';
 import { NovelSettingsPage } from './pages/NovelSettingsPage.js';
@@ -28,13 +29,23 @@ import { NovelSearchPage } from './pages/NovelSearchPage.js';
 import { NovelBookMenu } from './pages/novel/shared.js';
 import { NOVEL_BOOK_ROUTES } from './components/layout/AppShell.js';
 import { PluginsPage } from './pages/PluginsPage.js';
+import { UsagePage } from './pages/UsagePage.js';
 import { SettingsPage } from './pages/SettingsPage.js';
 import { SETTINGS_SECTIONS } from './pages/SettingsHub.js';
 import { Button } from './components/ui/button.js';
 import { BookOpen, Loader2, Plus, Store } from 'lucide-react';
 import { confirmAction } from '@/components/ui/confirm.js';
 import { UpdateDialog } from './components/UpdateDialog.js';
-import { checkForUpdate, getIgnoredVersionCode, type VersionInfo } from './core/version.js';
+import { AnnouncementDialog } from './components/AnnouncementDialog.js';
+import { OnboardingDialog } from './components/OnboardingDialog.js';
+import {
+  checkForUpdate,
+  getIgnoredVersionCode,
+  getSeenAnnouncementId,
+  setSeenAnnouncementId,
+  UPDATE_POLL_INTERVAL_MS,
+  type VersionInfo,
+} from './core/version.js';
 
 /**
  * The service worker only exists in a production web build.
@@ -83,11 +94,24 @@ function App() {
   const novelTitle = useApp((s) => s.novel.books.find((b) => b.id === s.novel.activeBookId)?.title ?? '小说');
   /** Pending update popup (null = none). Forced updates cannot be dismissed. */
   const [updateInfo, setUpdateInfo] = useState<{ info: VersionInfo; forced: boolean } | null>(null);
+  /** Pending announcement popup (null = none). Shown once per version id. */
+  const [announcement, setAnnouncement] = useState<{ info: VersionInfo } | null>(null);
+  /**
+   * VersionCode already notified this session (announcement and/or update
+   * dialog shown). RP-Hub keeps the same in-memory `notifiedVersionId` so
+   * the 20s poll never pops the same version twice.
+   */
+  const notifiedVersionRef = React.useRef<number | null>(null);
 
   /**
    * Check the server for a newer published version.
    * `manual` = the user tapped "检查更新" (About page): always report the
    * result. Automatic checks stay silent when there is nothing new.
+   *
+   * Automatic discovery of a non-forced update shows the announcement
+   * first (once per version id — closing it writes seenAnnouncementId),
+   * then the regular update dialog. Forced updates and manual checks go
+   * straight to the update dialog.
    */
   const runUpdateCheck = React.useCallback(async (manual: boolean) => {
     const result = await checkForUpdate();
@@ -97,6 +121,12 @@ function App() {
     }
     const ignored = getIgnoredVersionCode();
     if (!manual && !result.forced && ignored === result.info.versionCode) return;
+    if (!manual && notifiedVersionRef.current === result.info.versionCode) return;
+    notifiedVersionRef.current = result.info.versionCode;
+    if (!manual && !result.forced && getSeenAnnouncementId() !== result.info.versionCode) {
+      setAnnouncement({ info: result.info });
+      return;
+    }
     setUpdateInfo({ info: result.info, forced: result.forced });
   }, []);
 
@@ -104,6 +134,26 @@ function App() {
   useEffect(() => {
     const t = window.setTimeout(() => void runUpdateCheck(false), 2500);
     return () => window.clearTimeout(t);
+  }, [runUpdateCheck]);
+
+  // L06: poll every 20s, but only while the page is visible (RP-Hub parity).
+  // A check also runs right when the tab becomes visible again, so a version
+  // published while the tab was hidden is noticed without waiting a full
+  // interval. Failures stay silent; the notified ref above keeps a found
+  // version from popping again on the next tick.
+  useEffect(() => {
+    const poll = () => {
+      if (document.visibilityState === 'visible') void runUpdateCheck(false);
+    };
+    const id = window.setInterval(poll, UPDATE_POLL_INTERVAL_MS);
+    const onVisibilityChange = () => {
+      if (!document.hidden) void runUpdateCheck(false);
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [runUpdateCheck]);
   const activeChat =
     chats.find((c) => c.id === activeChatId) ?? [...chats].sort((a, b) => b.updatedAt - a.updatedAt)[0];
@@ -122,8 +172,10 @@ function App() {
       cards: '角色卡',
       lore: '世界书',
       presets: '预设',
+      regex: '正则',
       novel: '小说',
       plugins: '插件',
+      usage: '用量统计',
       'card-store': '角色卡商店',
       'plugin-store': '插件商店',
     };
@@ -244,6 +296,8 @@ function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
   const themeId = useApp((s) => s.settings.themeId);
+  /** N07: first launch shows the onboarding wizard until identity is set. */
+  const onboardingCompleted = useApp((s) => s.settings.onboardingCompleted);
   const hideTopbar = useApp((s) => s.hideTopbar);
   const kernel = useApp((s) => s.kernel);
 
@@ -458,12 +512,14 @@ function App() {
           {route === 'cards' && <CardsPage onStartChat={() => navigate('chat')} />}
           {route === 'lore' && <LorePage />}
           {route === 'presets' && <PresetsPage />}
+          {route === 'regex' && <RegexPage />}
           {route === 'novel' && <NovelBookshelfPage onNavigate={navigate} />}
           {route === 'novel-chapters' && <NovelChaptersPage route={route} onNavigate={navigate} />}
           {route === 'novel-settings' && <NovelSettingsPage route={route} onNavigate={navigate} />}
           {route === 'novel-characters' && <NovelCharactersPage route={route} onNavigate={navigate} />}
           {route === 'novel-search' && <NovelSearchPage route={route} onNavigate={navigate} />}
           {route === 'plugins' && <PluginsPage />}
+          {route === 'usage' && <UsagePage />}
           {route === 'card-store' && <CardMarketPage />}
           {route === 'plugin-store' && <PluginMarketPage />}
           {route === 'settings' && (
@@ -479,9 +535,23 @@ function App() {
       </PushAside>
       <Toaster />
       <ConfirmHost />
+      {announcement && (
+        <AnnouncementDialog
+          info={announcement.info}
+          onClose={() => {
+            // Mark the announcement seen, then show the regular update
+            // dialog (RP-Hub queues the update notice behind the announcement).
+            setSeenAnnouncementId(announcement.info.versionCode);
+            setAnnouncement(null);
+            setUpdateInfo({ info: announcement.info, forced: false });
+          }}
+        />
+      )}
       {updateInfo && (
         <UpdateDialog info={updateInfo.info} forced={updateInfo.forced} onClose={() => setUpdateInfo(null)} />
       )}
+      {/* N07: first-run wizard — identity name is required to finish it. */}
+      {!onboardingCompleted && <OnboardingDialog />}
     </TooltipProvider>
   );
 }

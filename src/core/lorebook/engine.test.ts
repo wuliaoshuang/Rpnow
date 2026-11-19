@@ -274,3 +274,64 @@ describe('activate', () => {
     expect(entryKey('b', 'e')).toBe('b::e');
   });
 });
+
+describe('scanDepth defaults and maxDepth', () => {
+  it('defaults the global scan depth to 2 (RP-Hub parity)', () => {
+    expect(DEFAULT_LOREBOOK_SETTINGS.scanDepth).toBe(2);
+    expect(DEFAULT_LOREBOOK_SETTINGS.maxDepth).toBe(0);
+  });
+
+  it('caps an entry scanDepth at maxDepth', () => {
+    // Keyword only in the 5th message back: visible at scanDepth 10, hidden
+    // once maxDepth 2 caps the entry's own scanDepth.
+    const b = book([newEntry({ keys: ['dragon'], content: 'CAPPED', scanDepth: 10 })]);
+    const messages = msgs('a dragon appears', 'filler', 'filler', 'filler', 'filler');
+    const uncapped = activate({ books: [b], messages, defaults: DEFAULT_LOREBOOK_SETTINGS });
+    expect(uncapped.activated).toHaveLength(1);
+    const capped = activate({
+      books: [b],
+      messages,
+      defaults: { ...DEFAULT_LOREBOOK_SETTINGS, maxDepth: 2 },
+    });
+    expect(capped.activated).toHaveLength(0);
+  });
+
+  it('caps the global / book scan depth at maxDepth', () => {
+    const b = book([newEntry({ keys: ['dragon'], content: 'CAPPED' })]);
+    const messages = msgs('a dragon appears', 'filler', 'filler', 'filler');
+    const wide = activate({
+      books: [b],
+      messages,
+      defaults: { ...DEFAULT_LOREBOOK_SETTINGS, scanDepth: 4 },
+    });
+    expect(wide.activated).toHaveLength(1);
+    const capped = activate({
+      books: [b],
+      messages,
+      defaults: { ...DEFAULT_LOREBOOK_SETTINGS, scanDepth: 4, maxDepth: 2 },
+    });
+    expect(capped.activated).toHaveLength(0);
+  });
+
+  it('maxDepth 0 means no cap', () => {
+    const b = book([newEntry({ keys: ['dragon'], content: 'FREE', scanDepth: 10 })]);
+    const messages = msgs('a dragon appears', 'filler', 'filler', 'filler', 'filler');
+    const r = activate({
+      books: [b],
+      messages,
+      defaults: { ...DEFAULT_LOREBOOK_SETTINGS, maxDepth: 0 },
+    });
+    expect(r.activated).toHaveLength(1);
+  });
+
+  it('still fires when the keyword is inside the capped window', () => {
+    const b = book([newEntry({ keys: ['dragon'], content: 'NEAR', scanDepth: 10 })]);
+    const messages = msgs('filler', 'filler', 'filler', 'a dragon appears');
+    const r = activate({
+      books: [b],
+      messages,
+      defaults: { ...DEFAULT_LOREBOOK_SETTINGS, maxDepth: 2 },
+    });
+    expect(r.activated).toHaveLength(1);
+  });
+});

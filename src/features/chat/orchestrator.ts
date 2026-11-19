@@ -26,7 +26,7 @@ import { buildPrompt, type PromptBuildResult } from '../../core/prompt/builder.j
 import { stripCot } from '../../core/prompt/cot.js';
 import { substituteMacros } from '../../core/prompt/macros.js';
 import type { AgentLoop, AgentResult } from '../../core/agent/types.js';
-import type { LLMService } from '../../core/llm/types.js';
+import type { LLMMessage, LLMService } from '../../core/llm/types.js';
 import { estimateTokens } from '../../lib/utils.js';
 import { runRegex, applyPromptRegex } from '../../core/prompt/builder.js';
 import {
@@ -36,6 +36,7 @@ import {
   type MemoryContextResult,
 } from '../../core/memory/engine.js';
 import { quantizeEmbedding } from '../../core/memory/embeddings.js';
+import { chatReasoningEffort, chatStream } from '../../core/llm/modelSlots.js';
 import type { MemoryRecord, MemorySettings } from '../../core/memory/types.js';
 import { buildUserInfoPrompt, CITATION_INSTRUCTION } from '../../core/memory/prompts.js';
 import type { ToolSettings } from '../../core/tools/types.js';
@@ -219,19 +220,24 @@ export async function assemblePrompt(
     role: m.role,
     content: m.content,
     hidden: m.hidden,
+    // I03: user-attached pictures ride along so buildPrompt can turn the
+    // newest user turn into multimodal content. Assistant `images` are
+    // generated illustrations and are deliberately left out.
+    ...(m.role === 'user' && m.images?.length ? { images: m.images } : {}),
   }));
 
-  // User-info block + citation instruction, both derived from live state.
-  const extraSystemParts: string[] = [];
-  if (ctx.persona) {
-    extraSystemParts.push(
-      buildUserInfoPrompt({
+  // F02: User Info is NOT part of extraSystem — it is passed as
+  // `userInfoAfterChar` so the builder anchors it right after the char lead
+  // (see builder.ts F02), instead of appending it after the skeleton.
+  const userInfoAfterChar = ctx.persona
+    ? buildUserInfoPrompt({
         name: ctx.persona.name,
         description: ctx.persona.description,
         preferences: ctx.persona.preferences ?? '',
-      }),
-    );
-  }
+      })
+    : undefined;
+  // Citation instruction + tool/UI/image reminders, derived from live state.
+  const extraSystemParts: string[] = [];
   if (ctx.memory?.settings.citationEnabled && memoryResult.recalled.length) {
     extraSystemParts.push(CITATION_INSTRUCTION);
   }
@@ -323,6 +329,14 @@ export async function assemblePrompt(
     preset: ctx.preset,
     messages: promptMessages,
     persona: ctx.persona ? { name: ctx.persona.name, description: ctx.persona.description } : undefined,
+    // F02: User Info anchored after the char lead (builder F02).
+    userInfoAfterChar,
+    // F06: COT preset dynamic generation gets the live context (builder F06).
+    cot: {
+      model: ctx.chat.model,
+      memoryEnabled: ctx.memory?.settings.mode !== 'off',
+      uiTemplateEnabled: (ctx.uiTemplates?.length ?? 0) > 0,
+    },
     extraSystem,
     worldInfo: {
       byPosition,
@@ -348,6 +362,9 @@ export async function assemblePrompt(
     // and pick the right `{{char}}` for this turn.
     groupMembers: groupMembers.length ? groupMembers : undefined,
     groupSpeaker: ctx.chat.groupSpeaker,
+    // C11: 抗截断（Gemini output_reply 回传）开启时禁用 COT 预设，见
+    // PromptBuildInput.disableCot。
+    disableCot: useAntiTruncationReplyTool(ctx),
     variables: {
       get: (k) => {
         const v = ctx.chat.variables[k];
@@ -376,12 +393,32 @@ export function promptStats(result: PromptBuildResult): { chars: number; tokens:
   return { chars: result.totalChars, tokens: estimateTokens(result.messages.map((m) => m.content).join('\n')) };
 }
 
+/** Prompt messages → LLM messages, keeping multimodal pictures (I03). */
+function toLLMMessages(messages: PromptBuildResult['messages']): LLMMessage[] {
+  return messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+    ...(m.imageUrls?.length ? { imageUrls: m.imageUrls } : {}),
+  }));
+}
+
 /**
  * Send one turn and stream the reply.
  *
  * `onDelta` receives text/reasoning increments so the UI can render as tokens
  * arrive. The returned message is NOT persisted 鈥?the caller owns chat state.
  */
+/**
+ * Gemini 抗截断是否启用（C10/C11）：Gemini 模型 + 防截断开关开 + 有工具位
+ * （`output_reply` 要占一个工具槽）。C11 用它在组提示词时禁用 COT 预设，
+ * sendTurn 用它决定是否走工具回传。
+ */
+export function useAntiTruncationReplyTool(ctx: ChatContext, model?: string): boolean {
+  return Boolean(
+    ctx.tools && /gemini/i.test(model || ctx.chat.model || '') && ctx.settings.chat.preventTruncation,
+  );
+}
+
 export async function sendTurn(opts: {
   ctx: ChatContext;
   loop: AgentLoop;
@@ -399,8 +436,7 @@ export async function sendTurn(opts: {
   const prompt = await assemblePrompt(ctx, activation);
 
   opts.onStage?.('streaming');
-  const isGemini = /gemini/i.test(opts.model || ctx.chat.model || '');
-  const useReplyTool = Boolean(ctx.tools && isGemini && ctx.settings.chat.preventTruncation);
+  const useReplyTool = useAntiTruncationReplyTool(ctx, opts.model);
   const toolDefs = useReplyTool
     ? [
         {
@@ -426,7 +462,7 @@ export async function sendTurn(opts: {
         model: opts.model || ctx.chat.model || '',
         signal: opts.signal,
         context: {
-          messages: prompt.messages.map((m) => ({ role: m.role, content: m.content })),
+          messages: toLLMMessages(prompt.messages),
           temperature: Number(ctx.chat.params?.temperature ?? ctx.preset.temperature ?? 0.9),
           // `0` in settings means unlimited: omit the cap entirely so the model
           // runs to its natural stop (prevents mid-sentence truncation).
@@ -437,7 +473,8 @@ export async function sendTurn(opts: {
           ),
           tools: toolDefs,
           stopOnToolResult: useReplyTool,
-          stream: ctx.settings.chat.streamResponses,
+          // N02: 流式开关可按聊天覆盖（`chat.params.stream`），没覆盖时跟随全局。
+          stream: chatStream(ctx.chat, ctx.settings),
         },
         executeTool: toolDefs.length
           ? async (name, args) => {
@@ -454,6 +491,7 @@ export async function sendTurn(opts: {
                   arguments: (args ?? {}) as Record<string, unknown>,
                 },
                 settings: ctx.tools!.settings,
+                // Tool context is transcript text only (no pictures, no tool role).
                 messages: prompt.messages.map((m) => ({ role: m.role, content: m.content })),
                 userName: ctx.tools!.userName,
                 characterName: ctx.tools!.characterName,
@@ -473,9 +511,11 @@ export async function sendTurn(opts: {
           presencePenalty: ctx.preset.presence_penalty,
           repetitionPenalty: ctx.preset.repetition_penalty,
           stop: buildStops(ctx.card.data.name, ctx.persona?.name),
-          ...(ctx.settings.chat.reasoningEffort
+          // N02: 推理强度可按聊天覆盖（`chat.params.reasoningEffort`），
+          // 没覆盖时跟随全局 `settings.chat.reasoningEffort`。
+          ...(chatReasoningEffort(ctx.chat, ctx.settings)
             ? {
-                extra: { reasoning_effort: ctx.settings.chat.reasoningEffort },
+                extra: { reasoning_effort: chatReasoningEffort(ctx.chat, ctx.settings) },
               }
             : {}),
         },
