@@ -27,6 +27,8 @@ import { Input, Label, Textarea, Select, SelectContent, SelectItem, SelectTrigge
 import { Badge, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, EmptyState } from '@/components/ui/misc';
 import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { artistsForStyle, DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/image/nai.js';
+import { buildTagInjection } from '@/core/image/tagContext.js';
+import { BUILTIN_PRESETS } from '@/core/defaults/presets.js';
 import { useApp } from '@/state/store.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { RPChat } from '@/core/types/chat.js';
@@ -46,6 +48,9 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   const llm = useLLM();
   const connections = useApp((s) => s.imageConnections);
   const llmConnections = useApp((s) => s.llmConnections);
+  const presets = useApp((s) => s.presets);
+  const lorebooks = useApp((s) => s.lorebooks);
+  const persons = useApp((s) => s.personas);
   const settings = useApp((s) => s.settings);
 
   const [prompt, setPrompt] = React.useState('');
@@ -155,11 +160,30 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
     }
     const model =
       (isNovel && tagCfg.tagModel) || (tagConn ? conn.defaultModel || '' : chat.model || conn.defaultModel || '');
-    const systemPrompt = isNovel
+    // 转写 Tag 时注入和聊天一样的世界书 + 预设（正文是画面描述里的内容，
+    // 由用户指定，不进注入）。其它提供商的通用扩写不注入。
+    const injection = isNovel
+      ? buildTagInjection({
+          card,
+          chat,
+          preset:
+            presets.find((p) => p.id === chat.presetId) ??
+            presets.find((p) => p.id === settings.defaultPresetId) ??
+            BUILTIN_PRESETS[0],
+          lorebooks,
+          settings,
+          personaName: persons.find((p) => p.id === chat.personaId)?.name ?? persons[0]?.name,
+          description: prompt,
+        })
+      : '';
+    const basePrompt = isNovel
       ? tagCfg.tagPrompt || DEFAULT_TAG_PROMPT
       : 'You are a prompt engineer for image models. Convert the user\'s scene description into ONE dense English image prompt: ' +
         'subject, appearance, clothing, pose, environment, lighting, camera, art style, quality tags. ' +
         'Output only the prompt, comma-separated, no preamble, no markdown.';
+    const systemPrompt = injection
+      ? `${basePrompt}\n\n以下是本次对话的世界书与预设，供转写时参考（只作背景，不要照搬进 Tag）：\n${injection}`
+      : basePrompt;
     setBusy(true);
     try {
       const res = await llm.complete(conn.id, {
