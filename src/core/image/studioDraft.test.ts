@@ -41,7 +41,8 @@ describe('studioDraft', () => {
       nSamples: 2,
       ucPreset: 1,
       cfgRescale: 0.5,
-      dynamicThresholding: true,
+      variety: true,
+      transparentBg: true,
       qualityToggle: false,
     });
     const loaded = loadStudioDraft('chat1');
@@ -57,7 +58,8 @@ describe('studioDraft', () => {
     expect(loaded?.nSamples).toBe(2);
     expect(loaded?.ucPreset).toBe(1);
     expect(loaded?.cfgRescale).toBe(0.5);
-    expect(loaded?.dynamicThresholding).toBe(true);
+    expect(loaded?.variety).toBe(true);
+    expect(loaded?.transparentBg).toBe(true);
     expect(loaded?.qualityToggle).toBe(false);
   });
 

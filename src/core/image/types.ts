@@ -54,14 +54,16 @@ export interface ImageRequest {
   sampler?: string;
   /** How many images to generate in one call (NovelAI `n_samples`, 1-8). */
   nSamples?: number;
-  /** NovelAI negative preset (0 Heavy / 1 Light / 2 Human Focus / 3 None). */
+  /** NovelAI negative preset (0 Heavy / 1 Light / 2 Furry Focus / 3 Human Focus / 4 None). */
   ucPreset?: number;
-  /** NovelAI noise schedule (karras / native / exponential / polyexponential). V5 forces karras. */
+  /** NovelAI noise schedule (karras / exponential / polyexponential). V5 forces karras. */
   noiseSchedule?: string;
   /** NovelAI CFG rescale (0-1). */
   cfgRescale?: number;
-  /** NovelAI Decrisper (`dynamic_thresholding`). */
-  dynamicThresholding?: boolean;
+  /** NovelAI Variety+ (`skip_cfg_above_sigma = 58`). V4.5 only, never on V5. */
+  variety?: boolean;
+  /** NovelAI transparent background (`straight_alpha`). V5 only. */
+  transparentBg?: boolean;
   /** NovelAI quality toggle (adds the quality tags). */
   qualityToggle?: boolean;
   /** Ask the provider not to watermark (Ark). */
@@ -73,7 +75,7 @@ export interface ImageRequest {
  * The generation parameters the ImageStudio lets the user tune (and
  * persists per chat). These are the NovelAI knobs that actually change
  * the picture — steps, CFG, sampler, seed, noise schedule, sample count,
- * negative preset, CFG rescale, Decrisper, quality toggle.
+ * negative preset, CFG rescale, Variety+, transparent BG, quality toggle.
  */
 export interface ImageStudioParams {
   steps?: number;
@@ -84,71 +86,95 @@ export interface ImageStudioParams {
   nSamples?: number;
   ucPreset?: number;
   cfgRescale?: number;
-  dynamicThresholding?: boolean;
+  variety?: boolean;
+  transparentBg?: boolean;
   qualityToggle?: boolean;
 }
 
-/** NovelAI samplers (V4.5/V5; `ddim` is remapped to `k_euler_ancestral` on V5). */
+/** NovelAI samplers — the 6 the official UI offers (V4.5 and V5 share the list).
+ * `ddim` is NOT offered; the official client silently remaps it to
+ * `k_euler_ancestral`. */
 export const NAI_SAMPLERS = [
   'k_euler_ancestral',
   'k_euler',
   'k_dpmpp_2s_ancestral',
-  'k_dpmpp_2m',
   'k_dpmpp_2m_sde',
+  'k_dpmpp_2m',
   'k_dpmpp_sde',
-  'ddim',
 ] as const;
 
-/** NovelAI noise schedules. V5 forces `karras`. */
-export const NAI_NOISE_SCHEDULES = ['karras', 'native', 'exponential', 'polyexponential'] as const;
+/** NovelAI noise schedules. V4.5 offers karras / exponential /
+ * polyexponential; V5 has no picker and forces `karras`. */
+export const NAI_NOISE_SCHEDULES = ['karras', 'exponential', 'polyexponential'] as const;
 
-/** NovelAI negative presets: 0 Heavy / 1 Light / 2 Human Focus / 3 None. */
+/** NovelAI negative presets: 0 Heavy / 1 Light / 2 Furry Focus / 3 Human Focus / 4 None. */
 export const NAI_UC_PRESETS = [
   { value: 0, label: 'Heavy（重）' },
   { value: 1, label: 'Light（轻）' },
-  { value: 2, label: 'Human Focus（人物）' },
-  { value: 3, label: 'None（无）' },
+  { value: 2, label: 'Furry Focus（兽人）' },
+  { value: 3, label: 'Human Focus（人物）' },
+  { value: 4, label: 'None（无）' },
 ] as const;
+
+/** Opus-free pixel-area cap: width × height ≤ 1,048,576 px (1024²). */
+export const OPUS_FREE_MAX_AREA = 1_048_576;
+
+/** Max `n_samples` for a given pixel area (official docs + bundle rule):
+ * ≤360,448 px → 8; ≤409,600 px → 6; otherwise → 4. */
+export function maxNSamplesForArea(px: number): number {
+  if (px <= 360_448) return 8;
+  if (px <= 409_600) return 6;
+  return 4;
+}
 
 /**
  * Estimate the Anlas a NovelAI generation will cost, from NovelAI's own
- * web-client formula (see NAIWeaver / MooshieUI docs): the price tracks
- * pixels × steps, ×1.5 for a plain generation, ×n_samples, ×SMEA when on.
- * Returns the paid cost. Whether it is actually free depends on the
- * subscription: on Opus, a single V4.5 image at ≤1024×1024 and ≤28 steps
- * (no base image) costs 0 Anlas; V5 draws from the Opus battery instead.
+ * web-client formula (NAIWeaver bundle read / MooshieUI / UKB): the price
+ * tracks pixels × steps, V5 costs ×1.5, each sample is clamped to 2–140
+ * Anlas, and the total is per-sample × n_samples. Returns the PAID cost
+ * (before any Opus free sample); use `opusFreeStatus` to see whether one
+ * sample is free. SMEA/Decrisper are V3-only and never sent on V4.5/V5.
  */
 export function estimateAnlasCost(opts: {
   width: number;
   height: number;
   steps: number;
+  model?: string;
   nSamples?: number;
-  smea?: boolean;
-  smeaDyn?: boolean;
+  opusFree?: boolean;
 }): number {
   const px = Math.max(0, opts.width) * Math.max(0, opts.height);
   const steps = Math.min(50, Math.max(1, Math.round(opts.steps)));
   const base = Math.ceil(2.951823174884865e-6 * px + 5.753298233447344e-7 * px * steps);
-  let cost = base * 1.5;
-  if (opts.smea) cost *= 1.2;
-  if (opts.smeaDyn) cost *= 1.4;
-  cost *= Math.min(8, Math.max(1, Math.round(opts.nSamples ?? 1)));
-  return Math.ceil(cost);
+  let perSample = base;
+  if (opts.model?.startsWith('nai-diffusion-5')) perSample *= 1.5;
+  perSample = Math.min(140, Math.max(2, Math.ceil(perSample)));
+  const n = Math.min(8, Math.max(1, Math.round(opts.nSamples ?? 1)));
+  let total = perSample * n;
+  if (opts.opusFree) total -= perSample;
+  return Math.max(0, total);
 }
 
-/** Does this generation qualify for the Opus free allowance (V4.5 only)? */
-export function isOpusFreeGeneration(opts: {
+/**
+ * Whether this generation costs 0 Anlas on Opus. The rule is a pixel-AREA
+ * rule (width × height ≤ 1,048,576 px), single image, ≤28 steps, no base
+ * image. Returns 'free' for V4.5 (unlimited under the rule), 'battery'
+ * for V5 (draws from the refilling Opus usage battery instead of Anlas),
+ * or null when it costs Anlas.
+ */
+export function opusFreeStatus(opts: {
   model: string;
   width: number;
   height: number;
   steps: number;
   nSamples?: number;
-}): boolean {
-  if (!opts.model.startsWith('nai-diffusion-4')) return false;
-  if (opts.width > 1024 || opts.height > 1024) return false;
-  if (opts.steps > 28) return false;
-  if ((opts.nSamples ?? 1) > 1) return false;
-  return true;
+}): 'free' | 'battery' | null {
+  if (!opts.model.startsWith('nai-diffusion-')) return null;
+  if (opts.width * opts.height > OPUS_FREE_MAX_AREA) return null;
+  if (opts.steps > 28) return null;
+  if ((opts.nSamples ?? 1) > 1) return null;
+  if (opts.model.startsWith('nai-diffusion-5')) return 'battery';
+  return 'free';
 }
 
 export interface ImageResult {
@@ -185,11 +211,11 @@ const joinURL = (base: string, path: string): string => `${base.replace(/\/+$/, 
 
 export const SIZE_MAP: Record<string, { openai: string; ark: string; nai: [number, number] }> = {
   square: { openai: '1024x1024', ark: '1024x1024', nai: [1024, 1024] },
-  // NovelAI 的尺寸两边都要 ≤1024 才进 Opus 免费额度（单张、≤28 步、不用底图
-  // 时 V4.5 免费；V5 从额度电池里扣）。832×1216 高 1216 超了，每张都要扣
-  // Anlas，所以竖版/横版都改成 1024 以内。
-  portrait: { openai: '1024x1536', ark: '1024x1536', nai: [832, 1024] },
-  landscape: { openai: '1536x1024', ark: '1536x1024', nai: [1024, 832] },
+  // NovelAI 的免费规则是像素面积（宽×高 ≤ 1,048,576 px），不是“两边都
+  // ≤1024”。竖版 832×1216 = 1,011,712 px、横版 1216×832 同理，都在免
+  // 费额度内——之前错改成 832×1024 是误读了规则，现改回官网默认尺寸。
+  portrait: { openai: '1024x1536', ark: '1024x1536', nai: [832, 1216] },
+  landscape: { openai: '1536x1024', ark: '1536x1024', nai: [1216, 832] },
   auto: { openai: 'auto', ark: '1024x1024', nai: [1024, 1024] },
 };
 
@@ -433,25 +459,35 @@ export const novelaiAdapter: ImageProviderAdapter = {
     //     `negative_prompt` field is a pre-V4 name and is ignored there);
     //     the structured negative lives in v4_negative_prompt.
     //   - `ucPreset` picks the predefined negative preset (0 Heavy /
-    //     1 Light / 2 Human Focus / 3 None); it is merged with `uc`.
+    //     1 Light / 2 Furry Focus / 3 Human Focus / 4 None).
     //   - V5 with k_euler_ancestral also carries
     //     deliberate_euler_ancestral_bug=false / prefer_brownian=true.
     //   - `ddim` is remapped to `k_euler_ancestral` on V5.
+    //   - Official defaults: steps 23, scale 5.0 on V4.5 / 7.0 on V5.
+    //   - Decrisper (`dynamic_thresholding`) and SMEA are V3-only: never
+    //     sent on V4.5/V5 (the official client forces them off; sending
+    //     sm:true is a 500).
+    //   - Variety+ (`skip_cfg_above_sigma = 58`) is V4.5 only, never on V5.
+    //   - Transparent BG (`straight_alpha`) is V5 only.
     const sampler = isV5 && (req.sampler ?? 'k_euler_ancestral') === 'ddim' ? 'k_euler_ancestral' : (req.sampler ?? 'k_euler_ancestral');
     const parameters: Record<string, unknown> = {
       width: w,
       height: h,
-      scale: Math.min(10, Math.max(0, req.scale ?? 6)),
+      scale: Math.min(10, Math.max(0, req.scale ?? (isV5 ? 7 : 5))),
       sampler,
       steps: Math.min(50, Math.max(1, Math.round(req.steps ?? 23))),
-      n_samples: Math.min(8, Math.max(1, Math.round(req.nSamples ?? 1))),
+      n_samples: Math.min(maxNSamplesForArea(w * h), Math.max(1, Math.round(req.nSamples ?? 1))),
       qualityToggle: req.qualityToggle ?? true,
       seed: req.seed !== undefined && req.seed >= 0 ? req.seed : Math.floor(Math.random() * 4294967295),
-      dynamic_thresholding: req.dynamicThresholding ?? false,
       cfg_rescale: Math.min(1, Math.max(0, req.cfgRescale ?? 0)),
       noise_schedule: isV5 ? 'karras' : (req.noiseSchedule ?? 'karras'),
       ucPreset: req.ucPreset ?? 0,
     };
+    if (!isV5 && req.variety) parameters.skip_cfg_above_sigma = 58;
+    if (isV5 && req.transparentBg) {
+      parameters.straight_alpha = true;
+      parameters.tag_hint_transparent_background = true;
+    }
     if (isV4Family) {
       parameters.params_version = isV5 ? 4 : 3;
       parameters.uc = negative;
