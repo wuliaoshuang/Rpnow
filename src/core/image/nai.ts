@@ -93,9 +93,10 @@ export function normalizeTags(tags: string): string {
  * Preset markup is not story text, so whole blocks are dropped (thinking,
  * summary, options, comments, background); image markers and the （插图）
  * placeholder are dropped too; the rest is de-tagged and squashed to one
- * line. Returns '' when nothing usable remains.
+ * line. The full text is kept — no length cap, so a long reply is not cut
+ * off halfway. Returns '' when nothing usable remains.
  */
-export function extractSceneText(content: string, maxLen = 500): string {
+export function extractSceneText(content: string): string {
   let text = content;
   for (const tag of ['think_nya', 'thought', 'os', 'summary', 'options', 'comment', 'background']) {
     text = text.replace(new RegExp(`<${tag}[^>]*>[\\s\\S]*?</${tag}>`, 'gi'), ' ');
@@ -109,9 +110,7 @@ export function extractSceneText(content: string, maxLen = 500): string {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;|&apos;/g, "'");
-  text = text.replace(/\s+/g, ' ').trim();
-  if (text.length > maxLen) text = text.slice(0, maxLen).trim();
-  return text;
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 export type ImageSize = 'vertical' | 'horizontal' | 'square';

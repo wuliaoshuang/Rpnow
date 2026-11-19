@@ -162,8 +162,8 @@ describe('extractSceneText', () => {
     expect(extractSceneText('<think_nya>想</think_nya>image###a, b###')).toBe('');
   });
 
-  it('truncates long text to the limit', () => {
+  it('keeps a long reply in full instead of cutting it off', () => {
     const text = extractSceneText('啊'.repeat(600));
-    expect(text.length).toBe(500);
+    expect(text.length).toBe(600);
   });
 });
