@@ -10,6 +10,7 @@
  * the sheet state, and makes sure a long-press never also opens the viewer.
  */
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { MediaImage } from '@/core/media/MediaImage.js';
 import { ImageViewer } from './ImageViewer.js';
 import { ImageActionSheet, type ExtractedImageMeta } from './ImageActionSheet.js';
@@ -58,16 +59,30 @@ export function PressableImage({
       >
         <MediaImage src={src} alt={alt} className={className} onError={onError} />
       </div>
-      <ImageViewer src={src} alt={alt} open={viewerOpen} onOpenChange={setViewerOpen} />
-      {hasMenu ? (
-        <ImageActionSheet
-          src={src}
-          open={menuOpen}
-          onOpenChange={setMenuOpen}
-          onDelete={() => onDelete?.()}
-          onExtractMetadata={(meta) => onExtractMetadata?.(meta)}
-        />
-      ) : null}
+      {/*
+        Viewer + action sheet are full-screen `fixed` overlays. They must be
+        portaled to the body: this component lives inside the message bubble,
+        inside the chat scroll area, and a transformed ancestor there makes
+        `fixed` resolve against the chat area instead of the viewport — the
+        overlay then gets clipped by the transcript's overflow. Same reason
+        the citation popup and the message editor are portaled.
+      */}
+      {createPortal(
+        <ImageViewer src={src} alt={alt} open={viewerOpen} onOpenChange={setViewerOpen} />,
+        document.body,
+      )}
+      {hasMenu
+        ? createPortal(
+            <ImageActionSheet
+              src={src}
+              open={menuOpen}
+              onOpenChange={setMenuOpen}
+              onDelete={() => onDelete?.()}
+              onExtractMetadata={(meta) => onExtractMetadata?.(meta)}
+            />,
+            document.body,
+          )
+        : null}
     </>
   );
 }
