@@ -68,6 +68,33 @@ check(
 );
 check('暗色模式已启用', await page.evaluate(() => document.documentElement.classList.contains('dark')));
 
+/*
+ * 首次启动引导（OnboardingDialog）：名字必填，点「开始使用」后才会消失；
+ * 它是居中模态、无关闭路径，不先过掉会遮挡后面所有点击。
+ */
+await page.evaluate(() => {
+  const dlg = document.querySelector('[role="dialog"][aria-label="欢迎使用 RPNow"]');
+  if (!dlg) return;
+  const input = dlg.querySelector('#onboarding-name, input');
+  if (input) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'RPNow Probe');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+});
+await page.waitForTimeout(300);
+await page.evaluate(() => {
+  const dlg = document.querySelector('[role="dialog"][aria-label="欢迎使用 RPNow"]');
+  const btn = [...(dlg?.querySelectorAll('button') ?? [])].find((b) =>
+    /开始使用/.test(b.textContent || ''),
+  );
+  btn?.click();
+});
+await page.waitForTimeout(800);
+check('首次启动引导已完成', await page.evaluate(
+  () => !document.querySelector('[role="dialog"][aria-label="欢迎使用 RPNow"]'),
+));
+
 // ----------------------------------------------------- 2. seed sample data
 await page.evaluate(async () => {
   const data = await import('/src/core/defaults/sampleData.ts');
@@ -204,10 +231,10 @@ await page.screenshot({ path: OUT + '/08-lorebooks.png' });
 // ------------------------------------------------------- 13. card editor
 await page.getByRole('button', { name: '角色卡' }).first().click();
 await waitForVisibleText('阿尔德里克', 8000);
-// Pure poster cards: actions live in the corner ⋮ menu.
-await page.locator('article button[aria-label$="操作菜单"]').first().click();
-await page.waitForTimeout(500);
-await page.getByRole('menuitem', { name: /编辑/ }).click();
+// 走「查看详情 → 编辑」这条与视图无关的稳定路径（海报卡/列表卡的 ⋮ 菜单内容不同）。
+    await page.getByRole('button', { name: /查看 .* 的角色详情/ }).first().click();
+    await page.waitForTimeout(700);
+    await page.locator('[aria-label="编辑角色卡"]').first().click();
 await page.waitForSelector('main input, main textarea', { state: 'attached', timeout: 8000 });
 check('角色卡编辑器可用', true);
 await page.screenshot({ path: OUT + '/09-card-editor.png' });
@@ -222,6 +249,23 @@ mobile.on('pageerror', (e) => errors.push('mobile pageerror: ' + e.message));
 await mobile.goto(BASE, { waitUntil: 'domcontentloaded' });
 await mobile.waitForSelector('[data-route]', { timeout: 20000 });
 await mobile.waitForTimeout(900);
+// 移动端同样要先过掉首次启动引导，否则居中弹窗会遮挡后续点击。
+await mobile.evaluate(() => {
+  const dlg = document.querySelector('[role="dialog"][aria-label="欢迎使用 RPNow"]');
+  if (!dlg) return;
+  const input = dlg.querySelector('input');
+  if (input) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'RPNow Probe Mobile');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+});
+await mobile.waitForTimeout(300);
+await mobile.evaluate(() => {
+  const dlg = document.querySelector('[role="dialog"][aria-label="欢迎使用 RPNow"]');
+  [...(dlg?.querySelectorAll('button') ?? [])].find((b) => /开始使用/.test(b.textContent || ''))?.click();
+});
+await mobile.waitForTimeout(800);
 // Tavo 结构：底部导航已移除，导航走全局抽屉。
 check('移动端底部导航已移除', !(await mobile.locator('[aria-label="底部导航"]').isVisible()));
 check('移动端隐藏桌面侧栏', !(await mobile.locator('[aria-label="主导航"]').isVisible()));
