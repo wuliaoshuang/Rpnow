@@ -515,7 +515,7 @@ export function MessageBubble({
         {/* Swipes + actions */}
         <div
           className={cn(
-            'flex items-center gap-1 transition-opacity',
+            'relative flex items-center gap-1 transition-opacity',
             // Touch devices have no hover: keep the actions visible. Desktop
             // reveals them on hover, matching RP-Hub.
             'opacity-100 md:opacity-70 md:group-hover:opacity-100 focus-within:opacity-100',
@@ -557,10 +557,17 @@ export function MessageBubble({
             B11: 文风过滤详情——只在本条回复真被过滤出内容时显示，点出弹层列出被删的片段（关键词加粗）。不只限最新楼，RP-Hub 同样。
           */}
           {!isUser && styleFiltered.hits.length > 0 && (
-            <div className="relative">
+            <>
+              {/*
+                Panel is a direct child of the action row (which is
+                `relative`), left-aligned to the row — NOT centered on the
+                button. Centering it on the leftmost button pushed it ~130px
+                past the viewport's left edge on phones, clipping the
+                fragment numbers and the start of every line.
+              */}
               {styleFilterOpen && (
                 <div
-                  className="absolute bottom-full left-1/2 z-30 mb-2 w-[min(20rem,calc(100vw-1.5rem))] -translate-x-1/2 overflow-hidden rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] shadow-xl"
+                  className="absolute bottom-full left-0 z-30 mb-2 w-[min(20rem,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] shadow-xl"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <div className="border-b border-[var(--rp-border)] bg-[var(--rp-bg-sunken)]/60 px-3 py-2">
@@ -588,21 +595,23 @@ export function MessageBubble({
                   </div>
                 </div>
               )}
-              <Hint label={`查看本条回复过滤的 ${styleFiltered.hits.length} 处内容`}>
-                <button
-                  type="button"
-                  aria-label={`查看本条回复过滤的 ${styleFiltered.hits.length} 处内容`}
-                  aria-expanded={styleFilterOpen}
-                  onClick={() => setStyleFilterOpen((v) => !v)}
-                  className={cn(
-                    'flex size-8 cursor-pointer items-center justify-center rounded-lg transition-colors',
-                    actionPlate,
-                  )}
-                >
-                  <ListFilter className="size-4" aria-hidden="true" />
-                </button>
-              </Hint>
-            </div>
+              <div className="relative">
+                <Hint label={`查看本条回复过滤的 ${styleFiltered.hits.length} 处内容`}>
+                  <button
+                    type="button"
+                    aria-label={`查看本条回复过滤的 ${styleFiltered.hits.length} 处内容`}
+                    aria-expanded={styleFilterOpen}
+                    onClick={() => setStyleFilterOpen((v) => !v)}
+                    className={cn(
+                      'flex size-8 cursor-pointer items-center justify-center rounded-lg transition-colors',
+                      actionPlate,
+                    )}
+                  >
+                    <ListFilter className="size-4" aria-hidden="true" />
+                  </button>
+                </Hint>
+              </div>
+            </>
           )}
 
           {isLast && !isUser && (
