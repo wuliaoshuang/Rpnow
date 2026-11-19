@@ -158,6 +158,27 @@ export function isV5(model: string): boolean {
   return /nai-diffusion-5/i.test(model);
 }
 
+/**
+ * Default system prompt for turning a scene description into NovelAI tags.
+ *
+ * NovelAI V5 understands Danbooru-style tags and natural language, but tags
+ * are still the reliable form: one comma-separated line, subject first, and
+ * the V5 quality suffix at the end. V4.5 suffixes (`best quality`, `highres`,
+ * `no watermark`) must not be appended on V5.
+ */
+export const DEFAULT_TAG_PROMPT = [
+  'You are a NovelAI Diffusion V5 prompt engineer. Convert the user\u2019s scene description into ONE line of Danbooru-style English tags for NovelAI image generation.',
+  '',
+  'Rules:',
+  '- Output ONLY the tags, comma-separated, on one line. No preamble, no markdown, no explanation.',
+  '- Order: subject count (1girl, 1boy, 2girls, no humans), appearance (hair, eyes, outfit), action/pose, expression, framing/camera, location/setting, lighting, finish.',
+  '- Use concrete Danbooru tags (e.g. "long hair", "school uniform", "holding book"), not sentences.',
+  '- Keep 15-40 tags. Do not invent details the description does not mention.',
+  '- End with the V5 quality suffix: very aesthetic, masterpiece, no text.',
+  '- Do NOT use V4.5 suffixes like "best quality", "highres", "no watermark".',
+  '- If the description is already tags, clean it up into the same structure and return it.',
+].join('\n');
+
 export interface NAIJobParams {
   token: string;
   tags: string;

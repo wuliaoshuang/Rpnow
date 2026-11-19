@@ -7,11 +7,11 @@
 
 import * as React from 'react';
 import { ImageIcon, KeyRound } from 'lucide-react';
-import { IMAGE_STYLES, isV5, fetchQuota } from '@/core/image/nai.js';
+import { DEFAULT_TAG_PROMPT, IMAGE_STYLES, isV5, fetchQuota } from '@/core/image/nai.js';
 import { Badge } from '@/components/ui/misc.js';
 import { useApp } from '@/state/store.js';
 import { Button } from '@/components/ui/button';
-import { Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Slider, Switch } from '@/components/ui/input';
+import { Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Slider, Switch, Textarea } from '@/components/ui/input';
 import { SecretInput } from '@/components/ui/SecretInput.js';
 import { toast } from '@/components/ui/toast.js';
 
@@ -23,6 +23,7 @@ const MODELS = [
 export function ImageGenSettingsPanel() {
   const settings = useApp((s) => s.settings);
   const setSettings = useApp((s) => s.setSettings);
+  const llmConnections = useApp((s) => s.llmConnections);
   const cfg = settings.imageGen;
   const patch = (p: Partial<typeof cfg>) => setSettings({ imageGen: { ...cfg, ...p } });
   const [quota, setQuota] = React.useState<{ value: number } | null>(null);
@@ -248,6 +249,61 @@ export function ImageGenSettingsPanel() {
           </Button>
         </>
       )}
+
+      {/* Tag 转写：把画面描述转成 NovelAI 的 Tag，供生图工作室的 NovelAI 使用。 */}
+      <div className="space-y-3 rounded-lg border border-[var(--rp-border)] p-3">
+        <div>
+          <h3 className="text-[13px] font-semibold">Tag 转写（NovelAI）</h3>
+          <p className="mt-0.5 text-[11px] leading-snug text-[var(--rp-fg-muted)]">
+            生图工作室选 NovelAI 时，画面描述先由这里配的模型按下面的提示词转成 Danbooru 风格的 Tag 再出图。模型留空则跟随当前对话。
+          </p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label htmlFor="tag-conn">转写模型服务</Label>
+            <Select
+              value={cfg.tagConnectionId ?? ''}
+              onValueChange={(v) => patch({ tagConnectionId: v })}
+            >
+              <SelectTrigger id="tag-conn">
+                <SelectValue placeholder="跟随当前对话" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">跟随当前对话</SelectItem>
+                {llmConnections.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>
+                    {c.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="tag-model">转写模型</Label>
+            <Input
+              id="tag-model"
+              value={cfg.tagModel ?? ''}
+              onChange={(e) => patch({ tagModel: e.target.value })}
+              placeholder="留空则用该连接的默认模型"
+            />
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="tag-prompt">转写提示词</Label>
+            <Button size="sm" variant="ghost" onClick={() => patch({ tagPrompt: DEFAULT_TAG_PROMPT })}>
+              恢复默认
+            </Button>
+          </div>
+          <Textarea
+            id="tag-prompt"
+            value={cfg.tagPrompt ?? DEFAULT_TAG_PROMPT}
+            onChange={(e) => patch({ tagPrompt: e.target.value })}
+            rows={8}
+            className="font-mono text-[12px]"
+          />
+        </div>
+      </div>
     </div>
   );
 }

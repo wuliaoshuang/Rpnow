@@ -10,6 +10,7 @@
 import type { ActivationSnapshot } from '../lorebook/engine.js';
 import type { MemoryRecord, MemorySettings } from '../memory/types.js';
 import type { ToolSettings } from '../tools/types.js';
+import { DEFAULT_TAG_PROMPT } from '../image/nai.js';
 
 export interface RPPersona {
   id: string;
@@ -197,6 +198,12 @@ export interface RPAppSettings {
     /** Style preset; `custom` uses `customArtists`. */
     style: string;
     customArtists: string;
+    /** System prompt that turns a scene description into NovelAI tags. */
+    tagPrompt: string;
+    /** LLM connection used for tag conversion; empty = follow the chat. */
+    tagConnectionId: string;
+    /** LLM model used for tag conversion; empty = the connection's default. */
+    tagModel: string;
   };
   /** Cloud backup endpoint (optional, self-hosted). */
   backup: {
@@ -366,6 +373,9 @@ export const DEFAULT_SETTINGS: RPAppSettings = {
     autoGenerate: true,
     style: 'vertical',
     customArtists: '',
+    tagPrompt: DEFAULT_TAG_PROMPT,
+    tagConnectionId: '',
+    tagModel: '',
   },
   backup: {
     serverURL: '',

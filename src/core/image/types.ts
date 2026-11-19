@@ -307,7 +307,13 @@ export const novelaiAdapter: ImageProviderAdapter = {
   key: 'novelai',
   label: 'NovelAI',
   defaultBaseURL: 'https://image.novelai.net',
-  knownModels: ['nai-diffusion-4-5-full', 'nai-diffusion-4-full', 'nai-diffusion-3'],
+  knownModels: [
+    'nai-diffusion-5-full',
+    'nai-diffusion-5-curated',
+    'nai-diffusion-4-5-full',
+    'nai-diffusion-4-full',
+    'nai-diffusion-3',
+  ],
   browserCors: false,
   note: 'NovelAI 图片接口不发送 CORS 头，浏览器无法直连：请开启代理，或使用桌面版。',
 
@@ -334,10 +340,12 @@ export const novelaiAdapter: ImageProviderAdapter = {
       cfg_rescale: 0,
       noise_schedule: 'native',
     };
-    if (/^nai-diffusion-4/.test(model)) {
-      // V4 models require structured prompt objects; the simple string form is
-      // still accepted by the API when `v4_prompt` is omitted on older models,
-      // so we send the compatible v4 shape.
+    if (/^nai-diffusion-[45]/.test(model)) {
+      // V4 and V5 both require structured prompt objects; there is no
+      // `v5_prompt` — V5 reuses the `v4_prompt` / `v4_negative_prompt`
+      // structure. Dropping either one is a 500, not a 400, so always send
+      // both for V4/V5. The simple string form is only accepted on older
+      // models, so we send the compatible v4 shape here.
       parameters.v4_prompt = {
         caption: { base_caption: req.prompt, char_captions: [] },
         use_coords: false,
