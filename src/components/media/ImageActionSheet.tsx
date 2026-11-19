@@ -14,7 +14,7 @@
 import React from 'react';
 import { Download, FileText, Trash2, X } from 'lucide-react';
 import { dataUrlToBlob, getMediaImage, getMediaMeta, mediaIdFromRef, type GeneratedImageMeta } from '@/core/media/store.js';
-import { downloadBlob } from '@/lib/utils.js';
+import { saveBlobToDevice } from '@/lib/utils.js';
 import { toast } from '@/components/ui/toast.js';
 
 export interface ExtractedImageMeta {
@@ -71,8 +71,11 @@ export function ImageActionSheet({
         toast.error('保存失败', '原图找不到了');
         return;
       }
-      downloadBlob(blob, `rpnow-${id ?? Date.now()}.${ext}`);
-      toast.success('已保存到本地');
+      // 手机上 <a download> 点了常常没反应（文件根本没存下来），改走
+      // 系统分享面板，让用户自己选存到相册还是文件里。
+      const outcome = await saveBlobToDevice(blob, `rpnow-${id ?? Date.now()}.${ext}`);
+      if (outcome === 'shared') toast.success('已打开分享，选个位置保存');
+      else if (outcome === 'downloaded') toast.success('已保存到本地');
       onOpenChange(false);
     } catch (err) {
       toast.error('保存失败', err instanceof Error ? err.message : String(err));
