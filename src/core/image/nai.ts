@@ -86,6 +86,34 @@ export function normalizeTags(tags: string): string {
     .join(', ');
 }
 
+/**
+ * Extract the plain narrative text from a chat message for use as an image
+ * scene description.
+ *
+ * Preset markup is not story text, so whole blocks are dropped (thinking,
+ * summary, options, comments, background); image markers and the （插图）
+ * placeholder are dropped too; the rest is de-tagged and squashed to one
+ * line. Returns '' when nothing usable remains.
+ */
+export function extractSceneText(content: string, maxLen = 500): string {
+  let text = content;
+  for (const tag of ['think_nya', 'thought', 'os', 'summary', 'options', 'comment', 'background']) {
+    text = text.replace(new RegExp(`<${tag}[^>]*>[\\s\\S]*?</${tag}>`, 'gi'), ' ');
+  }
+  text = text.replace(IMAGE_MARKER_RE, ' ');
+  text = text.replace(/（插图）/g, ' ');
+  text = text.replace(/<[^>]+>/g, ' ');
+  text = text
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'");
+  text = text.replace(/\s+/g, ' ').trim();
+  if (text.length > maxLen) text = text.slice(0, maxLen).trim();
+  return text;
+}
+
 export type ImageSize = 'vertical' | 'horizontal' | 'square';
 
 /** NovelAI pixel sizes per aspect choice. */

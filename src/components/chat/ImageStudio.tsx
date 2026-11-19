@@ -3,15 +3,16 @@
  *
  * Prompt authoring + generation for the three supported backends. Key UX
  * decisions:
- *   - the prompt is pre-filled from the character and the last exchange, because
- *     "write a whole image prompt" is the hardest part for users,
+ *   - the description box has two buttons: 提取正文 pulls the narrative text
+ *     out of a reply (latest reply, or any floor the user picks), and 转写 Tag
+ *     (NovelAI) / AI 扩写 (other providers) rewrites it into image tags,
  *   - providers that need a proxy say so *before* the user burns a request,
  *   - results are kept as data URLs so they survive reloads and can be attached
  *     to a message or used as the card avatar.
  */
 
 import * as React from 'react';
-import { ImageIcon, Loader2, Sparkles, Wand2 } from 'lucide-react';
+import { FileText, ImageIcon, Loader2, Sparkles, Wand2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -22,9 +23,9 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input, Label, Textarea, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/input';
-import { Badge, EmptyState } from '@/components/ui/misc';
+import { Badge, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, EmptyState } from '@/components/ui/misc';
 import { useImage, useLLM } from '@/hooks/useKernel.js';
-import { DEFAULT_TAG_PROMPT } from '@/core/image/nai.js';
+import { DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/image/nai.js';
 import { useApp } from '@/state/store.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { RPChat } from '@/core/types/chat.js';
@@ -67,6 +68,30 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   }, [open, connectionId, connections, prompt, card.data, chat.messages]);
 
   const adapter = imageService?.adapters().find((a) => a.key === connections.find((c) => c.id === connectionId)?.provider);
+
+  // Assistant floors, newest first (floor number = position in the message list).
+  const assistantFloors = React.useMemo(() => {
+    const out: Array<{ floor: number; content: string }> = [];
+    chat.messages.forEach((m, i) => {
+      if (m.role === 'assistant') out.push({ floor: i + 1, content: m.content });
+    });
+    return out.reverse();
+  }, [chat.messages]);
+
+  /**
+   * Pull the narrative text out of a reply floor into the scene description.
+   * Preset markup, image markers and the （插图） placeholder are dropped, so
+   * the box holds clean 正文 ready for 转写 Tag.
+   */
+  function extractFloor(floor: number, content: string) {
+    const text = extractSceneText(content);
+    if (!text) {
+      toast.error(`第 ${floor} 楼没有能提取的正文`);
+      return;
+    }
+    setPrompt(text);
+    toast.success(`已提取第 ${floor} 楼正文`);
+  }
 
   async function run() {
     if (!imageService) return;
@@ -176,12 +201,42 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
           </div>
 
           <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-1">
               <Label htmlFor="img-prompt">画面描述</Label>
-              <Button variant="ghost" size="sm" onClick={enhance} disabled={busy || !prompt.trim()}>
-                <Sparkles className="size-3.5" aria-hidden="true" />{' '}
-                {connections.find((c) => c.id === connectionId)?.provider === 'novelai' ? '转写 Tag' : 'AI 扩写'}
-              </Button>
+              <div className="flex items-center">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="sm" disabled={busy || assistantFloors.length === 0}>
+                      <FileText className="size-3.5" aria-hidden="true" /> 提取正文
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="max-h-[50vh] w-[19rem] overflow-y-auto">
+                    <DropdownMenuLabel>从哪条回复提取正文</DropdownMenuLabel>
+                    {assistantFloors[0] && (
+                      <DropdownMenuItem
+                        onSelect={() => extractFloor(assistantFloors[0]!.floor, assistantFloors[0]!.content)}
+                      >
+                        最新一条回复
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuSeparator />
+                    {assistantFloors.slice(0, 8).map((f) => (
+                      <DropdownMenuItem key={f.floor} onSelect={() => extractFloor(f.floor, f.content)}>
+                        <span className="min-w-0">
+                          <span className="font-medium">第 {f.floor} 楼</span>
+                          <span className="block truncate text-[11px] text-[var(--rp-fg-muted)]">
+                            {extractSceneText(f.content, 40) || '（无正文）'}
+                          </span>
+                        </span>
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button variant="ghost" size="sm" onClick={enhance} disabled={busy || !prompt.trim()}>
+                  <Sparkles className="size-3.5" aria-hidden="true" />{' '}
+                  {connections.find((c) => c.id === connectionId)?.provider === 'novelai' ? '转写 Tag' : 'AI 扩写'}
+                </Button>
+              </div>
             </div>
             <Textarea
               id="img-prompt"

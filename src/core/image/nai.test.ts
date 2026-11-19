@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  extractSceneText,
   fetchAsDataUrl,
   hasImageMarkers,
   IMAGE_SIZES,
@@ -142,5 +143,27 @@ describe('markerForTags / rewriteImageMarker (I08)', () => {
   it('is a no-op when the marker did not change', () => {
     const text = 'image###a, b###';
     expect(rewriteImageMarker(text, 'image###a, b###', 'image###a, b###')).toBe(text);
+  });
+});
+
+describe('extractSceneText', () => {
+  it('keeps the narrative and drops preset markup, markers and the placeholder', () => {
+    const text = extractSceneText(
+      '<think_nya>偷偷想：她在害怕</think_nya>雪山上，咕嘎在找曲奇。<summary>小总结</summary>image###1girl, snow###（插图）<options><option>继续</option></options>',
+    );
+    expect(text).toBe('雪山上，咕嘎在找曲奇。');
+  });
+
+  it('strips html tags and collapses whitespace', () => {
+    expect(extractSceneText('<p>第一句。</p>\n\n<p>第二句。</p>')).toBe('第一句。 第二句。');
+  });
+
+  it('returns empty when only markup remains', () => {
+    expect(extractSceneText('<think_nya>想</think_nya>image###a, b###')).toBe('');
+  });
+
+  it('truncates long text to the limit', () => {
+    const text = extractSceneText('啊'.repeat(600));
+    expect(text.length).toBe(500);
   });
 });
