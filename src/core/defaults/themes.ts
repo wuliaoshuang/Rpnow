@@ -93,6 +93,78 @@ const SEPIA: Record<string, string> = {
   '--rp-char-bubble': 'oklch(0.95 0.02 78)',
 };
 
+const FOREST_GREEN: Record<string, string> = {
+  '--rp-bg': 'oklch(0.16 0.03 150)',
+  '--rp-bg-elevated': 'oklch(0.21 0.035 150)',
+  '--rp-bg-sunken': 'oklch(0.13 0.03 150)',
+  '--rp-fg': 'oklch(0.93 0.02 140)',
+  '--rp-fg-muted': 'oklch(0.72 0.03 145)',
+  '--rp-fg-subtle': 'oklch(0.58 0.03 145)',
+  '--rp-border': 'oklch(0.3 0.04 150)',
+  '--rp-border-strong': 'oklch(0.4 0.05 150)',
+  '--rp-accent': 'oklch(0.72 0.15 145)',
+  '--rp-accent-fg': 'oklch(0.15 0.03 150)',
+  '--rp-accent-soft': 'oklch(0.3 0.06 150)',
+  '--rp-accent-ring': 'oklch(0.72 0.15 145 / 0.5)',
+  '--rp-secondary': 'oklch(0.68 0.12 90)',
+  '--rp-user-bubble': 'oklch(0.26 0.045 150)',
+  '--rp-char-bubble': 'oklch(0.21 0.035 150)',
+};
+
+const SAKURA_PINK: Record<string, string> = {
+  '--rp-bg': 'oklch(0.97 0.015 350)',
+  '--rp-bg-elevated': 'oklch(0.99 0.008 350)',
+  '--rp-bg-sunken': 'oklch(0.94 0.02 350)',
+  '--rp-fg': 'oklch(0.3 0.03 350)',
+  '--rp-fg-muted': 'oklch(0.5 0.03 350)',
+  '--rp-fg-subtle': 'oklch(0.62 0.025 350)',
+  '--rp-border': 'oklch(0.89 0.025 350)',
+  '--rp-border-strong': 'oklch(0.8 0.04 350)',
+  '--rp-accent': 'oklch(0.62 0.16 350)',
+  '--rp-accent-fg': 'oklch(0.99 0 0)',
+  '--rp-accent-soft': 'oklch(0.93 0.04 350)',
+  '--rp-accent-ring': 'oklch(0.62 0.16 350 / 0.4)',
+  '--rp-secondary': 'oklch(0.68 0.1 20)',
+  '--rp-user-bubble': 'oklch(0.94 0.03 350)',
+  '--rp-char-bubble': 'oklch(0.99 0.008 350)',
+};
+
+const DEEP_OCEAN: Record<string, string> = {
+  '--rp-bg': 'oklch(0.15 0.025 240)',
+  '--rp-bg-elevated': 'oklch(0.2 0.03 240)',
+  '--rp-bg-sunken': 'oklch(0.12 0.025 240)',
+  '--rp-fg': 'oklch(0.93 0.015 230)',
+  '--rp-fg-muted': 'oklch(0.71 0.03 230)',
+  '--rp-fg-subtle': 'oklch(0.57 0.03 235)',
+  '--rp-border': 'oklch(0.29 0.04 240)',
+  '--rp-border-strong': 'oklch(0.39 0.05 240)',
+  '--rp-accent': 'oklch(0.74 0.14 210)',
+  '--rp-accent-fg': 'oklch(0.14 0.025 240)',
+  '--rp-accent-soft': 'oklch(0.29 0.06 230)',
+  '--rp-accent-ring': 'oklch(0.74 0.14 210 / 0.5)',
+  '--rp-secondary': 'oklch(0.68 0.12 260)',
+  '--rp-user-bubble': 'oklch(0.25 0.04 240)',
+  '--rp-char-bubble': 'oklch(0.2 0.03 240)',
+};
+
+const OBSIDIAN: Record<string, string> = {
+  '--rp-bg': 'oklch(0.13 0.005 0)',
+  '--rp-bg-elevated': 'oklch(0.18 0.005 0)',
+  '--rp-bg-sunken': 'oklch(0.1 0.005 0)',
+  '--rp-fg': 'oklch(0.92 0.005 0)',
+  '--rp-fg-muted': 'oklch(0.7 0.005 0)',
+  '--rp-fg-subtle': 'oklch(0.55 0.005 0)',
+  '--rp-border': 'oklch(0.28 0.005 0)',
+  '--rp-border-strong': 'oklch(0.38 0.005 0)',
+  '--rp-accent': 'oklch(0.75 0.14 70)',
+  '--rp-accent-fg': 'oklch(0.15 0.005 0)',
+  '--rp-accent-soft': 'oklch(0.28 0.04 70)',
+  '--rp-accent-ring': 'oklch(0.75 0.14 70 / 0.5)',
+  '--rp-secondary': 'oklch(0.65 0.08 40)',
+  '--rp-user-bubble': 'oklch(0.23 0.005 0)',
+  '--rp-char-bubble': 'oklch(0.18 0.005 0)',
+};
+
 export const BUILTIN_THEMES: BuiltinTheme[] = [
   {
     id: 'rpnow.theme.midnight-rose',
@@ -124,6 +196,35 @@ export const BUILTIN_THEMES: BuiltinTheme[] = [
     mode: 'light',
     tokens: SEPIA,
     css: '.rp-md{font-family:var(--font-serif);}',
+  },
+  {
+    id: 'rpnow.theme.forest-green',
+    label: '森林绿',
+    description: '深绿林间底色 + 嫩叶高光，沉静护眼，适合长剧情慢慢读。',
+    mode: 'dark',
+    tokens: FOREST_GREEN,
+  },
+  {
+    id: 'rpnow.theme.sakura-pink',
+    label: '樱花粉',
+    description: '柔粉纸面 + 樱花高光，轻软温暖，doro 最搭的一套。',
+    mode: 'light',
+    tokens: SAKURA_PINK,
+    css: '.rp-md{font-family:var(--font-serif);}',
+  },
+  {
+    id: 'rpnow.theme.deep-ocean',
+    label: '深海蓝',
+    description: '深蓝海底 + 青色水光，安静克制，夜里读也不刺眼。',
+    mode: 'dark',
+    tokens: DEEP_OCEAN,
+  },
+  {
+    id: 'rpnow.theme.obsidian',
+    label: '曜石黑',
+    description: '近乎纯黑的中性底色 + 琥珀高光，对比最强、最省电。',
+    mode: 'dark',
+    tokens: OBSIDIAN,
   },
 ];
 
