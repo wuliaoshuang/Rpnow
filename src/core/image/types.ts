@@ -52,10 +52,63 @@ export interface ImageRequest {
   steps?: number;
   scale?: number;
   sampler?: string;
+  /** How many images to generate in one call (NovelAI `n_samples`, 1-8). */
+  nSamples?: number;
+  /** NovelAI negative preset (0 Heavy / 1 Light / 2 Human Focus / 3 None). */
+  ucPreset?: number;
+  /** NovelAI noise schedule (karras / native / exponential / polyexponential). V5 forces karras. */
+  noiseSchedule?: string;
+  /** NovelAI CFG rescale (0-1). */
+  cfgRescale?: number;
+  /** NovelAI Decrisper (`dynamic_thresholding`). */
+  dynamicThresholding?: boolean;
+  /** NovelAI quality toggle (adds the quality tags). */
+  qualityToggle?: boolean;
   /** Ask the provider not to watermark (Ark). */
   watermark?: boolean;
   signal?: AbortSignal;
 }
+
+/**
+ * The generation parameters the ImageStudio lets the user tune (and
+ * persists per chat). These are the NovelAI knobs that actually change
+ * the picture — steps, CFG, sampler, seed, noise schedule, sample count,
+ * negative preset, CFG rescale, Decrisper, quality toggle.
+ */
+export interface ImageStudioParams {
+  steps?: number;
+  scale?: number;
+  sampler?: string;
+  seed?: number;
+  noiseSchedule?: string;
+  nSamples?: number;
+  ucPreset?: number;
+  cfgRescale?: number;
+  dynamicThresholding?: boolean;
+  qualityToggle?: boolean;
+}
+
+/** NovelAI samplers (V4.5/V5; `ddim` is remapped to `k_euler_ancestral` on V5). */
+export const NAI_SAMPLERS = [
+  'k_euler_ancestral',
+  'k_euler',
+  'k_dpmpp_2s_ancestral',
+  'k_dpmpp_2m',
+  'k_dpmpp_2m_sde',
+  'k_dpmpp_sde',
+  'ddim',
+] as const;
+
+/** NovelAI noise schedules. V5 forces `karras`. */
+export const NAI_NOISE_SCHEDULES = ['karras', 'native', 'exponential', 'polyexponential'] as const;
+
+/** NovelAI negative presets: 0 Heavy / 1 Light / 2 Human Focus / 3 None. */
+export const NAI_UC_PRESETS = [
+  { value: 0, label: 'Heavy（重）' },
+  { value: 1, label: 'Light（轻）' },
+  { value: 2, label: 'Human Focus（人物）' },
+  { value: 3, label: 'None（无）' },
+] as const;
 
 export interface ImageResult {
   /** Data URL so results survive reloads and can be written into cards. */
@@ -335,20 +388,25 @@ export const novelaiAdapter: ImageProviderAdapter = {
     //   - the string negative prompt is `uc` on V4/V5 (the old
     //     `negative_prompt` field is a pre-V4 name and is ignored there);
     //     the structured negative lives in v4_negative_prompt.
+    //   - `ucPreset` picks the predefined negative preset (0 Heavy /
+    //     1 Light / 2 Human Focus / 3 None); it is merged with `uc`.
     //   - V5 with k_euler_ancestral also carries
     //     deliberate_euler_ancestral_bug=false / prefer_brownian=true.
+    //   - `ddim` is remapped to `k_euler_ancestral` on V5.
+    const sampler = isV5 && (req.sampler ?? 'k_euler_ancestral') === 'ddim' ? 'k_euler_ancestral' : (req.sampler ?? 'k_euler_ancestral');
     const parameters: Record<string, unknown> = {
       width: w,
       height: h,
-      scale: req.scale ?? 6,
-      sampler: req.sampler ?? 'k_euler_ancestral',
-      steps: req.steps ?? 28,
-      n_samples: 1,
-      qualityToggle: true,
+      scale: Math.min(10, Math.max(0, req.scale ?? 6)),
+      sampler,
+      steps: Math.min(50, Math.max(1, Math.round(req.steps ?? 28))),
+      n_samples: Math.min(8, Math.max(1, Math.round(req.nSamples ?? 1))),
+      qualityToggle: req.qualityToggle ?? true,
       seed: req.seed !== undefined && req.seed >= 0 ? req.seed : Math.floor(Math.random() * 4294967295),
-      dynamic_thresholding: false,
-      cfg_rescale: 0,
-      noise_schedule: 'karras',
+      dynamic_thresholding: req.dynamicThresholding ?? false,
+      cfg_rescale: Math.min(1, Math.max(0, req.cfgRescale ?? 0)),
+      noise_schedule: isV5 ? 'karras' : (req.noiseSchedule ?? 'karras'),
+      ucPreset: req.ucPreset ?? 0,
     };
     if (isV4Family) {
       parameters.params_version = isV5 ? 4 : 3;
