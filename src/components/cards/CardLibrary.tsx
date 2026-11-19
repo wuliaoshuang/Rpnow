@@ -122,6 +122,20 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
     return () => setHideTopbar(false);
   }, [createOpen, editorOpen, setHideTopbar]);
 
+  /**
+   * 「从文件导入」是在创建页里点的，但文件选择框只挂在主列表里：直接
+   * setCreateOpen(false) 再立刻 click，输入框还没挂载，click 会扑空，
+   * 表现为点了导入却什么都没发生。先记下来，等创建页关掉、输入框挂好
+   * 后再点。
+   */
+  const openPickerOnClose = React.useRef(false);
+  React.useEffect(() => {
+    if (!createOpen && openPickerOnClose.current) {
+      openPickerOnClose.current = false;
+      fileInput.current?.click();
+    }
+  }, [createOpen]);
+
   /** 商店里的卡（快捷导入用）：打开创建页时拉一次，拉不到就藏起这块。 */
   const [storePicks, setStorePicks] = React.useState<MarketItem[]>([]);
   const [installingId, setInstallingId] = React.useState<string | null>(null);
@@ -388,8 +402,8 @@ export function CardLibrary({ onStartChat }: CardLibraryProps) {
           setCreating(true);
         }}
         onImportFile={() => {
+          openPickerOnClose.current = true;
           setCreateOpen(false);
-          fileInput.current?.click();
         }}
         onImportUrl={() => {
           setCreateOpen(false);
