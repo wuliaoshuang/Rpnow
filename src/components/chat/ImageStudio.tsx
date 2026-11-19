@@ -64,10 +64,17 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   const [busy, setBusy] = React.useState(false);
   const [results, setResults] = React.useState<string[]>([]);
   const [error, setError] = React.useState<string | null>(null);
+  /** 打开时只预填一次；用户清空后不再自动填回来，否则框就没法自由编辑了。 */
+  const seededRef = React.useRef(false);
 
   React.useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      seededRef.current = false;
+      return;
+    }
     if (!connectionId) setConnectionId(connections[0]?.id ?? '');
+    if (seededRef.current) return;
+    seededRef.current = true;
     // 画师串默认取设置里当前风格的画师串，可改；清空后下次打开会重新取。
     if (!artist) {
       const s = artistsForStyle(settings.imageGen.style, settings.imageGen.customArtists ?? '');
