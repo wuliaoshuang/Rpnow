@@ -68,6 +68,39 @@ describe('novelaiAdapter V5', () => {
     const params = body.parameters as Record<string, unknown>;
     expect(params.v4_prompt).toBeUndefined();
   });
+
+  it('sends karras + params_version 4 for V5, and no sm/sm_dyn', async () => {
+    const body = await captureBody('nai-diffusion-5-full');
+    const params = body.parameters as Record<string, unknown>;
+    expect(params.noise_schedule).toBe('karras');
+    expect(params.params_version).toBe(4);
+    expect(params.sm).toBeUndefined();
+    expect(params.sm_dyn).toBeUndefined();
+    expect(params.uc).toBeDefined();
+    expect(params.negative_prompt).toBeUndefined();
+    expect(params.scale).toBe(6);
+  });
+
+  it('sends params_version 3 + sm false for V4.5', async () => {
+    const body = await captureBody('nai-diffusion-4-5-full');
+    const params = body.parameters as Record<string, unknown>;
+    expect(params.noise_schedule).toBe('karras');
+    expect(params.params_version).toBe(3);
+    expect(params.sm).toBe(false);
+    expect(params.sm_dyn).toBe(false);
+    expect(params.uc).toBeDefined();
+  });
+
+  it('surfaces a JSON error field as the failure reason', async () => {
+    const fetchImpl = (async () => {
+      return new Response(JSON.stringify({ error: 'Anlas 不足' }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    await expect(
+      novelaiAdapter.generate(conn, { prompt: '1girl', model: 'nai-diffusion-5-full' }, fetchImpl),
+    ).rejects.toThrow('Anlas 不足');
+  });
 });
 
 describe('DEFAULT_TAG_PROMPT (NovelAI V5)', () => {

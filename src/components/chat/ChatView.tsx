@@ -1811,6 +1811,10 @@ export function ChatView({
                 onTemplateSlash={sendTemplateSlash}
                 onRerollImage={(i) => rerollImage(m.id, i)}
                 onDeleteImage={(i) => void deleteMessageImage(m.id, i)}
+                onExtractImageMetadata={(_i, meta) => {
+                  useApp.getState().setImageStudioPrefill({ positive: meta.prompt, model: meta.model });
+                  setImageOpen(true);
+                }}
                 fontSize={settings.render.fontSize}
                 chatId={chat.id}
                 sandboxHtml={settings.render.sandboxHtml}
