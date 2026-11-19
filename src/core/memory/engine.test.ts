@@ -158,6 +158,30 @@ describe('applyMemory — classic replacement', () => {
     expect(out.messages[5].content).toBe('recent');
   });
 
+  it('does not crash when a summary matches a round with no assistant reply yet', () => {
+    // Regenerate trims the reply being replaced, so the newest user message
+    // forms a round with assistantIndex -1 — and a stored summary of that
+    // round still matches it by turn number. The old code read out[-1].meta
+    // and crashed the whole generation with "Cannot read properties of
+    // undefined (reading 'meta')".
+    const messages = [
+      msg('u1', 'user', '1'),
+      msg('a1', 'assistant', 'old-1'),
+      msg('u2', 'user', '2'),
+    ];
+    const memories = [
+      makeMemoryRecord({ summary: '总结2', turn: 2, no: 2, sourceAssistantIds: ['a2'] }),
+    ];
+    const out = applyMemory(
+      baseInput({
+        messages,
+        memories,
+        settings: { ...DEFAULT_MEMORY_SETTINGS, mode: 'classic', keepRecentRounds: 0 },
+      }),
+    );
+    expect(out.messages[2].content).toBe('2');
+  });
+
   it('never mutates the stored transcript', () => {
     const messages = [msg('u1', 'user', 'a'), msg('a1', 'assistant', '原文')];
     const memories = [makeMemoryRecord({ summary: '总结', turn: 1, no: 1, sourceAssistantIds: ['a1'] })];
