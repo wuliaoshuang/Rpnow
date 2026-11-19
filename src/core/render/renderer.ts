@@ -97,6 +97,37 @@ export function namespaceClasses(root: ParentNode): void {
   }
 }
 
+/**
+ * Drop media elements that can never show anything.
+ *
+ * A `<video>` / `<audio>` with no `src` and no `<source>` child, or an
+ * `<img>` with no usable `src`, renders as a dead box: on Android WebView a
+ * sourceless `<video>` is a small black rectangle with a filmstrip icon
+ * (reported 2026-11-19 on the 李淑纯 greeting — the greeting prose itself
+ * contains no media at all; the tag arrives via the card / stored message).
+ * Removing them here keeps the bubble clean regardless of where the tag came
+ * from. A `<video>` with a `poster` is kept when the poster survives
+ * sanitisation (it can still show its still); in practice DOMPurify's
+ * default allow-list strips `poster`, so such a tag is dropped as well.
+ */
+export function dropSourcelessMedia(root: ParentNode): void {
+  const query = (root as Element).querySelectorAll?.bind(root as Element);
+  if (!query) return;
+  for (const el of Array.from(query('video, audio, img'))) {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'img') {
+      const src = el.getAttribute('src');
+      if (src === null || src.trim() === '') el.remove();
+      continue;
+    }
+    const src = el.getAttribute('src');
+    if (src !== null && src.trim() !== '') continue;
+    if (el.querySelector('source[src]')) continue;
+    if (tag === 'video' && el.getAttribute('poster')) continue;
+    el.remove();
+  }
+}
+
 /** Remove rules that can escape the message container or phone home. */
 export function scopeCss(css: string, scope: string, allowExternal: boolean): string {
   // Drop @import entirely — it is remote code execution by URL.
@@ -478,6 +509,7 @@ export const defaultRenderer: RendererService = {
     const container = document.createElement('div');
     container.innerHTML = clean;
     namespaceClasses(container);
+    dropSourcelessMedia(container);
     let out = container.innerHTML;
     out = decodeStyleCarriers(out, scope, allowExternal);
     if (sandbox) out = restoreHtmlCards(out, fenceCodes);
