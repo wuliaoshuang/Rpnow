@@ -121,7 +121,14 @@ export function UsagePage() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-3 py-4 sm:px-5">
+    /*
+     * The scroll wrapper: AppShell's <main> is `overflow-hidden` and never
+     * scrolls itself, so every long page brings its own `h-full overflow-y-
+     * auto` container (Settings / Lore / Presets all do this). Without it the
+     * log list just gets clipped once it grows past the viewport.
+     */
+    <div className="rp-scroll h-full overflow-y-auto">
+      <div className="mx-auto w-full max-w-3xl px-3 py-4 sm:px-5">
       {/* Totals */}
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <StatCell label="总用量" value={formatTokens(summary.totalTokens)} sub="输入 + 缓存 + 输出" />
@@ -219,12 +226,13 @@ export function UsagePage() {
 
       {/* Clear */}
       {rows.length > 0 && (
-        <div className="mt-5 flex justify-center">
+        <div className="mt-5 flex justify-center pb-2">
           <Button size="sm" variant="ghost" onClick={onClear} className="text-[var(--rp-danger)]">
             <Trash2 className="size-3.5" aria-hidden="true" /> 清空用量记录
           </Button>
         </div>
       )}
+      </div>
     </div>
   );
 }
