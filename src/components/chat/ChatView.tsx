@@ -869,6 +869,9 @@ export function ChatView({
     if (!overrideText) {
       setInput('');
       setDraftImages([]);
+      // 输入框是靠 onInput 撑高的，程序清空不会触发 onInput，高度会卡在
+      // 之前撑大的尺寸上；这里直接把它收回一行。
+      if (inputRef.current) inputRef.current.style.height = 'auto';
     }
     stickToBottom.current = true;
     /*
