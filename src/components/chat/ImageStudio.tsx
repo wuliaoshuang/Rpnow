@@ -249,6 +249,10 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
       (isNovel && tagCfg.tagModel) || (tagConn ? conn.defaultModel || '' : chat.model || conn.defaultModel || '');
     // 转写 Tag 时注入和聊天一样的世界书 + 预设（正文是画面描述里的内容，
     // 由用户指定，不进注入）。其它提供商的通用扩写不注入。
+    // 注入放在系统提示词的最前面、优先级最高（系统级）：世界书与预设里
+    // 的设定（包括 NSFW 相关）转写时必须遵循，并翻译成英文 Danbooru Tag
+    // 写进结果里；之前写在后面的“只作背景，不要照搬进 Tag”等于让模型
+    // 忽略它们，NSFW 就写不出来了。
     const injection = isNovel
       ? buildTagInjection({
           card,
@@ -269,7 +273,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
         'subject, appearance, clothing, pose, environment, lighting, camera, art style, quality tags. ' +
         'Output only the prompt, comma-separated, no preamble, no markdown.';
     const systemPrompt = injection
-      ? `${basePrompt}\n\n以下是本次对话的世界书与预设，供转写时参考（只作背景，不要照搬进 Tag）：\n${injection}`
+      ? `【系统级设定 · 最高优先级】\n以下是本次对话的世界书与预设，转写时必须遵循，优先级高于下面的一切转写规则。\n${injection}\n\n其中与画面、人物、氛围有关的内容（包括 NSFW 相关设定），要翻译成对应的英文 Danbooru Tag 写进结果里，不要照搬中文原文。世界书与预设里的内容算作已知设定，直接用，不算凭空编造。\n\n【转写规则】\n${basePrompt}`
       : basePrompt;
     setBusy(true);
     try {
