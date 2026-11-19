@@ -3,9 +3,10 @@
  *
  * Prompt authoring + generation for the three supported backends. Key UX
  * decisions:
- *   - the description box has two buttons: 提取正文 pulls the narrative text
- *     out of a reply (latest reply, or any floor the user picks), and 转写 Tag
- *     (NovelAI) / AI 扩写 (other providers) rewrites it into image tags,
+ *   - the description box only holds the 正文 (from 提取正文 or typed in);
+ *     转写 Tag / AI 扩写 turns it into tags and fills the 正面提示词 box,
+ *   - the final prompt sent to the model is 正面提示词 + 画师串 stacked
+ *     together (falling back to the description when no positive prompt yet),
  *   - providers that need a proxy say so *before* the user burns a request,
  *   - results are kept as data URLs so they survive reloads and can be attached
  *     to a message or used as the card avatar.
@@ -25,7 +26,7 @@ import { Button } from '@/components/ui/button';
 import { Input, Label, Textarea, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/input';
 import { Badge, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, EmptyState } from '@/components/ui/misc';
 import { useImage, useLLM } from '@/hooks/useKernel.js';
-import { DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/image/nai.js';
+import { artistsForStyle, DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/image/nai.js';
 import { useApp } from '@/state/store.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { RPChat } from '@/core/types/chat.js';
@@ -48,6 +49,10 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   const settings = useApp((s) => s.settings);
 
   const [prompt, setPrompt] = React.useState('');
+  /** 正面提示词：转写 Tag 的结果填这里，可再改；出图时和画师串叠在一起发给模型。 */
+  const [positive, setPositive] = React.useState('');
+  /** 画师串（自定义）：出图时叠在正面提示词后面。 */
+  const [artist, setArtist] = React.useState('');
   const [negative, setNegative] = React.useState('');
   const [size, setSize] = React.useState<'portrait' | 'square' | 'landscape'>('portrait');
   const [connectionId, setConnectionId] = React.useState<string>('');
@@ -58,6 +63,11 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   React.useEffect(() => {
     if (!open) return;
     if (!connectionId) setConnectionId(connections[0]?.id ?? '');
+    // 画师串默认取设置里当前风格的画师串，可改；清空后下次打开会重新取。
+    if (!artist) {
+      const s = artistsForStyle(settings.imageGen.style, settings.imageGen.customArtists ?? '');
+      if (s) setArtist(s);
+    }
     if (prompt) return;
     // Seed a prompt from the card plus the most recent RP beat.
     const last = [...chat.messages].reverse().find((m) => m.role === 'assistant');
@@ -65,7 +75,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
     setPrompt(
       [`${card.data.name}`, card.data.description.slice(0, 160), scene].filter(Boolean).join(', '),
     );
-  }, [open, connectionId, connections, prompt, card.data, chat.messages]);
+  }, [open, connectionId, connections, prompt, artist, card.data, chat.messages, settings.imageGen]);
 
   const adapter = imageService?.adapters().find((a) => a.key === connections.find((c) => c.id === connectionId)?.provider);
 
@@ -99,11 +109,18 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
       toast.error('还没有配置图像服务', '请到「设置 → 图像」添加一个提供商');
       return;
     }
+    // 出图的正面提示词 = 正面提示词 + 画师串叠在一起；正面提示词没填时用画面描述顶上。
+    const base = positive.trim() || prompt.trim();
+    const finalPrompt = [base, artist.trim()].filter(Boolean).join(', ');
+    if (!finalPrompt) {
+      toast.error('请先填画面描述或正面提示词');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       const out = await imageService.generate(connectionId, {
-        prompt,
+        prompt: finalPrompt,
         negativePrompt: negative || undefined,
         size,
         watermark: false,
@@ -118,7 +135,8 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   }
 
   /**
-   * Rewrite a scene description into image tags.
+   * Rewrite the scene description into image tags and put them in the
+   * positive-prompt box (the description box itself keeps the 正文).
    *
    * NovelAI gets the tag-conversion prompt + model from 「设置 → 生图」里的
    * Tag 转写配置（默认跟随当前对话）；其它提供商沿用原来的通用扩写。
@@ -153,7 +171,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
           { role: 'user', content: prompt },
         ],
       });
-      if (res.text.trim()) setPrompt(res.text.trim().replace(/^["']|["']$/g, ''));
+      if (res.text.trim()) setPositive(res.text.trim().replace(/^["']|["']$/g, ''));
     } catch (err) {
       toast.error(isNovel ? '转写 Tag 失败' : '扩写失败', err instanceof Error ? err.message : String(err));
     } finally {
@@ -245,6 +263,30 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
               rows={5}
               placeholder="例如：黄昏的钟塔顶层，机械少女在给齿轮上油，暖色逆光，电影感构图"
             />
+            <p className="text-[11px] text-[var(--rp-fg-subtle)]">画面描述只放正文，转写 Tag 的结果填到下面的正面提示词。</p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="img-positive">正面提示词</Label>
+            <Textarea
+              id="img-positive"
+              value={positive}
+              onChange={(e) => setPositive(e.target.value)}
+              rows={4}
+              placeholder="转写 Tag 的结果会填到这里，也可以直接写英文 Tag"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="img-artist">画师串（自定义）</Label>
+            <Textarea
+              id="img-artist"
+              value={artist}
+              onChange={(e) => setArtist(e.target.value)}
+              rows={2}
+              placeholder="例如：1.1::tianlianghe::, 1.2::monju_rou::"
+            />
+            <p className="text-[11px] text-[var(--rp-fg-subtle)]">出图时和正面提示词叠在一起发给模型。</p>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -304,7 +346,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             关闭
           </Button>
-          <Button onClick={run} disabled={busy || !prompt.trim()}>
+          <Button onClick={run} disabled={busy || !(positive.trim() || prompt.trim())}>
             {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Wand2 className="size-4" aria-hidden="true" />}
             {busy ? '生成中…' : '生成'}
           </Button>
