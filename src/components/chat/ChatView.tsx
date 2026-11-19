@@ -62,7 +62,6 @@ import { stripCitations } from '@/core/memory/types.js';
 import { filterBlockedStyleText } from '@/core/styleFilter.js';
 import { pruneMemories } from '@/core/memory/engine.js';
 import {
-  formatTokens,
   recordUsage,
   useUsageHistory,
   wrapLlmForUsage,
@@ -1197,8 +1196,7 @@ export function ChatView({
   }
 
   // ------------------------------------------------------------------- view
-  // ----------------------------------------------------------- message ops
-  /** Token usage of the most recent reply, for the composer readout. */
+  /** Token usage of the most recent reply, for the newest floor's stats row. */
   const latestUsage = React.useMemo(() => {
     for (let i = chat.messages.length - 1; i >= 0; i--) {
       const usage = chat.messages[i].usage;
@@ -1207,22 +1205,8 @@ export function ChatView({
     return null;
   }, [chat.messages]);
 
-  /**
-   * Composer usage bar (L04): the newest recorded chat turn. Prefers the
-   * usage history (live-updated as turns complete); falls back to the newest
-   * message's stored usage for turns made before history existed.
-   */
+  /** Usage history (for the C09 wait-time estimate below). */
   const usageHistory = useUsageHistory();
-  const composerUsage = React.useMemo(() => {
-    // Newest chat turn by time, not by array position — the history is
-    // normally append-ordered, but never assume it.
-    let newest: (typeof usageHistory)[number] | null = null;
-    for (const r of usageHistory) {
-      if (r.kind !== 'chat') continue;
-      if (!newest || r.at > newest.at) newest = r;
-    }
-    return newest ?? latestUsage;
-  }, [usageHistory, latestUsage]);
 
   /**
    * C09 预估等待秒数：最近 5 次主对话的平均耗时（用量历史里有 durationMs）。
@@ -1829,6 +1813,7 @@ export function ChatView({
                     ? `额度 ${quota.used.toLocaleString()}/${quota.total.toLocaleString()}`
                     : undefined
                 }
+                onShowUsage={index === chat.messages.length - 1 ? () => onNavigate?.('usage') : undefined}
                 onCopy={async (t) => {
                   await navigator.clipboard.writeText(stripCitations(t));
                   toast.success('已复制');
@@ -2111,18 +2096,7 @@ export function ChatView({
             )}
           </div>
 
-          {/* Latest usage bar (L04): tap to open the usage page. */}
-          {composerUsage && (composerUsage.inputTokens || composerUsage.outputTokens) ? (
-            <button
-              type="button"
-              onClick={() => onNavigate?.('usage')}
-              aria-label="查看用量统计"
-              className="mt-1.5 flex w-full cursor-pointer items-center justify-center gap-1 text-[11px] text-[var(--rp-fg-muted)] hover:text-[var(--rp-fg)]"
-            >
-              输入 {formatTokens(composerUsage.inputTokens)} · 缓存 {formatTokens(composerUsage.cachedTokens)} · 输出{' '}
-              {formatTokens(composerUsage.outputTokens)}
-            </button>
-          ) : null}
+          {/* 用量入口已移到最新一条消息下面的“输出”按钮，这里不再重复显示。 */}
 
           {/*
             Keyboard helper row: only while the on-screen keyboard is up, so it

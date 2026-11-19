@@ -11,7 +11,7 @@
 import * as React from 'react';
 import { createPortal } from 'react-dom';
 import { useState } from 'react';
-import { ChevronLeft, ChevronRight, Copy, Eye, EyeOff, FastForward, GitBranch, ListFilter, MoreHorizontal, RefreshCw, Trash2, Pencil, Volume2, X } from 'lucide-react';import { cn, formatMessageTime } from '@/lib/utils';
+import { BarChart3, ChevronLeft, ChevronRight, Copy, Database, Eye, EyeOff, FastForward, GitBranch, ListFilter, MoreHorizontal, RefreshCw, Trash2, Pencil, Volume2, X, Zap } from 'lucide-react';import { cn, formatMessageTime } from '@/lib/utils';
 import type { RPChatMessage } from '@/core/types/chat.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { RPCompletionPreset } from '@/core/types/preset.js';
@@ -150,6 +150,8 @@ export interface MessageBubbleProps {
   } | null;
   /** Provider quota text (shown beside the usage). */
   quotaText?: string;
+  /** Open the usage page (the "输出" chip under the newest floor). */
+  onShowUsage?: () => void;
   /** True while this message is still streaming (drives the caret). */
   streaming?: boolean;
   /**
@@ -190,6 +192,7 @@ export function MessageBubble({
   hideMeta,
   usage,
   quotaText,
+  onShowUsage,
   streaming,
   isLast,
   onContinue,
@@ -229,6 +232,13 @@ export function MessageBubble({
 
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
+  /**
+   * Waiting for the first token: the draft carries '…' as its content until
+   * the server starts streaming. While waiting, show the animated dots
+   * (not the text, not the caret) — once the first characters arrive the
+   * dots go away and the typewriter caret takes over.
+   */
+  const isWaiting = streaming && (message.content ?? '').trim() === '…';
   const settings = useApp((s) => s.settings);
 
   /*
@@ -500,20 +510,32 @@ export function MessageBubble({
                * `.rp-md` class for styling.
                */
             }
-            <div
-              className="rp-md mes_text"
-              style={fontSize ? { fontSize: `${fontSize}px` } : undefined}
-              onClick={openCitation}
-              onErrorCapture={hideFailedMedia}
-              dangerouslySetInnerHTML={{ __html: citedHtml }}
-            />
+            {isWaiting ? (
+              /* Waiting for the first token: three dots in a wave (one rises
+                 while the next falls). No text, no typewriter caret yet — the
+                 caret starts once the first characters arrive. */
+              <div className="rp-typing-dots" role="status" aria-label="正在生成">
+                <span aria-hidden="true" />
+                <span aria-hidden="true" />
+                <span aria-hidden="true" />
+              </div>
+            ) : (
+              <div
+                className="rp-md mes_text"
+                style={fontSize ? { fontSize: `${fontSize}px` } : undefined}
+                onClick={openCitation}
+                onErrorCapture={hideFailedMedia}
+                dangerouslySetInnerHTML={{ __html: citedHtml }}
+              />
+            )}
             {/*
               Typewriter caret. The text itself already arrives progressively
               (streaming deltas render into `draft`), so the caret only has to
               sit after the newest character — which an element appended here
               does, since it follows the last block of the rendered HTML.
+              Not shown while waiting: the dots are the indicator then.
             */}
-            {streaming && <span className="rp-caret" aria-hidden="true" />}
+            {streaming && !isWaiting && <span className="rp-caret" aria-hidden="true" />}
             {message.images?.length ? (
               <div className={cn('mt-2 grid gap-2', imageGridClass(message.images.length))}>
                 {message.images.map((src, i) => (
@@ -777,25 +799,38 @@ export function MessageBubble({
           Round stats (Tavo-style readout): speed, context size, cache hit.
           Sits directly under the action row of the newest floor. quotaText
           alone (no usage yet) still renders so the provider readout survives.
+          The "输出" chip is the single entry point to the usage page — the
+          old three-part bar under the composer is gone.
         */}
         {isLast && (usage || quotaText) && (
           <div
             className={cn(
-              'flex items-center gap-1.5 whitespace-nowrap text-[10.5px] tabular-nums',
+              'flex flex-wrap items-center gap-1.5 whitespace-nowrap text-[10.5px] tabular-nums',
               immersive ? 'dark:text-white/45 text-[var(--rp-fg-subtle)]' : 'text-[var(--rp-fg-subtle)]',
               isUser && 'flex-row-reverse',
             )}
           >
             {usage?.outputTokens && usage?.durationMs ? (
-              <span title="生成速度">
-                ⚡ {(usage.outputTokens / Math.max(0.001, usage.durationMs / 1000)).toFixed(1)} tok/s
+              <span title="生成速度" className="inline-flex items-center gap-0.5">
+                <Zap className="size-3" aria-hidden="true" /> {(usage.outputTokens / Math.max(0.001, usage.durationMs / 1000)).toFixed(1)} tok/s
               </span>
             ) : null}
             {usage?.inputTokens ? (
-              <span title="本轮占用的上下文（prompt token）">
-                ⛁ {fmtTokens(usage.inputTokens)} 上下文
+              <span title="本轮占用的上下文（prompt token）" className="inline-flex items-center gap-0.5">
+                <Database className="size-3" aria-hidden="true" /> {fmtTokens(usage.inputTokens)} 上下文
                 {usage.cachedTokens ? `（已缓存 ${fmtTokens(usage.cachedTokens)}）` : ''}
               </span>
+            ) : null}
+            {usage?.outputTokens && onShowUsage ? (
+              <button
+                type="button"
+                onClick={onShowUsage}
+                aria-label="查看用量统计"
+                title="查看用量统计"
+                className="inline-flex cursor-pointer items-center gap-0.5 rounded-full border border-[var(--rp-border)] px-1.5 py-0.5 text-[var(--rp-fg-muted)] transition-colors hover:text-[var(--rp-fg)]"
+              >
+                <BarChart3 className="size-3" aria-hidden="true" /> 输出 {fmtTokens(usage.outputTokens)}
+              </button>
             ) : null}
             {quotaText && <span title="服务商剩余额度">· {quotaText}</span>}
           </div>
