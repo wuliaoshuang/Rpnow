@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { Input, Label, Textarea, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/input';
 import { Badge, EmptyState } from '@/components/ui/misc';
 import { useImage, useLLM } from '@/hooks/useKernel.js';
+import { DEFAULT_TAG_PROMPT } from '@/core/image/nai.js';
 import { useApp } from '@/state/store.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { RPChat } from '@/core/types/chat.js';
@@ -91,33 +92,45 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
     }
   }
 
-  /** Use the chat model to rewrite a short scene description into a dense prompt. */
+  /**
+   * Rewrite a scene description into image tags.
+   *
+   * NovelAI gets the tag-conversion prompt + model from 「设置 → 生图」里的
+   * Tag 转写配置（默认跟随当前对话）；其它提供商沿用原来的通用扩写。
+   */
   async function enhance() {
-    const conn = llmConnections.find((c) => c.id === (chat.connectionId ?? settings.defaultConnectionId)) ?? llmConnections[0];
+    const isNovel = connections.find((c) => c.id === connectionId)?.provider === 'novelai';
+    const tagCfg = settings.imageGen;
+    const tagConn = isNovel ? llmConnections.find((c) => c.id === (tagCfg.tagConnectionId || '')) : undefined;
+    const conn =
+      tagConn ??
+      llmConnections.find((c) => c.id === (chat.connectionId ?? settings.defaultConnectionId)) ??
+      llmConnections[0];
     if (!llm || !conn) {
       toast.error('需要先配置对话模型才能自动扩写提示词');
       return;
     }
+    const model =
+      (isNovel && tagCfg.tagModel) || (tagConn ? conn.defaultModel || '' : chat.model || conn.defaultModel || '');
+    const systemPrompt = isNovel
+      ? tagCfg.tagPrompt || DEFAULT_TAG_PROMPT
+      : 'You are a prompt engineer for image models. Convert the user\'s scene description into ONE dense English image prompt: ' +
+        'subject, appearance, clothing, pose, environment, lighting, camera, art style, quality tags. ' +
+        'Output only the prompt, comma-separated, no preamble, no markdown.';
     setBusy(true);
     try {
       const res = await llm.complete(conn.id, {
-        model: chat.model || conn.defaultModel || '',
+        model,
         maxTokens: 400,
         temperature: 0.7,
         messages: [
-          {
-            role: 'system',
-            content:
-              'You are a prompt engineer for image models. Convert the user\'s scene description into ONE dense English image prompt: ' +
-              'subject, appearance, clothing, pose, environment, lighting, camera, art style, quality tags. ' +
-              'Output only the prompt, comma-separated, no preamble, no markdown.',
-          },
+          { role: 'system', content: systemPrompt },
           { role: 'user', content: prompt },
         ],
       });
       if (res.text.trim()) setPrompt(res.text.trim().replace(/^["']|["']$/g, ''));
     } catch (err) {
-      toast.error('扩写失败', err instanceof Error ? err.message : String(err));
+      toast.error(isNovel ? '转写 Tag 失败' : '扩写失败', err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -166,7 +179,8 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
             <div className="flex items-center justify-between">
               <Label htmlFor="img-prompt">画面描述</Label>
               <Button variant="ghost" size="sm" onClick={enhance} disabled={busy || !prompt.trim()}>
-                <Sparkles className="size-3.5" aria-hidden="true" /> AI 扩写
+                <Sparkles className="size-3.5" aria-hidden="true" />{' '}
+                {connections.find((c) => c.id === connectionId)?.provider === 'novelai' ? '转写 Tag' : 'AI 扩写'}
               </Button>
             </div>
             <Textarea
