@@ -30,7 +30,8 @@ import { artistsForStyle, DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/im
 import { buildTagInjection } from '@/core/image/tagContext.js';
 import { BUILTIN_PRESETS } from '@/core/defaults/presets.js';
 import { dataUrlToBlob, deleteMediaImage, getMediaImage, listMediaImages, mediaIdFromRef, mediaRef, saveMediaImage, type GeneratedImageMeta } from '@/core/media/store.js';
-import { MediaImage } from '@/core/media/MediaImage.js';
+import { PressableImage } from '@/components/media/PressableImage.js';
+import type { ExtractedImageMeta } from '@/components/media/ImageActionSheet.js';
 import { confirmAction } from '@/components/ui/confirm.js';
 import { formatMessageTime } from '@/lib/utils.js';
 import { useApp } from '@/state/store.js';
@@ -56,6 +57,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   const lorebooks = useApp((s) => s.lorebooks);
   const persons = useApp((s) => s.personas);
   const settings = useApp((s) => s.settings);
+  const imageStudioPrefill = useApp((s) => s.imageStudioPrefill);
 
   const [prompt, setPrompt] = React.useState('');
   /** 正面提示词：转写 Tag 的结果填这里，可再改；出图时和画师串叠在一起发给模型。 */
@@ -65,6 +67,8 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   const [negative, setNegative] = React.useState('');
   const [size, setSize] = React.useState<'portrait' | 'square' | 'landscape'>('portrait');
   const [connectionId, setConnectionId] = React.useState<string>('');
+  /** 生图模型：跟着当前图像服务走，可自由选；空着就用这个连接的默认模型。 */
+  const [model, setModel] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [results, setResults] = React.useState<string[]>([]);
   const [error, setError] = React.useState<string | null>(null);
@@ -75,6 +79,13 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
     if (!open) {
       seededRef.current = false;
       return;
+    }
+    // 长按图片“提取 metadata”时带的预填：把那张图的提示词（和模型）填进
+    // 生图输入框，只用一次，用完就清掉。
+    if (imageStudioPrefill) {
+      if (imageStudioPrefill.positive) setPositive(imageStudioPrefill.positive);
+      if (imageStudioPrefill.model) setModel(imageStudioPrefill.model);
+      useApp.getState().setImageStudioPrefill(null);
     }
     if (!connectionId) setConnectionId(connections[0]?.id ?? '');
     if (seededRef.current) return;
@@ -91,9 +102,14 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
     setPrompt(
       [`${card.data.name}`, card.data.description.slice(0, 160), scene].filter(Boolean).join(', '),
     );
-  }, [open, connectionId, connections, prompt, artist, card.data, chat.messages, settings.imageGen]);
+  }, [open, connectionId, connections, prompt, artist, card.data, chat.messages, settings.imageGen, imageStudioPrefill]);
 
   const adapter = imageService?.adapters().find((a) => a.key === connections.find((c) => c.id === connectionId)?.provider);
+
+  // 生图模型选项：跟着当前图像服务走；选了哪个就用哪个，空着用连接的默认模型。
+  const selectedConn = connections.find((c) => c.id === connectionId);
+  const modelOptions = adapter?.knownModels ?? (selectedConn?.defaultModel ? [selectedConn.defaultModel] : []);
+  const effectiveModel = model || selectedConn?.defaultModel || modelOptions[0] || '';
 
   // Assistant floors, newest first (floor number = position in the message list).
   const assistantFloors = React.useMemo(() => {
@@ -125,13 +141,14 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
       toast.error('还没有配置图像服务', '请到「设置 → 图像」添加一个提供商');
       return;
     }
-    // 出图的正面提示词 = 正面提示词 + 画师串叠在一起；正面提示词没填时用画面描述顶上。
-    const base = positive.trim() || prompt.trim();
-    const finalPrompt = [base, artist.trim()].filter(Boolean).join(', ');
-    if (!finalPrompt) {
-      toast.error('请先填画面描述或正面提示词');
+    // 画面描述只放正文，绝不进生图提示词。出图的正面提示词 = 正面提示词
+    // + 画师串叠在一起；正面提示词是空的就拦住，先去转写 Tag 或手写 Tag。
+    const base = positive.trim();
+    if (!base) {
+      toast.error('正面提示词是空的', '先点「转写 Tag」把画面描述转成 Tag，或直接在正面提示词里写英文 Tag');
       return;
     }
+    const finalPrompt = [base, artist.trim()].filter(Boolean).join(', ');
     setBusy(true);
     setError(null);
     try {
@@ -139,6 +156,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
         prompt: finalPrompt,
         negativePrompt: negative || undefined,
         size,
+        model: effectiveModel || undefined,
         watermark: false,
       });
       // 生成的图立刻存进媒体库（Blob 存 IndexedDB，消息里只留 media: 引用，
@@ -161,12 +179,30 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
         }
       }
       setResults((prev) => [...refs, ...prev]);
-      if (!out.length) setError('服务没有返回图片');
+      if (!out.length) setError('生成失败：服务没有返回图片');
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // 生成失败要把失败的原因填进去：服务商返回的状态和报错原文都在这里。
+      setError(`生成失败：${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * 从本次结果里删掉一张图：列表里去掉，原文件（媒体库里的 Blob）也一起删掉。
+   */
+  async function deleteResult(src: string) {
+    const ok = await confirmAction({
+      title: '删除这张图？',
+      description: '原文件也会一起删掉，删了就找不回来了。',
+      confirmText: '删除',
+      destructive: true,
+    });
+    if (!ok) return;
+    setResults((prev) => prev.filter((r) => r !== src));
+    const id = mediaIdFromRef(src);
+    if (id) await deleteMediaImage(id);
+    toast.success('已删除');
   }
 
   /** 把一张生成图设为角色头像。头像存在角色卡里，用 data URL（单张小图）。 */
@@ -246,7 +282,13 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
           { role: 'user', content: prompt },
         ],
       });
-      if (res.text.trim()) setPositive(res.text.trim().replace(/^["']|["']$/g, ''));
+      if (res.text.trim()) {
+        // 转写完的 Tag 必须填进正面提示词（画面描述不动，继续留着正文）。
+        setPositive(res.text.trim().replace(/^["']|["']$/g, ''));
+        toast.success('Tag 已填进正面提示词');
+      } else {
+        toast.error(isNovel ? '转写 Tag 失败' : '扩写失败', '模型没有返回内容，请重试');
+      }
     } catch (err) {
       toast.error(isNovel ? '转写 Tag 失败' : '扩写失败', err instanceof Error ? err.message : String(err));
     } finally {
@@ -273,7 +315,13 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                 还没有图像服务。到「设置 → 图像」里添加 GPT Image / Seedream / NovelAI。
               </p>
             ) : (
-              <Select value={connectionId} onValueChange={setConnectionId}>
+              <Select
+                value={connectionId}
+                onValueChange={(v) => {
+                  setConnectionId(v);
+                  setModel('');
+                }}
+              >
                 <SelectTrigger id="img-conn">
                   <SelectValue placeholder="选择一个图像服务" />
                 </SelectTrigger>
@@ -292,6 +340,25 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
               </p>
             )}
           </div>
+
+          {/* 生图模型：跟着当前图像服务走，可自由选。 */}
+          {modelOptions.length > 0 && (
+            <div className="space-y-1.5">
+              <Label htmlFor="img-model">生图模型</Label>
+              <Select value={effectiveModel} onValueChange={setModel}>
+                <SelectTrigger id="img-model">
+                  <SelectValue placeholder="选择模型" />
+                </SelectTrigger>
+                <SelectContent>
+                  {modelOptions.map((m) => (
+                    <SelectItem key={m} value={m}>
+                      {m}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           <div className="space-y-1.5">
             <div className="flex items-center justify-between gap-1">
@@ -401,12 +468,22 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
             <div className="grid grid-cols-2 gap-2">
               {results.map((src, i) => (
                 <figure key={i} className="group relative overflow-hidden rounded-lg border border-[var(--rp-border)]">
-                  <MediaImage src={src} alt={`生成结果 ${i + 1}`} className="w-full object-cover" />
-                  <figcaption className="absolute inset-x-0 bottom-0 flex gap-1 bg-black/60 p-1.5 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                    <Button size="sm" variant="secondary" className="h-7 flex-1 text-[11px]" onClick={() => onAttach(src)}>
+                  <PressableImage
+                    src={src}
+                    alt={`生成结果 ${i + 1}`}
+                    className="w-full object-cover"
+                    onDelete={() => void deleteResult(src)}
+                    onExtractMetadata={(meta) => {
+                      setPositive(meta.prompt);
+                      if (meta.model) setModel(meta.model);
+                      toast.success('已把这张图的提示词填进正面提示词');
+                    }}
+                  />
+                  <figcaption className="pointer-events-none absolute inset-x-0 bottom-0 flex gap-1 bg-black/60 p-1.5 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                    <Button size="sm" variant="secondary" className="pointer-events-auto h-7 flex-1 text-[11px]" onClick={() => onAttach(src)}>
                       加入对话
                     </Button>
-                    <Button size="sm" variant="secondary" className="h-7 flex-1 text-[11px]" onClick={() => void useAsAvatar(src)}>
+                    <Button size="sm" variant="secondary" className="pointer-events-auto h-7 flex-1 text-[11px]" onClick={() => void useAsAvatar(src)}>
                       设为头像
                     </Button>
                   </figcaption>
@@ -415,14 +492,23 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
             </div>
           )}
           {results.length > 0 && <Badge variant="outline">{results.length} 张结果</Badge>}
-          <HistorySection chatId={chat.id} refreshKey={results.length} onAttach={onAttach} />
+          <HistorySection
+            chatId={chat.id}
+            refreshKey={results.length}
+            onAttach={onAttach}
+            onExtractMetadata={(meta) => {
+              setPositive(meta.prompt);
+              if (meta.model) setModel(meta.model);
+              toast.success('已把这张图的提示词填进正面提示词');
+            }}
+          />
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             关闭
           </Button>
-          <Button onClick={run} disabled={busy || !(positive.trim() || prompt.trim())}>
+          <Button onClick={run} disabled={busy || !positive.trim()} title={positive.trim() ? undefined : '先转写 Tag 或填写正面提示词'}>
             {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Wand2 className="size-4" aria-hidden="true" />}
             {busy ? '生成中…' : '生成'}
           </Button>
@@ -436,7 +522,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
  * 历史生成 — 这个对话里以前生成过的图（都存在媒体库里，关掉窗口也不会丢）。
  * 每张都能重新加入对话，也能手动删除；删除会把原文件一起删掉。
  */
-function HistorySection({ chatId, refreshKey, onAttach }: { chatId: string; refreshKey: number; onAttach: (src: string) => void }) {
+function HistorySection({ chatId, refreshKey, onAttach, onExtractMetadata }: { chatId: string; refreshKey: number; onAttach: (src: string) => void; onExtractMetadata: (meta: ExtractedImageMeta) => void }) {
   const [items, setItems] = React.useState<GeneratedImageMeta[]>([]);
   const [open, setOpen] = React.useState(false);
 
@@ -490,14 +576,20 @@ function HistorySection({ chatId, refreshKey, onAttach }: { chatId: string; refr
         <div className="grid grid-cols-2 gap-2">
           {items.map((item) => (
             <figure key={item.id} className="group relative overflow-hidden rounded-lg border border-[var(--rp-border)]">
-              <MediaImage src={mediaRef(item.id)} alt={item.prompt ?? '生成图'} className="w-full object-cover" />
-              <figcaption className="absolute inset-x-0 bottom-0 bg-black/60 p-1.5 backdrop-blur-sm">
+              <PressableImage
+                src={mediaRef(item.id)}
+                alt={item.prompt ?? '生成图'}
+                className="w-full object-cover"
+                onDelete={() => void remove(item)}
+                onExtractMetadata={(meta) => onExtractMetadata(meta)}
+              />
+              <figcaption className="pointer-events-none absolute inset-x-0 bottom-0 bg-black/60 p-1.5 backdrop-blur-sm">
                 <p className="text-[10px] text-white/80">{formatMessageTime(item.createdAt)}</p>
                 <div className="mt-1 flex gap-1">
-                  <Button size="sm" variant="secondary" className="h-7 flex-1 text-[11px]" onClick={() => onAttach(mediaRef(item.id))}>
+                  <Button size="sm" variant="secondary" className="pointer-events-auto h-7 flex-1 text-[11px]" onClick={() => onAttach(mediaRef(item.id))}>
                     加入对话
                   </Button>
-                  <Button size="sm" variant="secondary" className="h-7 flex-1 text-[11px]" onClick={() => void remove(item)}>
+                  <Button size="sm" variant="secondary" className="pointer-events-auto h-7 flex-1 text-[11px]" onClick={() => void remove(item)}>
                     删除
                   </Button>
                 </div>

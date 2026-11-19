@@ -89,6 +89,11 @@ export async function getMediaImage(id: string): Promise<Blob | undefined> {
   return get<Blob>(id, mediaStore);
 }
 
+/** The generation record for one media id (prompt / model / provider / time). */
+export async function getMediaMeta(id: string): Promise<GeneratedImageMeta | undefined> {
+  return get<GeneratedImageMeta>(metaKey(id), mediaStore);
+}
+
 /** All generated-image records, newest first. */
 export async function listMediaImages(): Promise<GeneratedImageMeta[]> {
   const allKeys = (await keys(mediaStore)) as string[];

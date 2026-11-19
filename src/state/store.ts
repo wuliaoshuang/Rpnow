@@ -106,6 +106,15 @@ export interface AppState {
   hideTopbar: boolean;
   setHideTopbar(next: boolean): void;
 
+  /**
+   * Transient prefill for the image studio: long-pressing a generated image
+   * and picking “提取 metadata” puts the generation prompt (and model) here
+   * and opens the studio; the studio consumes it once and clears it. Never
+   * persisted.
+   */
+  imageStudioPrefill: { positive?: string; model?: string } | null;
+  setImageStudioPrefill(next: { positive?: string; model?: string } | null): void;
+
   // ------------------------------------------------------------- actions
   boot(): Promise<void>;
   setSettings(patch: Partial<RPAppSettings>): void;
@@ -188,6 +197,7 @@ export const useApp = create<AppState>((set, get) => ({
   publishStoreRequest: null,
   addModelRequest: false,
   hideTopbar: false,
+  imageStudioPrefill: null,
 
   boot: async () => {
     try {
@@ -309,6 +319,10 @@ export const useApp = create<AppState>((set, get) => ({
 
   setHideTopbar: (next) => {
     set({ hideTopbar: next });
+  },
+
+  setImageStudioPrefill: (next) => {
+    set({ imageStudioPrefill: next });
   },
 
   savePreset: async (preset) => {

@@ -321,26 +321,38 @@ export const novelaiAdapter: ImageProviderAdapter = {
     const sizeKey = req.size ?? 'portrait';
     const [w, h] = req.width && req.height ? [req.width, req.height] : SIZE_MAP[sizeKey].nai;
     const model = req.model || conn.defaultModel || 'nai-diffusion-4-5-full';
+    const isV5 = model.startsWith('nai-diffusion-5');
+    const isV4Family = /^nai-diffusion-[45]/.test(model);
+    const negative = req.negativePrompt || NAI_DEFAULT_NEGATIVE;
 
+    // Parameters follow NovelAI's own frontend / the NAIWeaver API doc
+    // (POST /ai/generate-image), per model family:
+    //   - noise_schedule is `karras` for V4.5 and V5 (V5 forces it);
+    //     `native` is not a V4/V5 schedule and degrades the image.
+    //   - params_version is 3 for V4.5, 4 for V5.
+    //   - sm / sm_dyn are sent (false) for V4.5 but NOT sent for V5
+    //     (sending them to V5 is a 500).
+    //   - the string negative prompt is `uc` on V4/V5 (the old
+    //     `negative_prompt` field is a pre-V4 name and is ignored there);
+    //     the structured negative lives in v4_negative_prompt.
+    //   - V5 with k_euler_ancestral also carries
+    //     deliberate_euler_ancestral_bug=false / prefer_brownian=true.
     const parameters: Record<string, unknown> = {
       width: w,
       height: h,
-      scale: req.scale ?? 5,
+      scale: req.scale ?? 6,
       sampler: req.sampler ?? 'k_euler_ancestral',
       steps: req.steps ?? 28,
       n_samples: 1,
-      ucPreset: 0,
       qualityToggle: true,
-      negative_prompt: req.negativePrompt || NAI_DEFAULT_NEGATIVE,
       seed: req.seed !== undefined && req.seed >= 0 ? req.seed : Math.floor(Math.random() * 4294967295),
       dynamic_thresholding: false,
-      controlnet_strength: 1,
-      legacy: false,
-      add_original_image: false,
       cfg_rescale: 0,
-      noise_schedule: 'native',
+      noise_schedule: 'karras',
     };
-    if (/^nai-diffusion-[45]/.test(model)) {
+    if (isV4Family) {
+      parameters.params_version = isV5 ? 4 : 3;
+      parameters.uc = negative;
       // V4 and V5 both require structured prompt objects; there is no
       // `v5_prompt` — V5 reuses the `v4_prompt` / `v4_negative_prompt`
       // structure. Dropping either one is a 500, not a 400, so always send
@@ -352,11 +364,20 @@ export const novelaiAdapter: ImageProviderAdapter = {
         use_order: true,
       };
       parameters.v4_negative_prompt = {
-        caption: { base_caption: parameters.negative_prompt, char_captions: [] },
+        caption: { base_caption: negative, char_captions: [] },
         legacy_uc: false,
       };
-      parameters.sm = false;
-      parameters.sm_dyn = false;
+      if (isV5) {
+        parameters.deliberate_euler_ancestral_bug = false;
+        parameters.prefer_brownian = true;
+      } else {
+        parameters.sm = false;
+        parameters.sm_dyn = false;
+      }
+    } else {
+      // Pre-V4 models take the plain string negative prompt.
+      parameters.negative_prompt = negative;
+      parameters.ucPreset = 0;
     }
 
     const res = await fetchImpl(joinURL(conn.baseURL, '/ai/generate-image'), {
@@ -384,7 +405,11 @@ export const novelaiAdapter: ImageProviderAdapter = {
       return [{ dataUrl: `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,${b64}`, provider: 'novelai', model }];
     }
 
-    const json = (await res.json()) as { images?: Array<{ image: string }> };
+    const json = (await res.json()) as { images?: Array<{ image: string }>; error?: string | { message?: string } };
+    if (json.error) {
+      const detail = typeof json.error === 'string' ? json.error : json.error.message ?? JSON.stringify(json.error);
+      throw new Error(`NovelAI 报错：${detail}`);
+    }
     const images = json.images ?? [];
     if (!images.length) throw new Error('NovelAI 没有返回图片');
     return images.map((img) => ({

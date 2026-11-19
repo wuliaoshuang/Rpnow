@@ -22,7 +22,8 @@ import { SLOT, useSlots } from '@/core/plugin/slots.js';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/misc';
 import { Hint } from '@/components/ui/misc';
 import { renderMessageText } from '@/features/chat/orchestrator.js';
-import { MediaImage } from '@/core/media/MediaImage.js';
+import { PressableImage } from '@/components/media/PressableImage.js';
+import type { ExtractedImageMeta } from '@/components/media/ImageActionSheet.js';
 import { filterBlockedStyleText, getStyleFilterHitSegments } from '@/core/styleFilter.js';
 import { useApp } from '@/state/store.js';
 import { substituteMacros } from '@/core/prompt/macros.js';
@@ -126,6 +127,8 @@ export interface MessageBubbleProps {
    * `media:` reference, so the original is gone, not just hidden.
    */
   onDeleteImage?: (index: number) => void;
+  /** Fill a generated picture's metadata into the image-studio input box. */
+  onExtractImageMetadata?: (index: number, meta: ExtractedImageMeta) => void;
   /** Read-only font size override from settings. */
   fontSize?: number;
   /** Chat id, used to resolve `[M#]` citations. */
@@ -178,6 +181,7 @@ export function MessageBubble({
   onTemplateSlash,
   onRerollImage,
   onDeleteImage,
+  onExtractImageMetadata,
   fontSize,
   chatId,
   sandboxHtml,
@@ -463,10 +467,12 @@ export function MessageBubble({
               <div className={cn('mb-2 grid gap-2', imageGridClass(message.images.length))}>
                 {message.images.map((src, i) => (
                   <div key={i} className={cn('group/img relative', imageGridItemClass(message.images!.length, i))}>
-                    <MediaImage
+                    <PressableImage
                       src={src}
                       alt={`附件 ${i + 1}`}
                       className={cn('w-full rounded-lg border border-[var(--rp-border)] object-cover', imageGridItemClass(message.images!.length, i))}
+                      onDelete={onDeleteImage ? () => onDeleteImage(i) : undefined}
+                      onExtractMetadata={onExtractImageMetadata ? (meta) => onExtractImageMetadata(i, meta) : undefined}
                       onError={(e) => {
                         e.currentTarget.style.display = 'none';
                       }}
@@ -512,13 +518,15 @@ export function MessageBubble({
               <div className={cn('mt-2 grid gap-2', imageGridClass(message.images.length))}>
                 {message.images.map((src, i) => (
                   <div key={i} className={cn('group/img relative', imageGridItemClass(message.images!.length, i))}>
-                    <MediaImage
+                    <PressableImage
                       src={src}
                       alt={`生成图 ${i + 1}`}
                       className={cn(
                         'w-full rounded-lg border border-[var(--rp-border)] object-cover',
                         message.images!.length === 1 ? 'max-h-[26rem]' : 'max-h-[16rem]',
                       )}
+                      onDelete={onDeleteImage ? () => onDeleteImage(i) : undefined}
+                      onExtractMetadata={onExtractImageMetadata ? (meta) => onExtractImageMetadata(i, meta) : undefined}
                       onError={(e) => {
                         const cell = e.currentTarget.parentElement;
                         if (cell) cell.style.display = 'none';
