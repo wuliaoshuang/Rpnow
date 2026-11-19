@@ -110,6 +110,47 @@ export const NAI_UC_PRESETS = [
   { value: 3, label: 'None（无）' },
 ] as const;
 
+/**
+ * Estimate the Anlas a NovelAI generation will cost, from NovelAI's own
+ * web-client formula (see NAIWeaver / MooshieUI docs): the price tracks
+ * pixels × steps, ×1.5 for a plain generation, ×n_samples, ×SMEA when on.
+ * Returns the paid cost. Whether it is actually free depends on the
+ * subscription: on Opus, a single V4.5 image at ≤1024×1024 and ≤28 steps
+ * (no base image) costs 0 Anlas; V5 draws from the Opus battery instead.
+ */
+export function estimateAnlasCost(opts: {
+  width: number;
+  height: number;
+  steps: number;
+  nSamples?: number;
+  smea?: boolean;
+  smeaDyn?: boolean;
+}): number {
+  const px = Math.max(0, opts.width) * Math.max(0, opts.height);
+  const steps = Math.min(50, Math.max(1, Math.round(opts.steps)));
+  const base = Math.ceil(2.951823174884865e-6 * px + 5.753298233447344e-7 * px * steps);
+  let cost = base * 1.5;
+  if (opts.smea) cost *= 1.2;
+  if (opts.smeaDyn) cost *= 1.4;
+  cost *= Math.min(8, Math.max(1, Math.round(opts.nSamples ?? 1)));
+  return Math.ceil(cost);
+}
+
+/** Does this generation qualify for the Opus free allowance (V4.5 only)? */
+export function isOpusFreeGeneration(opts: {
+  model: string;
+  width: number;
+  height: number;
+  steps: number;
+  nSamples?: number;
+}): boolean {
+  if (!opts.model.startsWith('nai-diffusion-4')) return false;
+  if (opts.width > 1024 || opts.height > 1024) return false;
+  if (opts.steps > 28) return false;
+  if ((opts.nSamples ?? 1) > 1) return false;
+  return true;
+}
+
 export interface ImageResult {
   /** Data URL so results survive reloads and can be written into cards. */
   dataUrl: string;
@@ -142,10 +183,13 @@ export interface ImageService {
 
 const joinURL = (base: string, path: string): string => `${base.replace(/\/+$/, '')}${path}`;
 
-const SIZE_MAP: Record<string, { openai: string; ark: string; nai: [number, number] }> = {
+export const SIZE_MAP: Record<string, { openai: string; ark: string; nai: [number, number] }> = {
   square: { openai: '1024x1024', ark: '1024x1024', nai: [1024, 1024] },
-  portrait: { openai: '1024x1536', ark: '1024x1536', nai: [832, 1216] },
-  landscape: { openai: '1536x1024', ark: '1536x1024', nai: [1216, 832] },
+  // NovelAI 的尺寸两边都要 ≤1024 才进 Opus 免费额度（单张、≤28 步、不用底图
+  // 时 V4.5 免费；V5 从额度电池里扣）。832×1216 高 1216 超了，每张都要扣
+  // Anlas，所以竖版/横版都改成 1024 以内。
+  portrait: { openai: '1024x1536', ark: '1024x1536', nai: [832, 1024] },
+  landscape: { openai: '1536x1024', ark: '1536x1024', nai: [1024, 832] },
   auto: { openai: 'auto', ark: '1024x1024', nai: [1024, 1024] },
 };
 
@@ -399,7 +443,7 @@ export const novelaiAdapter: ImageProviderAdapter = {
       height: h,
       scale: Math.min(10, Math.max(0, req.scale ?? 6)),
       sampler,
-      steps: Math.min(50, Math.max(1, Math.round(req.steps ?? 28))),
+      steps: Math.min(50, Math.max(1, Math.round(req.steps ?? 23))),
       n_samples: Math.min(8, Math.max(1, Math.round(req.nSamples ?? 1))),
       qualityToggle: req.qualityToggle ?? true,
       seed: req.seed !== undefined && req.seed >= 0 ? req.seed : Math.floor(Math.random() * 4294967295),

@@ -28,8 +28,9 @@ import { Badge, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMen
 import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/image/nai.js';
 import { loadStudioDraft, saveStudioDraft } from '@/core/image/studioDraft.js';
-import { NAI_NOISE_SCHEDULES, NAI_SAMPLERS, NAI_UC_PRESETS } from '@/core/image/types.js';
+import { estimateAnlasCost, isOpusFreeGeneration, NAI_NOISE_SCHEDULES, NAI_SAMPLERS, NAI_UC_PRESETS, SIZE_MAP } from '@/core/image/types.js';
 import { buildTagInjection } from '@/core/image/tagContext.js';
+import { describeEmptyTagResult, TAG_CONVERT_MAX_TOKENS } from '@/core/image/tagFailure.js';
 import { BUILTIN_PRESETS } from '@/core/defaults/presets.js';
 import { dataUrlToBlob, deleteMediaImage, getMediaImage, listMediaImages, mediaIdFromRef, mediaRef, saveMediaImage, type GeneratedImageMeta } from '@/core/media/store.js';
 import { PressableImage } from '@/components/media/PressableImage.js';
@@ -176,6 +177,16 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   const effectiveModel = model || selectedConn?.defaultModel || modelOptions[0] || '';
   /** V5 强制用 karras 噪声计划，噪声计划那一栏要锁掉。 */
   const isV5Model = effectiveModel.startsWith('nai-diffusion-5');
+  /** NovelAI 时预估这张图要多少 Anlas，点生成之前就让用户看到。 */
+  const isNovelConn = selectedConn?.provider === 'novelai';
+  const naiSize = SIZE_MAP[size].nai;
+  const estSteps = steps ?? 23;
+  const estAnlas = isNovelConn
+    ? estimateAnlasCost({ width: naiSize[0], height: naiSize[1], steps: estSteps, nSamples: nSamples ?? 1 })
+    : null;
+  const estFreeOnOpus = isNovelConn
+    ? isOpusFreeGeneration({ model: effectiveModel, width: naiSize[0], height: naiSize[1], steps: estSteps, nSamples: nSamples ?? 1 })
+    : false;
 
   // Assistant floors, newest first (floor number = position in the message list).
   const assistantFloors = React.useMemo(() => {
@@ -355,7 +366,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
     try {
       const res = await llm.complete(conn.id, {
         model,
-        maxTokens: 400,
+        maxTokens: TAG_CONVERT_MAX_TOKENS,
         temperature: 0.7,
         messages: [
           { role: 'system', content: systemPrompt },
@@ -367,7 +378,9 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
         setPositive(res.text.trim().replace(/^["']|["']$/g, ''));
         toast.success('Tag 已填进正面提示词');
       } else {
-        toast.error(isNovel ? '转写 Tag 失败' : '扩写失败', '模型没有返回内容，请重试');
+        // 模型空手而回：把真正的原因说出来，别只说“没有返回内容”。
+        const d = describeEmptyTagResult(res, model || conn.defaultModel || conn.name);
+        toast.error(isNovel ? '转写 Tag 失败' : '扩写失败', `${d.cause}${d.nextStep}`);
       }
     } catch (err) {
       toast.error(isNovel ? '转写 Tag 失败' : '扩写失败', err instanceof Error ? err.message : String(err));
@@ -762,10 +775,17 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             关闭
           </Button>
-          <Button onClick={run} disabled={busy || !positive.trim()} title={positive.trim() ? undefined : '先转写 Tag 或填写正面提示词'}>
-            {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Wand2 className="size-4" aria-hidden="true" />}
-            {busy ? '生成中…' : '生成'}
-          </Button>
+          <div className="flex flex-1 flex-col items-end gap-0.5">
+            <Button onClick={run} disabled={busy || !positive.trim()} title={positive.trim() ? undefined : '先转写 Tag 或填写正面提示词'}>
+              {busy ? <Loader2 className="size-4 animate-spin" aria-hidden="true" /> : <Wand2 className="size-4" aria-hidden="true" />}
+              {busy ? '生成中…' : '生成'}
+            </Button>
+            {isNovelConn && estAnlas !== null && (
+              <p className="text-[11px] text-[var(--rp-fg-muted)]">
+                {estFreeOnOpus ? 'Opus 免费（V4.5、≤1024、≤28 步）' : `约 ${estAnlas} Anlas`}
+              </p>
+            )}
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

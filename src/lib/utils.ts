@@ -80,6 +80,31 @@ export function downloadBlob(blob: Blob, filename: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
+/**
+ * Save a Blob to the device. On mobile the `<a download>` click that
+ * `downloadBlob` uses silently does nothing (Android WebView / mobile
+ * browsers often swallow blob-URL downloads), so prefer the native share
+ * sheet there: the user picks where the image goes (相册 / 文件 / …).
+ * Returns 'shared' when the share sheet was used, 'downloaded' when the
+ * anchor download was used, and 'cancelled' when the user dismissed the
+ * share sheet without picking a target.
+ */
+export async function saveBlobToDevice(blob: Blob, filename: string): Promise<'shared' | 'downloaded' | 'cancelled'> {
+  const file = new File([blob], filename, { type: blob.type || 'image/png' });
+  const nav = typeof navigator !== 'undefined' ? navigator : undefined;
+  if (nav?.share && nav.canShare?.({ files: [file] })) {
+    try {
+      await nav.share({ files: [file] });
+      return 'shared';
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return 'cancelled';
+      throw err;
+    }
+  }
+  downloadBlob(blob, filename);
+  return 'downloaded';
+}
+
 /** Filesystem-safe filename from arbitrary text. */
 export function safeFilename(name: string, ext: string): string {
   const base = name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim() || 'untitled';
