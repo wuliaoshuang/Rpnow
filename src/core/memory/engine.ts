@@ -277,7 +277,12 @@ export function applyMemory(input: MemoryContextInput): MemoryContextResult {
   let replaced = 0;
   for (const round of rounds) {
     if (inSecondary.has(round.turn)) continue;
-    if (!Number.isFinite(round.assistantIndex) || round.assistantIndex >= candidateCount) continue;
+    // A round with no assistant reply yet (assistantIndex -1) has no floor to
+    // replace — regenerating the newest reply trims it out, so the round that
+    // used to hold it is exactly such a round. Reading out[-1].meta here used
+    // to crash the whole generation with "Cannot read properties of
+    // undefined (reading 'meta')".
+    if (round.assistantIndex < 0 || round.assistantIndex >= candidateCount) continue;
     const memory = findMemoryForTurn(
       round.turn,
       lookup.byTurn,
