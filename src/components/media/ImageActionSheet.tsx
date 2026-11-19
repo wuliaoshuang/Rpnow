@@ -101,7 +101,7 @@ export function ImageActionSheet({
       onClick={() => onOpenChange(false)}
     >
       <div
-        className="w-full max-w-md rounded-t-2xl bg-[var(--rp-bg-elevated)] p-3 pb-6 shadow-xl"
+        className="w-full max-w-md rounded-t-2xl bg-[var(--rp-bg-elevated)] p-3 pb-[calc(env(safe-area-inset-bottom,0px)+1.5rem)] shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-2 flex items-center justify-between px-1">

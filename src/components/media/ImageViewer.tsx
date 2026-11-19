@@ -197,7 +197,7 @@ export function ImageViewer({
       aria-label={`查看图片：${alt}`}
       onClick={() => onOpenChange(false)}
     >
-      <div className="flex items-center justify-between px-3 pt-3 text-white">
+      <div className="flex items-center justify-between px-3 pt-[calc(env(safe-area-inset-top,0px)+0.75rem)] text-white">
         <span className="text-[13px] text-white/80">{zoomPct}% · 捏合缩放，双击放大</span>
         <button
           type="button"
@@ -236,7 +236,7 @@ export function ImageViewer({
           <span className="text-[13px] text-white/60">图片找不到了（可能已被删除）</span>
         )}
       </div>
-      <div className="flex items-center justify-center gap-3 pb-5 pt-1 text-white">
+      <div className="flex items-center justify-center gap-3 pb-[calc(env(safe-area-inset-bottom,0px)+1.25rem)] pt-1 text-white">
         <button
           type="button"
           aria-label="缩小"
