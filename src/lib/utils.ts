@@ -90,6 +90,30 @@ export function downloadBlob(blob: Blob, filename: string): void {
  * share sheet without picking a target.
  */
 export async function saveBlobToDevice(blob: Blob, filename: string): Promise<'shared' | 'downloaded' | 'cancelled'> {
+  /*
+   * 原生通道优先：Android WebView 里 `<a download>` 点击会被静默丢弃，
+   * `navigator.share` 也不可用 —— 所以安卓端必须由原生把字节写进公共
+   * 「下载」目录（MainActivity.saveToDownloads，MediaStore，免存储权限）。
+   */
+  const native = (globalThis as unknown as {
+    RPNowNative?: { saveToDownloads?: (name: string, base64: string) => string };
+  }).RPNowNative;
+  if (typeof native?.saveToDownloads === 'function') {
+    try {
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      const CHUNK = 0x8000;
+      for (let i = 0; i < buf.length; i += CHUNK) {
+        binary += String.fromCharCode(...buf.subarray(i, i + CHUNK));
+      }
+      const result = native.saveToDownloads(filename, btoa(binary));
+      if (result === 'ok') return 'downloaded';
+      throw new Error(result || 'native-save-failed');
+    } catch {
+      /* 原生不可用时退回分享面板 / 浏览器下载 */
+    }
+  }
+
   const file = new File([blob], filename, { type: blob.type || 'image/png' });
   const nav = typeof navigator !== 'undefined' ? navigator : undefined;
   if (nav?.share && nav.canShare?.({ files: [file] })) {

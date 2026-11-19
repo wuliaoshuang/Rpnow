@@ -40,6 +40,61 @@ class MainActivity : TauriActivity() {
     fun setStyle(mode: String) {
       runOnUiThread { applyStatusBar(mode == "light") }
     }
+
+    /**
+     * 把图片写进系统公共「下载」目录（MediaStore）。
+     *
+     * 为什么需要原生：安卓 WebView 里 `<a download>` 点击会被静默丢弃，
+     * `navigator.share` 也不可用 —— 前端两条退路都落不了盘。Android 10+
+     * 走 [MediaStore.Downloads] 无需任何存储权限；更早的系统直接写公共目录并
+     * 触发媒体扫描。返回 `"ok"` 表示已落盘（用户在文件管理器/Download 可见）。
+     */
+    @JavascriptInterface
+    fun saveToDownloads(fileName: String, base64: String): String {
+      return try {
+        val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+        val safeName = fileName.ifBlank { "rpnow-${System.currentTimeMillis()}.png" }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, safeName)
+            put(android.provider.MediaStore.Downloads.MIME_TYPE, mimeOf(safeName))
+            put(android.provider.MediaStore.Downloads.IS_PENDING, 1)
+          }
+          val uri = contentResolver.insert(
+            android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values,
+          ) ?: return "insert-failed"
+          contentResolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return "open-failed"
+          values.clear()
+          values.put(android.provider.MediaStore.Downloads.IS_PENDING, 0)
+          contentResolver.update(uri, values, null, null)
+          "ok"
+        } else {
+          @Suppress("DEPRECATION")
+          val dir = android.os.Environment.getExternalStoragePublicDirectory(
+            android.os.Environment.DIRECTORY_DOWNLOADS,
+          )
+          dir.mkdirs()
+          val file = java.io.File(dir, safeName)
+          file.writeBytes(bytes)
+          sendBroadcast(
+            android.content.Intent(
+              android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE,
+              android.net.Uri.fromFile(file),
+            ),
+          )
+          "ok"
+        }
+      } catch (e: Exception) {
+        "error:" + (e.message ?: e.javaClass.simpleName)
+      }
+    }
+
+    private fun mimeOf(name: String): String = when {
+      name.endsWith(".jpg", true) || name.endsWith(".jpeg", true) -> "image/jpeg"
+      name.endsWith(".webp", true) -> "image/webp"
+      name.endsWith(".gif", true) -> "image/gif"
+      else -> "image/png"
+    }
   }
 
   /**

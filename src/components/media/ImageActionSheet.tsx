@@ -75,7 +75,7 @@ export function ImageActionSheet({
       // 系统分享面板，让用户自己选存到相册还是文件里。
       const outcome = await saveBlobToDevice(blob, `rpnow-${id ?? Date.now()}.${ext}`);
       if (outcome === 'shared') toast.success('已打开分享，选个位置保存');
-      else if (outcome === 'downloaded') toast.success('已保存到本地');
+      else if (outcome === 'downloaded') toast.success('已保存到「下载」目录');
       onOpenChange(false);
     } catch (err) {
       toast.error('保存失败', err instanceof Error ? err.message : String(err));
