@@ -13,7 +13,7 @@
  */
 
 import * as React from 'react';
-import { FileText, ImageIcon, Loader2, Sparkles, Wand2 } from 'lucide-react';
+import { Dices, FileText, ImageIcon, Loader2, Sparkles, Wand2 } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -26,7 +26,9 @@ import { Button } from '@/components/ui/button';
 import { Input, Label, Textarea, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/input';
 import { Badge, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, EmptyState } from '@/components/ui/misc';
 import { useImage, useLLM } from '@/hooks/useKernel.js';
-import { artistsForStyle, DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/image/nai.js';
+import { DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/image/nai.js';
+import { loadStudioDraft, saveStudioDraft } from '@/core/image/studioDraft.js';
+import { NAI_NOISE_SCHEDULES, NAI_SAMPLERS, NAI_UC_PRESETS } from '@/core/image/types.js';
 import { buildTagInjection } from '@/core/image/tagContext.js';
 import { BUILTIN_PRESETS } from '@/core/defaults/presets.js';
 import { dataUrlToBlob, deleteMediaImage, getMediaImage, listMediaImages, mediaIdFromRef, mediaRef, saveMediaImage, type GeneratedImageMeta } from '@/core/media/store.js';
@@ -62,18 +64,32 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
   const [prompt, setPrompt] = React.useState('');
   /** 正面提示词：转写 Tag 的结果填这里，可再改；出图时和画师串叠在一起发给模型。 */
   const [positive, setPositive] = React.useState('');
-  /** 画师串（自定义）：出图时叠在正面提示词后面。 */
+  /** 画师串（自定义）：出图时叠在正面提示词后面。不默认填写，由用户自己填。 */
   const [artist, setArtist] = React.useState('');
   const [negative, setNegative] = React.useState('');
   const [size, setSize] = React.useState<'portrait' | 'square' | 'landscape'>('portrait');
   const [connectionId, setConnectionId] = React.useState<string>('');
   /** 生图模型：跟着当前图像服务走，可自由选；空着就用这个连接的默认模型。 */
   const [model, setModel] = React.useState('');
+  /** 生图参数（NovelAI）：步数 / CFG / 采样器 / 种子 / 噪声计划 / 张数 /
+   * 负面预设 / CFG Rescale / Decrisper / 质量开关。空着用默认值。 */
+  const [steps, setSteps] = React.useState<number | undefined>(undefined);
+  const [genScale, setGenScale] = React.useState<number | undefined>(undefined);
+  const [sampler, setSampler] = React.useState<string | undefined>(undefined);
+  const [seed, setSeed] = React.useState<number | undefined>(undefined);
+  const [noiseSchedule, setNoiseSchedule] = React.useState<string | undefined>(undefined);
+  const [nSamples, setNSamples] = React.useState<number | undefined>(undefined);
+  const [ucPreset, setUcPreset] = React.useState<number | undefined>(undefined);
+  const [cfgRescale, setCfgRescale] = React.useState<number | undefined>(undefined);
+  const [dynamicThresholding, setDynamicThresholding] = React.useState<boolean | undefined>(undefined);
+  const [qualityToggle, setQualityToggle] = React.useState<boolean | undefined>(undefined);
   const [busy, setBusy] = React.useState(false);
   const [results, setResults] = React.useState<string[]>([]);
   const [error, setError] = React.useState<string | null>(null);
-  /** 打开时只预填一次；用户清空后不再自动填回来，否则框就没法自由编辑了。 */
+  /** 打开时只恢复/预填一次；用户清空后不再自动填回来，否则框就没法自由编辑了。 */
   const seededRef = React.useRef(false);
+  /** 恢复草稿的那一次渲染不存（这时 state 还是旧值，存了会把草稿冲掉）。 */
+  const skipPersistRef = React.useRef(false);
 
   React.useEffect(() => {
     if (!open) {
@@ -90,10 +106,29 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
     if (!connectionId) setConnectionId(connections[0]?.id ?? '');
     if (seededRef.current) return;
     seededRef.current = true;
-    // 画师串默认取设置里当前风格的画师串，可改；清空后下次打开会重新取。
-    if (!artist) {
-      const s = artistsForStyle(settings.imageGen.style, settings.imageGen.customArtists ?? '');
-      if (s) setArtist(s);
+    skipPersistRef.current = true;
+    // 恢复这个对话的输入状态（持久化过的）；没有存过的，才从卡片和最近
+    // 回复里预填一次画面描述。画师串不默认填写，由用户自己填。
+    const draft = loadStudioDraft(chat.id);
+    if (draft) {
+      setPrompt(draft.prompt);
+      setPositive(draft.positive);
+      setArtist(draft.artist);
+      setNegative(draft.negative);
+      setSize(draft.size);
+      if (draft.connectionId) setConnectionId(draft.connectionId);
+      if (draft.model) setModel(draft.model);
+      setSteps(draft.steps);
+      setGenScale(draft.scale);
+      setSampler(draft.sampler);
+      setSeed(draft.seed);
+      setNoiseSchedule(draft.noiseSchedule);
+      setNSamples(draft.nSamples);
+      setUcPreset(draft.ucPreset);
+      setCfgRescale(draft.cfgRescale);
+      setDynamicThresholding(draft.dynamicThresholding);
+      setQualityToggle(draft.qualityToggle);
+      return;
     }
     if (prompt) return;
     // Seed a prompt from the card plus the most recent RP beat.
@@ -104,12 +139,43 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
     );
   }, [open, connectionId, connections, prompt, artist, card.data, chat.messages, settings.imageGen, imageStudioPrefill]);
 
+  // 所有输入的状态都要保留、持久化：每改一次就存一份（按对话分开存），
+  // 关掉工作室、刷新页面再打开，输入都还在。
+  React.useEffect(() => {
+    if (!open || !seededRef.current) return;
+    if (skipPersistRef.current) {
+      skipPersistRef.current = false;
+      return;
+    }
+    saveStudioDraft(chat.id, {
+      prompt,
+      positive,
+      artist,
+      negative,
+      size,
+      connectionId,
+      model,
+      steps,
+      scale: genScale,
+      sampler,
+      seed,
+      noiseSchedule,
+      nSamples,
+      ucPreset,
+      cfgRescale,
+      dynamicThresholding,
+      qualityToggle,
+    });
+  }, [open, chat.id, prompt, positive, artist, negative, size, connectionId, model, steps, genScale, sampler, seed, noiseSchedule, nSamples, ucPreset, cfgRescale, dynamicThresholding, qualityToggle]);
+
   const adapter = imageService?.adapters().find((a) => a.key === connections.find((c) => c.id === connectionId)?.provider);
 
   // 生图模型选项：跟着当前图像服务走；选了哪个就用哪个，空着用连接的默认模型。
   const selectedConn = connections.find((c) => c.id === connectionId);
   const modelOptions = adapter?.knownModels ?? (selectedConn?.defaultModel ? [selectedConn.defaultModel] : []);
   const effectiveModel = model || selectedConn?.defaultModel || modelOptions[0] || '';
+  /** V5 强制用 karras 噪声计划，噪声计划那一栏要锁掉。 */
+  const isV5Model = effectiveModel.startsWith('nai-diffusion-5');
 
   // Assistant floors, newest first (floor number = position in the message list).
   const assistantFloors = React.useMemo(() => {
@@ -157,6 +223,16 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
         negativePrompt: negative || undefined,
         size,
         model: effectiveModel || undefined,
+        steps,
+        scale: genScale,
+        sampler,
+        seed,
+        noiseSchedule,
+        nSamples,
+        ucPreset,
+        cfgRescale,
+        dynamicThresholding,
+        qualityToggle,
         watermark: false,
       });
       // 生成的图立刻存进媒体库（Blob 存 IndexedDB，消息里只留 media: 引用，
@@ -457,6 +533,180 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                   <SelectItem value="landscape">横版 3:2</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+          </div>
+
+          {/* 生图参数（NovelAI）：这些参数直接决定出图质量，空着用默认值。 */}
+          <div className="space-y-3 rounded-xl border border-[var(--rp-border)] p-3">
+            <p className="text-[13px] font-medium">生图参数</p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="img-steps">步数</Label>
+                <Input
+                  id="img-steps"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={50}
+                  value={steps ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value === '' ? undefined : Math.min(50, Math.max(1, Math.round(Number(e.target.value) || 28)));
+                    setSteps(v);
+                  }}
+                  placeholder="28"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="img-scale">CFG 强度</Label>
+                <Input
+                  id="img-scale"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={10}
+                  step={0.5}
+                  value={genScale ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value === '' ? undefined : Math.min(10, Math.max(0, Number(e.target.value) || 6));
+                    setGenScale(v);
+                  }}
+                  placeholder="6"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="img-samples">生成张数</Label>
+                <Input
+                  id="img-samples"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  max={8}
+                  value={nSamples ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value === '' ? undefined : Math.min(8, Math.max(1, Math.round(Number(e.target.value) || 1)));
+                    setNSamples(v);
+                  }}
+                  placeholder="1"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="img-sampler">采样器</Label>
+                <Select value={sampler ?? 'k_euler_ancestral'} onValueChange={setSampler}>
+                  <SelectTrigger id="img-sampler">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {NAI_SAMPLERS.map((s) => (
+                      <SelectItem key={s} value={s}>
+                        {s}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="img-noise">噪声计划</Label>
+                <Select
+                  value={isV5Model ? 'karras' : (noiseSchedule ?? 'karras')}
+                  onValueChange={setNoiseSchedule}
+                  disabled={isV5Model}
+                >
+                  <SelectTrigger id="img-noise">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {NAI_NOISE_SCHEDULES.map((n) => (
+                      <SelectItem key={n} value={n}>
+                        {n}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {isV5Model && <p className="text-[11px] text-[var(--rp-fg-subtle)]">V5 固定用 karras。</p>}
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="img-ucpreset">负面预设</Label>
+                <Select value={String(ucPreset ?? 0)} onValueChange={(v) => setUcPreset(Number(v))}>
+                  <SelectTrigger id="img-ucpreset">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {NAI_UC_PRESETS.map((p) => (
+                      <SelectItem key={p.value} value={String(p.value)}>
+                        {p.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="img-seed">种子</Label>
+                <div className="flex gap-1.5">
+                  <Input
+                    id="img-seed"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    value={seed ?? ''}
+                    onChange={(e) => {
+                      const v = e.target.value === '' ? undefined : Math.max(0, Math.floor(Number(e.target.value) || 0));
+                      setSeed(v);
+                    }}
+                    placeholder="随机"
+                    className="min-w-0 flex-1"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    title="随机一个种子"
+                    aria-label="随机种子"
+                    onClick={() => setSeed(Math.floor(Math.random() * 999999999))}
+                  >
+                    <Dices className="size-4" aria-hidden="true" />
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="img-cfgrescale">CFG Rescale</Label>
+                <Input
+                  id="img-cfgrescale"
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={1}
+                  step={0.1}
+                  value={cfgRescale ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value === '' ? undefined : Math.min(1, Math.max(0, Number(e.target.value) || 0));
+                    setCfgRescale(v);
+                  }}
+                  placeholder="0"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>其它开关</Label>
+                <div className="flex flex-wrap gap-3 pt-1.5 text-[13px]">
+                  <label className="flex cursor-pointer items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={dynamicThresholding ?? false}
+                      onChange={(e) => setDynamicThresholding(e.target.checked)}
+                      className="size-4 accent-[var(--rp-accent)]"
+                    />
+                    Decrisper
+                  </label>
+                  <label className="flex cursor-pointer items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={qualityToggle ?? true}
+                      onChange={(e) => setQualityToggle(e.target.checked)}
+                      className="size-4 accent-[var(--rp-accent)]"
+                    />
+                    质量标签
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
 

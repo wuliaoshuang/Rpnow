@@ -101,6 +101,71 @@ describe('novelaiAdapter V5', () => {
       novelaiAdapter.generate(conn, { prompt: '1girl', model: 'nai-diffusion-5-full' }, fetchImpl),
     ).rejects.toThrow('Anlas 不足');
   });
+
+  it('sends the full generation parameters (steps/scale/sampler/seed/n_samples/ucPreset)', async () => {
+    let body: Record<string, unknown> = {};
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      const png = Buffer.from('fake-png').toString('base64');
+      return new Response(JSON.stringify({ images: [{ image: png }] }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    await novelaiAdapter.generate(
+      conn,
+      {
+        prompt: '1girl',
+        model: 'nai-diffusion-4-5-full',
+        steps: 32,
+        scale: 7.5,
+        sampler: 'k_dpmpp_2m',
+        seed: 12345,
+        nSamples: 2,
+        ucPreset: 1,
+        noiseSchedule: 'exponential',
+        cfgRescale: 0.5,
+        dynamicThresholding: true,
+        qualityToggle: false,
+      },
+      fetchImpl,
+    );
+    const params = body.parameters as Record<string, unknown>;
+    expect(params.steps).toBe(32);
+    expect(params.scale).toBe(7.5);
+    expect(params.sampler).toBe('k_dpmpp_2m');
+    expect(params.seed).toBe(12345);
+    expect(params.n_samples).toBe(2);
+    expect(params.ucPreset).toBe(1);
+    expect(params.noise_schedule).toBe('exponential');
+    expect(params.cfg_rescale).toBe(0.5);
+    expect(params.dynamic_thresholding).toBe(true);
+    expect(params.qualityToggle).toBe(false);
+  });
+
+  it('forces karras and remaps ddim on V5, and clamps steps/scale/n_samples', async () => {
+    const body = await (async () => {
+      let b: Record<string, unknown> = {};
+      const fetchImpl = (async (_url: string, init?: RequestInit) => {
+        b = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+        const png = Buffer.from('fake-png').toString('base64');
+        return new Response(JSON.stringify({ images: [{ image: png }] }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch;
+      await novelaiAdapter.generate(
+        conn,
+        { prompt: '1girl', model: 'nai-diffusion-5-full', sampler: 'ddim', noiseSchedule: 'native', steps: 999, scale: 99, nSamples: 99 },
+        fetchImpl,
+      );
+      return b;
+    })();
+    const params = body.parameters as Record<string, unknown>;
+    expect(params.noise_schedule).toBe('karras');
+    expect(params.sampler).toBe('k_euler_ancestral');
+    expect(params.steps).toBe(50);
+    expect(params.scale).toBe(10);
+    expect(params.n_samples).toBe(8);
+  });
 });
 
 describe('DEFAULT_TAG_PROMPT (NovelAI V5)', () => {
