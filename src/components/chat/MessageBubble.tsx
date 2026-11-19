@@ -51,6 +51,23 @@ export function imageGridItemClass(count: number, index: number): string {
 }
 
 /**
+ * A remote picture / video whose URL is dead must not leave a black box
+ * behind (Android WebView renders a failed `<video>` as a black rectangle
+ * with a filmstrip icon). `error` does not bubble, so the bubble listens on
+ * capture: the failed element itself is hidden, which also collapses its
+ * grid cell when the element is a grid item.
+ */
+export function hideFailedMedia(e: React.SyntheticEvent): void {
+  const t = e.target as HTMLElement | null;
+  if (!t || typeof (t as HTMLElement).closest !== 'function') return;
+  const media =
+    t.tagName === 'SOURCE' ? (t.closest('video, audio') as HTMLElement | null) : t;
+  if (media && /^(IMG|VIDEO|AUDIO|IFRAME)$/.test(media.tagName)) {
+    media.style.display = 'none';
+  }
+}
+
+/**
  * 预设显示层正则（三载体并集，已按 find/replace 去重）。
  *
  * 实现在 `core/prompt/preset-extensions.ts`；这里只补上 ST 语义的「显示层」
@@ -443,6 +460,9 @@ export function MessageBubble({
                     alt={`附件 ${i + 1}`}
                     className={cn('w-full rounded-lg border border-[var(--rp-border)] object-cover', imageGridItemClass(message.images!.length, i))}
                     loading="lazy"
+                    onError={(e) => {
+                      e.currentTarget.style.display = 'none';
+                    }}
                   />
                 ))}
               </div>
@@ -459,6 +479,7 @@ export function MessageBubble({
               className="rp-md mes_text"
               style={fontSize ? { fontSize: `${fontSize}px` } : undefined}
               onClick={openCitation}
+              onErrorCapture={hideFailedMedia}
               dangerouslySetInnerHTML={{ __html: citedHtml }}
             />
             {/*
@@ -480,6 +501,10 @@ export function MessageBubble({
                         message.images!.length === 1 ? 'max-h-[26rem]' : 'max-h-[16rem]',
                       )}
                       loading="lazy"
+                      onError={(e) => {
+                        const cell = e.currentTarget.parentElement;
+                        if (cell) cell.style.display = 'none';
+                      }}
                     />
                     {onRerollImage && (
                       <button
