@@ -225,7 +225,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
                         <span className="min-w-0">
                           <span className="font-medium">第 {f.floor} 楼</span>
                           <span className="block truncate text-[11px] text-[var(--rp-fg-muted)]">
-                            {extractSceneText(f.content, 40) || '（无正文）'}
+                            {extractSceneText(f.content).slice(0, 40) || '（无正文）'}
                           </span>
                         </span>
                       </DropdownMenuItem>
