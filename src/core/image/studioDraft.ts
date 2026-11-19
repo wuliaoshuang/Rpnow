@@ -60,6 +60,10 @@ export function loadStudioDraft(chatId: string): ImageStudioDraft | null {
       variety: typeof parsed.variety === 'boolean' ? parsed.variety : undefined,
       transparentBg: typeof parsed.transparentBg === 'boolean' ? parsed.transparentBg : undefined,
       qualityToggle: typeof parsed.qualityToggle === 'boolean' ? parsed.qualityToggle : undefined,
+      sizeTier:
+        parsed.sizeTier === 'small' || parsed.sizeTier === 'normal' || parsed.sizeTier === 'large' || parsed.sizeTier === 'wallpaper'
+          ? parsed.sizeTier
+          : undefined,
     };
   } catch {
     return null;

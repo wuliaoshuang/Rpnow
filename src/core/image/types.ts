@@ -89,6 +89,8 @@ export interface ImageStudioParams {
   variety?: boolean;
   transparentBg?: boolean;
   qualityToggle?: boolean;
+  /** NovelAI size tier (small / normal / large / wallpaper). */
+  sizeTier?: NAIImageSizeTier;
 }
 
 /** NovelAI samplers — the 6 the official UI offers (V4.5 and V5 share the list).
@@ -102,6 +104,39 @@ export const NAI_SAMPLERS = [
   'k_dpmpp_2m',
   'k_dpmpp_sde',
 ] as const;
+
+/** Short readable labels for the sampler dropdown (the raw ids are too
+ * long for a phone-width cell and get truncated). */
+export const NAI_SAMPLER_LABELS: Record<string, string> = {
+  k_euler_ancestral: 'Euler Ancestral',
+  k_euler: 'Euler',
+  k_dpmpp_2s_ancestral: 'DPM++ 2S Ancestral',
+  k_dpmpp_2m_sde: 'DPM++ 2M SDE',
+  k_dpmpp_2m: 'DPM++ 2M',
+  k_dpmpp_sde: 'DPM++ SDE',
+};
+
+/** NovelAI size tiers (official presets). Wallpaper has no square preset. */
+export type NAIImageSizeTier = 'small' | 'normal' | 'large' | 'wallpaper';
+export const NAI_SIZE_TIER_LABELS: Record<NAIImageSizeTier, string> = {
+  small: '小',
+  normal: '标准',
+  large: '大',
+  wallpaper: '壁纸',
+};
+export const NAI_SIZE_PRESETS: Record<NAIImageSizeTier, Record<'portrait' | 'square' | 'landscape', [number, number]>> = {
+  small: { portrait: [512, 768], square: [640, 640], landscape: [768, 512] },
+  normal: { portrait: [832, 1216], square: [1024, 1024], landscape: [1216, 832] },
+  large: { portrait: [1024, 1536], square: [1472, 1472], landscape: [1536, 1024] },
+  wallpaper: { portrait: [1088, 1920], square: [1088, 1920], landscape: [1920, 1088] },
+};
+
+/** NovelAI pixel size for a tier + orientation. Square + wallpaper has no
+ * official preset, so it falls back to the large square. */
+export function naiSizeFor(tier: NAIImageSizeTier, orientation: 'portrait' | 'square' | 'landscape'): [number, number] {
+  if (tier === 'wallpaper' && orientation === 'square') return NAI_SIZE_PRESETS.large.square;
+  return NAI_SIZE_PRESETS[tier][orientation];
+}
 
 /** NovelAI noise schedules. V4.5 offers karras / exponential /
  * polyexponential; V5 has no picker and forces `karras`. */
