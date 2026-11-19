@@ -58,7 +58,7 @@ export function OnboardingDialog() {
       role="dialog"
       aria-modal="true"
       aria-label="欢迎使用 RPNow"
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
     >
       <div className="w-full max-w-md rounded-2xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-5 shadow-xl">
         <h2 className="text-[16px] font-semibold">欢迎使用 RPNow</h2>
