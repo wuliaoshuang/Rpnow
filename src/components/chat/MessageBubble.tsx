@@ -11,7 +11,7 @@
 import * as React from 'react';
 import { createPortal } from 'react-dom';
 import { useState } from 'react';
-import { ChevronLeft, ChevronRight, Copy, Eye, EyeOff, FastForward, GitBranch, ListFilter, MoreHorizontal, RefreshCw, Trash2, Pencil, Volume2, X } from 'lucide-react';import { cn, formatRelativeTime } from '@/lib/utils';
+import { ChevronLeft, ChevronRight, Copy, Eye, EyeOff, FastForward, GitBranch, ListFilter, MoreHorizontal, RefreshCw, Trash2, Pencil, Volume2, X } from 'lucide-react';import { cn, formatMessageTime } from '@/lib/utils';
 import type { RPChatMessage } from '@/core/types/chat.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { RPCompletionPreset } from '@/core/types/preset.js';
@@ -22,6 +22,7 @@ import { SLOT, useSlots } from '@/core/plugin/slots.js';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/misc';
 import { Hint } from '@/components/ui/misc';
 import { renderMessageText } from '@/features/chat/orchestrator.js';
+import { MediaImage } from '@/core/media/MediaImage.js';
 import { filterBlockedStyleText, getStyleFilterHitSegments } from '@/core/styleFilter.js';
 import { useApp } from '@/state/store.js';
 import { substituteMacros } from '@/core/prompt/macros.js';
@@ -119,6 +120,12 @@ export interface MessageBubbleProps {
   onTemplateSlash?: (text: string) => void;
   /** Reroll one generated picture by index. */
   onRerollImage?: (index: number) => void;
+  /**
+   * Delete one attached/generated picture by index. The caller removes it
+   * from the message and deletes the underlying media file when it is a
+   * `media:` reference, so the original is gone, not just hidden.
+   */
+  onDeleteImage?: (index: number) => void;
   /** Read-only font size override from settings. */
   fontSize?: number;
   /** Chat id, used to resolve `[M#]` citations. */
@@ -170,6 +177,7 @@ export function MessageBubble({
   templates,
   onTemplateSlash,
   onRerollImage,
+  onDeleteImage,
   fontSize,
   chatId,
   sandboxHtml,
@@ -380,7 +388,7 @@ export function MessageBubble({
               {message.speaker}
             </span>
           )}
-          <span>{formatRelativeTime(message.createdAt)}</span>
+          <span title={new Date(message.createdAt).toLocaleString('zh-CN', { hour12: false })}>{formatMessageTime(message.createdAt)}</span>
           {message.hidden && (
             <span className="rounded bg-[var(--rp-bg-sunken)] px-1.5 py-px text-[10px]">已隐藏</span>
           )}
@@ -454,16 +462,27 @@ export function MessageBubble({
             {isUser && message.images?.length ? (
               <div className={cn('mb-2 grid gap-2', imageGridClass(message.images.length))}>
                 {message.images.map((src, i) => (
-                  <img
-                    key={i}
-                    src={src}
-                    alt={`附件 ${i + 1}`}
-                    className={cn('w-full rounded-lg border border-[var(--rp-border)] object-cover', imageGridItemClass(message.images!.length, i))}
-                    loading="lazy"
-                    onError={(e) => {
-                      e.currentTarget.style.display = 'none';
-                    }}
-                  />
+                  <div key={i} className={cn('group/img relative', imageGridItemClass(message.images!.length, i))}>
+                    <MediaImage
+                      src={src}
+                      alt={`附件 ${i + 1}`}
+                      className={cn('w-full rounded-lg border border-[var(--rp-border)] object-cover', imageGridItemClass(message.images!.length, i))}
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none';
+                      }}
+                    />
+                    {onDeleteImage && (
+                      <button
+                        type="button"
+                        aria-label={`删除第 ${i + 1} 张图`}
+                        title="删除这张图（原文件也会一起删掉）"
+                        onClick={() => onDeleteImage(i)}
+                        className="absolute right-1 top-1 flex size-6 cursor-pointer items-center justify-center rounded-md bg-black/55 text-white transition lg:opacity-0 lg:group-hover/img:opacity-100"
+                      >
+                        <Trash2 className="size-3" aria-hidden="true" />
+                      </button>
+                    )}
+                  </div>
                 ))}
               </div>
             ) : null}
@@ -493,14 +512,13 @@ export function MessageBubble({
               <div className={cn('mt-2 grid gap-2', imageGridClass(message.images.length))}>
                 {message.images.map((src, i) => (
                   <div key={i} className={cn('group/img relative', imageGridItemClass(message.images!.length, i))}>
-                    <img
+                    <MediaImage
                       src={src}
                       alt={`生成图 ${i + 1}`}
                       className={cn(
                         'w-full rounded-lg border border-[var(--rp-border)] object-cover',
                         message.images!.length === 1 ? 'max-h-[26rem]' : 'max-h-[16rem]',
                       )}
-                      loading="lazy"
                       onError={(e) => {
                         const cell = e.currentTarget.parentElement;
                         if (cell) cell.style.display = 'none';
@@ -515,6 +533,17 @@ export function MessageBubble({
                         className="absolute right-1 top-1 flex size-6 cursor-pointer items-center justify-center rounded-md bg-black/55 text-white transition lg:opacity-0 lg:group-hover/img:opacity-100"
                       >
                         <RefreshCw className="size-3" aria-hidden="true" />
+                      </button>
+                    )}
+                    {onDeleteImage && (
+                      <button
+                        type="button"
+                        aria-label={`删除第 ${i + 1} 张图`}
+                        title="删除这张图（原文件也会一起删掉）"
+                        onClick={() => onDeleteImage(i)}
+                        className="absolute bottom-1 right-1 flex size-6 cursor-pointer items-center justify-center rounded-md bg-black/55 text-white transition lg:opacity-0 lg:group-hover/img:opacity-100"
+                      >
+                        <Trash2 className="size-3" aria-hidden="true" />
                       </button>
                     )}
                   </div>

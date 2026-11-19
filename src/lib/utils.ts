@@ -28,6 +28,26 @@ export function formatRelativeTime(ts: number): string {
   return new Date(ts).toLocaleDateString('zh-CN');
 }
 
+/**
+ * Message timestamp, precise to the second.
+ *
+ * Chat messages show their exact clock time (not a relative “x 分钟前”):
+ * today → `18:32:05`, yesterday → `昨天 18:32:05`, this year → `11月18日
+ * 18:32:05`, earlier years → `2025年11月18日 18:32:05`.
+ */
+export function formatMessageTime(ts: number): string {
+  const d = new Date(ts);
+  const time = d.toLocaleTimeString('zh-CN', { hour12: false });
+  const now = new Date();
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const diffDays = Math.round((startOf(now) - startOf(d)) / dayMs);
+  if (diffDays <= 0) return time;
+  if (diffDays === 1) return `昨天 ${time}`;
+  if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日 ${time}`;
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${time}`;
+}
+
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;

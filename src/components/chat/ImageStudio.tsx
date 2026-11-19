@@ -29,6 +29,10 @@ import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { artistsForStyle, DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/image/nai.js';
 import { buildTagInjection } from '@/core/image/tagContext.js';
 import { BUILTIN_PRESETS } from '@/core/defaults/presets.js';
+import { dataUrlToBlob, deleteMediaImage, getMediaImage, listMediaImages, mediaIdFromRef, mediaRef, saveMediaImage, type GeneratedImageMeta } from '@/core/media/store.js';
+import { MediaImage } from '@/core/media/MediaImage.js';
+import { confirmAction } from '@/components/ui/confirm.js';
+import { formatMessageTime } from '@/lib/utils.js';
 import { useApp } from '@/state/store.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { RPChat } from '@/core/types/chat.js';
@@ -137,13 +141,53 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
         size,
         watermark: false,
       });
-      setResults((prev) => [...out.map((r) => r.dataUrl), ...prev]);
+      // 生成的图立刻存进媒体库（Blob 存 IndexedDB，消息里只留 media: 引用，
+      // 不占对话的内存），就算关掉窗口不加入对话也不会丢。
+      const refs: string[] = [];
+      for (const r of out) {
+        try {
+          const blob = await dataUrlToBlob(r.dataUrl);
+          const saved = await saveMediaImage(blob, {
+            chatId: chat.id,
+            cardId: card.id,
+            prompt: finalPrompt,
+            provider: r.provider,
+            model: r.model,
+          });
+          refs.push(mediaRef(saved.id));
+        } catch {
+          // 媒体库存不下时退回 data URL，图还能用，只是占内存。
+          refs.push(r.dataUrl);
+        }
+      }
+      setResults((prev) => [...refs, ...prev]);
       if (!out.length) setError('服务没有返回图片');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
+  }
+
+  /** 把一张生成图设为角色头像。头像存在角色卡里，用 data URL（单张小图）。 */
+  async function useAsAvatar(src: string) {
+    const id = mediaIdFromRef(src);
+    if (!id) {
+      onUseAsAvatar(src);
+      return;
+    }
+    const blob = await getMediaImage(id);
+    if (!blob) {
+      toast.error('头像设置失败', '原图找不到了');
+      return;
+    }
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error('读取图片失败'));
+      reader.readAsDataURL(blob);
+    });
+    onUseAsAvatar(dataUrl);
   }
 
   /**
@@ -357,12 +401,12 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
             <div className="grid grid-cols-2 gap-2">
               {results.map((src, i) => (
                 <figure key={i} className="group relative overflow-hidden rounded-lg border border-[var(--rp-border)]">
-                  <img src={src} alt={`生成结果 ${i + 1}`} className="w-full object-cover" loading="lazy" />
+                  <MediaImage src={src} alt={`生成结果 ${i + 1}`} className="w-full object-cover" />
                   <figcaption className="absolute inset-x-0 bottom-0 flex gap-1 bg-black/60 p-1.5 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                     <Button size="sm" variant="secondary" className="h-7 flex-1 text-[11px]" onClick={() => onAttach(src)}>
                       加入对话
                     </Button>
-                    <Button size="sm" variant="secondary" className="h-7 flex-1 text-[11px]" onClick={() => onUseAsAvatar(src)}>
+                    <Button size="sm" variant="secondary" className="h-7 flex-1 text-[11px]" onClick={() => void useAsAvatar(src)}>
                       设为头像
                     </Button>
                   </figcaption>
@@ -371,6 +415,7 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
             </div>
           )}
           {results.length > 0 && <Badge variant="outline">{results.length} 张结果</Badge>}
+          <HistorySection chatId={chat.id} refreshKey={results.length} onAttach={onAttach} />
         </div>
 
         <DialogFooter>
@@ -384,5 +429,83 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * 历史生成 — 这个对话里以前生成过的图（都存在媒体库里，关掉窗口也不会丢）。
+ * 每张都能重新加入对话，也能手动删除；删除会把原文件一起删掉。
+ */
+function HistorySection({ chatId, refreshKey, onAttach }: { chatId: string; refreshKey: number; onAttach: (src: string) => void }) {
+  const [items, setItems] = React.useState<GeneratedImageMeta[]>([]);
+  const [open, setOpen] = React.useState(false);
+
+  const refresh = React.useCallback(async () => {
+    const all = await listMediaImages();
+    setItems(all.filter((m) => m.chatId === chatId));
+  }, [chatId]);
+
+  React.useEffect(() => {
+    if (open) void refresh();
+  }, [open, refresh, refreshKey]);
+
+  async function remove(item: GeneratedImageMeta) {
+    const ok = await confirmAction({
+      title: '删除这张图？',
+      description: '原文件也会一起删掉，删了就找不回来了。',
+      confirmText: '删除',
+      destructive: true,
+    });
+    if (!ok) return;
+    await deleteMediaImage(item.id);
+    await refresh();
+    toast.success('已删除');
+  }
+
+  if (items.length === 0 && !open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-full cursor-pointer rounded-lg border border-dashed border-[var(--rp-border)] px-3 py-2 text-left text-[12px] text-[var(--rp-fg-muted)]"
+      >
+        历史生成（这个对话以前生成的图，存在媒体库里）
+      </button>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full cursor-pointer text-left text-[13px] font-medium"
+      >
+        历史生成（{items.length} 张）{open ? '▾' : '▸'}
+      </button>
+      {open && items.length === 0 && (
+        <p className="text-[12px] text-[var(--rp-fg-muted)]">这个对话还没有生成过图。</p>
+      )}
+      {open && items.length > 0 && (
+        <div className="grid grid-cols-2 gap-2">
+          {items.map((item) => (
+            <figure key={item.id} className="group relative overflow-hidden rounded-lg border border-[var(--rp-border)]">
+              <MediaImage src={mediaRef(item.id)} alt={item.prompt ?? '生成图'} className="w-full object-cover" />
+              <figcaption className="absolute inset-x-0 bottom-0 bg-black/60 p-1.5 backdrop-blur-sm">
+                <p className="text-[10px] text-white/80">{formatMessageTime(item.createdAt)}</p>
+                <div className="mt-1 flex gap-1">
+                  <Button size="sm" variant="secondary" className="h-7 flex-1 text-[11px]" onClick={() => onAttach(mediaRef(item.id))}>
+                    加入对话
+                  </Button>
+                  <Button size="sm" variant="secondary" className="h-7 flex-1 text-[11px]" onClick={() => void remove(item)}>
+                    删除
+                  </Button>
+                </div>
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

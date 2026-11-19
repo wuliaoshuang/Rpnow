@@ -70,6 +70,8 @@ import {
 import { vibrate, vibrateMessage } from '@/lib/haptics.js';
 import { BUILTIN_PRESETS } from '@/core/defaults/presets.js';
 import { toast } from '@/components/ui/toast.js';
+import { confirmAction } from '@/components/ui/confirm.js';
+import { dataUrlToBlob, deleteMediaImage, mediaIdFromRef, mediaRef, saveMediaImage } from '@/core/media/store.js';
 import { SLOT, SlotOutlet } from '@/core/plugin/slots.js';
 import { PromptInspector } from '@/components/chat/PromptInspector.js';
 import { ImageStudio } from '@/components/chat/ImageStudio.js';
@@ -1273,11 +1275,28 @@ export function ChatView({
     }
     try {
       const dataUrl = await fetchAsDataUrl(status.imageUrl);
+      // 重新生成的图也进媒体库（Blob），并把旧图（如果是 media: 引用）的原文件删掉，
+      // 不留孤儿文件。
+      let nextSrc: string = dataUrl;
+      try {
+        const blob = await dataUrlToBlob(dataUrl);
+        const saved = await saveMediaImage(blob, {
+          chatId: chat.id,
+          cardId: card.id,
+          prompt: next,
+          provider: 'novelai',
+          model: cfg.model,
+        });
+        nextSrc = mediaRef(saved.id);
+      } catch {
+        // 存不下就退回 data URL，图还能用。
+      }
+      const oldSrc = msg?.images?.[imageIndex];
       patch({
         messages: chat.messages.map((m) => {
           if (m.id !== messageId) return m;
           const images = [...(m.images ?? [])];
-          images[imageIndex] = dataUrl;
+          images[imageIndex] = nextSrc;
           const tagList = [...((m.meta?.imageTags as string[] | undefined) ?? [])];
           tagList[imageIndex] = next;
           // I08: rewrite the picture's marker in the stored prose (when the
@@ -1296,9 +1315,51 @@ export function ChatView({
         }),
       });
       toast.success('已重新生成');
+      const oldMediaId = oldSrc ? mediaIdFromRef(oldSrc) : undefined;
+      if (oldMediaId) await deleteMediaImage(oldMediaId);
     } catch {
       toast.error('生成失败', '图片读取失败');
     }
+  }
+
+  /**
+   * Delete one picture from a message — and the original file with it.
+   *
+   * The picture is removed from the message first; when it is a `media:`
+   * reference the Blob in the media store is deleted too, so the original
+   * file is gone, not just hidden. Legacy data-URL pictures have no
+   * separate file, so removing the reference is all there is to do.
+   */
+  async function deleteMessageImage(messageId: string, imageIndex: number) {
+    const msg = chat.messages.find((m) => m.id === messageId);
+    const src = msg?.images?.[imageIndex];
+    if (!src) return;
+    const ok = await confirmAction({
+      title: '删除这张图？',
+      description: '会把这张图从这条消息里删掉，原文件也会一起删掉，删了就找不回来了。',
+      confirmText: '删除',
+      destructive: true,
+    });
+    if (!ok) return;
+    const mediaId = mediaIdFromRef(src);
+    patch({
+      messages: chat.messages.map((m) => {
+        if (m.id !== messageId) return m;
+        const images = [...(m.images ?? [])];
+        images.splice(imageIndex, 1);
+        const tagList = [...((m.meta?.imageTags as string[] | undefined) ?? [])];
+        tagList.splice(imageIndex, 1);
+        const markerList = [...((m.meta?.imageMarkers as string[] | undefined) ?? [])];
+        markerList.splice(imageIndex, 1);
+        return {
+          ...m,
+          images,
+          meta: { ...(m.meta ?? {}), imageTags: tagList, ...(markerList.length ? { imageMarkers: markerList } : {}) },
+        };
+      }),
+    });
+    if (mediaId) await deleteMediaImage(mediaId);
+    toast.success('已删除');
   }
 
   /** A `data-slash` click inside a template becomes a normal user message. */
@@ -1749,6 +1810,7 @@ export function ChatView({
                 templates={activeTemplates}
                 onTemplateSlash={sendTemplateSlash}
                 onRerollImage={(i) => rerollImage(m.id, i)}
+                onDeleteImage={(i) => void deleteMessageImage(m.id, i)}
                 fontSize={settings.render.fontSize}
                 chatId={chat.id}
                 sandboxHtml={settings.render.sandboxHtml}
