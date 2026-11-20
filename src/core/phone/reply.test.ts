@@ -208,23 +208,22 @@ describe('buildReplySystemPrompt', () => {
     expect(prompt).not.toContain('是「李淑纯」的');
   });
 
-  it('发图时要写清楚图里有几个人：一个人、和用户一起、一群人', () => {
+  it('发图时要按场景判断图里有几个人，填 people 参数', () => {
     for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
-      expect(prompt).toContain('图里有几个人也要写明白');
-      expect(prompt).toContain('你一个人就只写你自己');
-      expect(prompt).toContain('和用户一起');
-      expect(prompt).toContain('合影');
-      expect(prompt).toContain('一群人就写清楚还有谁');
+      expect(prompt).toContain('people');
+      expect(prompt).toContain('solo / duo / multi');
+      expect(prompt).toContain('你一个人');
+      expect(prompt).toContain('你和用户两个人');
     }
   });
 
   it('只在用户明确要图时发图：不主动发图，表情包可以主动发', () => {
     for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
-      expect(prompt).toContain('用户没让你发图时不要发图');
+      expect(prompt).toContain('用户没让你发图时，不要发图');
       expect(prompt).toContain('不要自己主动发图');
-      expect(prompt).toContain('可以主动发表情包');
+      expect(prompt).toContain('表情包可以主动发');
       expect(prompt).not.toContain('你自己提到拍了照片');
       expect(prompt).not.toContain('想分享一张图');
     }
@@ -304,15 +303,15 @@ describe('buildReplySystemPrompt', () => {
       expect(prompt).toContain('\u3010预设\u3011');
       expect(prompt).toContain('PRESET_写回复前先想一想角色此刻的心情');
       expect(prompt).toContain('最高优先级');
-      // 顺序：预设在最后——在剧情进度、世界书、设定、开场白、回复格式
+      // 顺序：预设在最后——在剧情进度、世界书、设定、开场白、工具说明
       // 之后，紧贴聊天记录（离生成最近、最显眼）。
       const idx = (s: string) => prompt.indexOf(s);
       expect(idx('\u3010预设\u3011')).toBeGreaterThan(idx('主线聊天的最近进展'));
       expect(idx('\u3010预设\u3011')).toBeGreaterThan(idx('\u3010世界书\u3011'));
       expect(idx('\u3010预设\u3011')).toBeGreaterThan(idx('\u3010设定\u3011'));
       expect(idx('\u3010预设\u3011')).toBeGreaterThan(idx('\u3010开场白\u3011'));
-      // 预设是最后一段：它在回复格式之后，后面什么都没有。
-      expect(prompt.indexOf('\u3010预设\u3011')).toBeGreaterThan(prompt.indexOf('回复的格式'));
+      // 预设是最后一段：它在工具说明之后，后面什么都没有。
+      expect(prompt.indexOf('\u3010预设\u3011')).toBeGreaterThan(prompt.indexOf('发图工具'));
     }
     // 没传预设：这一节整个不写。
     expect(buildReplySystemPrompt(fakeCard(), xiaoyuContact)).not.toContain('\u3010预设\u3011');
@@ -326,28 +325,23 @@ describe('buildReplySystemPrompt', () => {
     expect(prompt).toContain('不要套用预设里主聊天的正文包裹格式');
   });
 
-  it('回复格式那一节：教模型用 {chat}/{image}/{sticker} 标记，不调工具', () => {
+  it('讲清楚发图和发表情包两个工具怎么用', () => {
     for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
-      expect(prompt).toContain('{chat:…}');
-      expect(prompt).toContain('{image:这张图的内容 ||| 英文标签}');
-      expect(prompt).toContain('{sticker:情绪}');
-      expect(prompt).toContain('只有用户明确让你发图');
+      expect(prompt).toContain('send_image');
+      expect(prompt).toContain('send_sticker');
+      expect(prompt).toContain('调用发图工具发一张真的图');
+      expect(prompt).toContain('只有用户明确让你发图的时候');
       expect(prompt).toContain('发表情包');
-      expect(prompt).toContain('happy、sad、shy、surprised、affectionate、angry');
-      // 没有工具调用了：提示词里不提工具名和老标记。
-      expect(prompt).not.toContain('send_image');
-      expect(prompt).not.toContain('send_sticker');
-      expect(prompt).not.toContain('[发图：');
-      expect(prompt).not.toContain('[表情：');
+      expect(prompt).toContain('先回一句文字，再发图或表情包');
     }
   });
 
-  it('老标记形式彻底没了：提示词里没有 [发图：…] / [表情：…]', () => {
+  it('调用不了工具时，教模型用 [发图：…] / [表情：…] 标记', () => {
     for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
-      expect(prompt).not.toContain('[发图：这张图的内容]');
-      expect(prompt).not.toContain('[表情：开心/难过/害羞/惊讶/亲昵/生气]');
+      expect(prompt).toContain('[发图：这张图的内容]');
+      expect(prompt).toContain('[表情：开心/难过/害羞/惊讶/亲昵/生气]');
     }
   });
 });
@@ -844,7 +838,7 @@ describe('buildReplySystemPromptSections', () => {
     '先想一想',
     '不跳出角色',
     '短聊格式',
-    '回复格式',
+    '工具说明',
     '预设',
   ];
 
@@ -875,22 +869,6 @@ describe('buildReplySystemPromptSections', () => {
     expect(sections[7].content).toContain('PLOT_军训集合');
     expect(sections[8].content).toContain('独立的微信聊天');
     expect(sections[13].content).toContain('PRESET_写短句');
-  });
-
-  it('回复格式那一节：key 是 format，教 {chat}/{image}/{sticker} 标记，只在用户要图时发图', () => {
-    const sections = buildReplySystemPromptSections(fakeCard(), xiaoyuContact);
-    const format = sections[12];
-    expect(format.key).toBe('format');
-    expect(format.label).toBe('回复格式');
-    expect(format.content).toContain('{chat:…}');
-    expect(format.content).toContain('{image:');
-    expect(format.content).toContain('{sticker:情绪}');
-    expect(format.content).toContain('只有用户明确让你发图');
-    expect(format.content).toContain('用户没让你发图时不要发图');
-    expect(format.content).toContain('可以主动发表情包');
-    // 还是 14 节：这一节是替换，不是新增。
-    expect(sections).toHaveLength(14);
-    expect(sections.some((s) => s.key === 'tools' || s.label === '工具说明')).toBe(false);
   });
 
   it('群聊注脚拼进“独立系统”那一节，不另起一节——查看器还是 14 节', () => {
@@ -936,7 +914,7 @@ describe('buildReplySystemPromptSections', () => {
       '先想一想',
       '不跳出角色',
       '短聊格式',
-      '回复格式',
+      '工具说明',
     ]);
   });
 });

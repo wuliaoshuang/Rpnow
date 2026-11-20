@@ -18,8 +18,10 @@
  * 联系人缓存是权威的：初始化只做一次，之后不管缓存是哪个版本存的
  * （里面还留着卡的主角本人、relation 还是按主角算的 v1 旧关系），都
  * 原样保留、绝不悄悄重新初始化、绝不悄悄改动；只有用户点“重置”才
- * 会删掉缓存、重新初始化一次。回复模型不是 Agent、不调工具，
- * 直接在回复文字里写 `{chat:…}` / `{image:…}` / `{sticker:…}` 标记：
+ * 会删掉缓存、重新初始化一次。角色还是个 Agent：回复时模型能自己调发图和发表
+ * 情包两个工具（见 `@/core/phone/tools.js`），用户要看图就真发一张图，
+ * 想表达情绪就发表情包，不只靠文字；不支持工具调用的提供商改走文字里的
+ * `[发图：…]` / `[表情：…]` 标记兜底。联系人列表右上角有个“重置”：
  * 点它确认后会删掉本聊天的全部小手机记录（联系人缓存 + 每个联系人的
  * 微信记录 + 群聊 + 朋友圈），再让 AI 根据角色卡重新初始化一次；主聊天和相册不受影响。
  *
@@ -29,7 +31,7 @@
  * 角标。群里每条消息都写明是谁说的；用户发一句，点名提到的人先回，
  * 再按“最久没说话在前”轮 0–2 个人附和，一轮 1–3 个人回（确定性
  * 规则，不再调模型定人）。每个回的成员各调一次已有的回复流程
- * （自己的 system prompt + 群聊注脚 + 标记解析 + 守门 + Tag 转写 +
+ * （自己的 system prompt + 群聊注脚 + 工具 + 守门 + Tag 转写 +
  * 人数强制），不是插件那种整个群一次调用。好感度只跟回的人走：
  * 用户这句 +1 只给被点到的那个人，每个回的人回一次 +1，没回的人
  * 不涨。群聊记录每轮同步进世界书“{群名}的群聊记录”，成员在之后
@@ -42,7 +44,7 @@ import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { uid } from '@/lib/utils.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { LLMMessage, LLMResult } from '@/core/llm/types.js';
-import type { ImagePeople, PhoneContact, PhoneGroup, PhoneMessage } from '@/core/phone/types.js';
+import type { ImagePeople, PhoneContact, PhoneGroup, PhoneMessage, StickerEmotion } from '@/core/phone/types.js';
 import {
   AFFECTION_DATE_UNLOCK,
   AFFECTION_PER_CHARACTER_REPLY,
@@ -87,7 +89,12 @@ import {
   looksLikeImageRequest,
 } from '@/core/phone/reply.js';
 import { generatePhoneImage } from '@/core/phone/imageGen.js';
-import { parseReplyMarkup } from '@/core/phone/markup.js';
+import {
+  PHONE_TOOLS,
+  parseReplyMarkers,
+  parseSendImageArgs,
+  parseSendStickerArgs,
+} from '@/core/phone/tools.js';
 import {
   clearPhoneChat,
   ensureChat,
@@ -555,18 +562,17 @@ export function WeChat({
    * 朋友圈点图片生图走同一条线：先转写 Tag，再按人数强制，最后调生图
    * 接口、图存进相册）。
    *
-   * “＋”按钮（用输入框的文字）和回复里的 `{image:…}` 标记
-   * （用标记里的描述和 `|||` 后面的英文标签）都走这里。生成中的状态提示同一条，就地更新。
+   * “＋”按钮（用输入框的文字）和 Agent 的 send_image 工具调用
+   * （用工具的 description）都走这里。生成中的状态提示同一条，就地更新。
    *
    * history 是这个联系人的微信聊天记录：写提示词的模型要先读它，弄清楚
    * 现在的场景（在哪、在做什么、周围有什么），才能把角色画进场景里，
    * 而不是只画一张白底人像。
    *
-   * people 是这张图里有几个人（按发图的描述判断；“＋”按钮按输入框的
-   * 文字简单判断，默认 solo）：写提示词的模型按这个人数写出画面里每个
-   * 人的外貌，others 是图里可能出现的其他联系人（名字、关系），模型按
-   * 他们和聊天记录写样子，不编场景外的人。tagsHint 是回复标记里 `|||` 后面
-   * 的英文标签：Tag 转写没写出东西时直接拿它当正面提示词。
+   * people 是这张图里有几个人（回复模型按场景在 send_image 里定的；
+   * “＋”按钮按输入框的文字简单判断，默认 solo）：写提示词的模型按这个
+   * 人数写出画面里每个人的外貌，others 是图里可能出现的其他联系人
+   * （名字、关系），模型按他们和聊天记录写样子，不编场景外的人。
    */
   const generateImageFromDescription = React.useCallback(
     async (
@@ -576,7 +582,6 @@ export function WeChat({
       people: ImagePeople = 'solo',
       others: PhoneContact[] = [],
       sink?: MessageSink,
-      tagsHint?: string,
     ) => {
       if (generating) return;
       const connectionId = phone.imageConnectionId || imageConnections[0]?.id || '';
@@ -621,7 +626,6 @@ export function WeChat({
           history,
           people,
           others,
-          tagsHint,
         );
         s.updateNote(note.id, '图片生成好了');
         s.append([
@@ -661,15 +665,15 @@ export function WeChat({
   );
 
   /**
-   * 一个成员回一次话：回复的核心（1 对 1 和群聊共用）。
+   * 一个成员回一次话：Agent 回复的核心（1 对 1 和群聊共用）。
    *
-   * 流程：一次普通模型调用（不带工具、不调 Agent），模型直接在回复
-   * 文字里写 `{chat:…}` / `{image:…}` / `{sticker:…}` 标记；
-   * 调用方用 `parseReplyMarkup` 抠出来，按顺序发出去——文字先发，
-   * 图是真的生一张发出去，表情包挑一张现成的贴纸。用户没明确要图时，
-   * 回复里的 `{image:…}` 一律丢掉（不生图、不调生图接口、不显示）。
-   * 最后，没有通过标记发过表情包、且文字情绪明显时，照旧按情绪补一张。
-   * 发送顺序就是标记出现的顺序，图是等生完了再往下发，顺序不会乱。
+   * 流程：带 tools 调一次模型 → 文字照常发；工具调用按顺序执行
+   * （发图先走 PR #33 的 Agent 生图流程，表情包挑一张现成的贴纸）；
+   * 有的提供商不支持工具调用会直接拒绝请求，那就去掉 tools 再试一次，
+   * 模型改用文字里的 `[发图：…]` / `[表情：…]` 标记也能达到同样效果
+   * （标记从显示的文字里去掉）。工具调用优先：有工具调用时，同类标记
+   * 只当没写过。最后，没有通过工具或标记发过表情包、且文字情绪明显
+   * 时，照旧按情绪补一张。发送顺序：文字 → 图片 → 表情包。
    *
    * sink 没给就是一对一：贴到这个联系人的聊天里；群聊里调用方传群的
    * sink（贴到群聊里、标上说话人）。groupNote 只在群聊里有：拼进
@@ -748,10 +752,39 @@ export function WeChat({
         maxTokens: 300,
       };
       try {
-        const result: LLMResult = await llm.complete(connectionId, baseRequest);
-        const segments = parseReplyMarkup(result.text ?? '');
+        let result: LLMResult;
+        try {
+          result = await llm.complete(connectionId, {
+            ...baseRequest,
+            tools: PHONE_TOOLS,
+            toolChoice: 'auto',
+          });
+        } catch {
+          // 提供商可能不支持工具调用：去掉 tools 再试一次，纯文字
+          // 回复一定能回来；模型改用标记也能发图/发表情包。
+          result = await llm.complete(connectionId, baseRequest);
+        }
+        const toolCalls = result.toolCalls ?? [];
+        const markers = parseReplyMarkers(result.text ?? '');
+        const hasImageTool = toolCalls.some((tc) => tc.name === 'send_image');
+        const hasStickerTool = toolCalls.some((tc) => tc.name === 'send_sticker');
+        const imageRequests: Array<{ description: string; people: ImagePeople }> = [];
+        for (const tc of toolCalls) {
+          if (tc.name === 'send_image') {
+            const parsed = parseSendImageArgs(tc.arguments);
+            if (parsed) imageRequests.push(parsed);
+          }
+        }
+        // 标记兜底没有人数：按 solo 算（角色自己的一张照片）。
+        if (!hasImageTool)
+          imageRequests.push(
+            ...markers.imageDescriptions.map((description) => ({
+              description,
+              people: 'solo' as ImagePeople,
+            })),
+          );
         // 自动生图守门：只有用户这句明确要图时才发图。模型自己想发图
-        // （回复里的 `{image:…}` 标记）不算数——用户没要图就不生图，
+        // （工具调用或 [发图：…] 标记）不算数——用户没要图就不生图，
         // 不调生图接口，聊天里也不出现图；文字和表情包不受影响，照常发。
         // “＋”按钮是用户自己点的，不走这里，不受这个守门限制。
         // 群聊里也一样：守门按用户在群里那句算，每个回话的成员各守各的门。
@@ -761,52 +794,55 @@ export function WeChat({
         const userAskedForImage = lastUserMessage
           ? looksLikeImageRequest(lastUserMessage.content)
           : false;
-        const otherContacts = (contacts ?? []).filter((c) => c.id !== contact.id);
-        let sentSticker = false;
-        const chatTexts: string[] = [];
-        for (const segment of segments) {
-          if (segment.type === 'chat') {
-            chatTexts.push(segment.text);
-            append([
-              makeMessage({ role: 'assistant', type: 'text', content: segment.text }),
-            ]);
-          } else if (segment.type === 'image') {
-            // 没要图：这段直接丢掉，不生图、不报错、不显示。
-            if (!userAskedForImage) continue;
-            // 生图要带着最近的对话：模型得知道现在是什么场景，才能把角色画进场景里；
-            // 人数按图的内容简单判断（写了“和用户一起”“合影”就是双人），
-            // 其他联系人一并给写提示词的模型当参考。
-            // 群聊里 history 就是群聊记录（带说话人），场景从群聊里来。
-            // 等生完了再往下发，顺序不会乱。
-            await generateImageFromDescription(
-              contact,
-              segment.description,
-              recent,
-              inferPeopleFromRequest(segment.description),
-              otherContacts,
-              {
-                append: (added) => append(added),
-                updateNote: updateNoteText,
-              },
-              segment.tags,
-            );
-          } else if (segment.type === 'sticker') {
-            const stickerUrl = pickSticker(segment.emotion);
-            if (stickerUrl) {
-              append([
-                makeMessage({
-                  role: 'assistant',
-                  type: 'sticker',
-                  content: '',
-                  stickerUrl,
-                }),
-              ]);
-              sentSticker = true;
-            }
+        const imageRequestsToSend = userAskedForImage ? imageRequests : [];
+        const stickerEmotions: StickerEmotion[] = [];
+        for (const tc of toolCalls) {
+          if (tc.name === 'send_sticker') {
+            const emotion = parseSendStickerArgs(tc.arguments);
+            if (emotion) stickerEmotions.push(emotion);
           }
         }
-        // 情绪贴纸兜底：没有通过标记发过表情包、且文字情绪明显时照旧发一张。
-        const text = chatTexts.join('\n');
+        if (!hasStickerTool) stickerEmotions.push(...markers.stickerEmotions);
+
+        const text = markers.cleanText;
+        let sentSticker = false;
+        if (text) {
+          append([
+            makeMessage({ role: 'assistant', type: 'text', content: text }),
+          ]);
+        }
+        const otherContacts = (contacts ?? []).filter((c) => c.id !== contact.id);
+        for (const req of imageRequestsToSend) {
+          // 生图要带着最近的对话：模型得知道现在是什么场景，才能把角色画进场景里；
+          // 人数是回复模型按场景定的，其他联系人一并给写提示词的模型当参考。
+          // 群聊里 history 就是群聊记录（带说话人），场景从群聊里来。
+          await generateImageFromDescription(
+            contact,
+            req.description,
+            recent,
+            req.people,
+            otherContacts,
+            {
+              append: (added) => append(added),
+              updateNote: updateNoteText,
+            },
+          );
+        }
+        for (const emotion of stickerEmotions) {
+          const stickerUrl = pickSticker(emotion);
+          if (stickerUrl) {
+            append([
+              makeMessage({
+                role: 'assistant',
+                type: 'sticker',
+                content: '',
+                stickerUrl,
+              }),
+            ]);
+            sentSticker = true;
+          }
+        }
+        // 情绪贴纸兜底：没有通过工具或标记发过表情包、且文字情绪明显时照旧发一张。
         if (!sentSticker && text) {
           const emotion = detectEmotion(text);
           if (emotion !== 'neutral') {
@@ -886,7 +922,7 @@ export function WeChat({
   };
 
   /**
-   * “＋”里的生图按钮：用输入框的文字调同一条生图流程，带着当前聊天的记录当场景。
+   * “＋”里的生图按钮：用输入框的文字调同一条 Agent 生图流程，带着当前聊天的记录当场景。
    * 没有回复模型给人数，就按输入框的文字简单判断（明确提到用户也在画面里就是双人、
    * 提到一群人就是多人，否则默认单人——角色自己的一张照片），其他联系人一并给参考。
    */
@@ -1520,7 +1556,7 @@ export function WeChat({
         </div>
       </div>
 
-      {/* 生图行（一对一才有：群聊里没有“给谁画”这个主角，生图只走回复——用户在群里让谁发图，谁就发）。 */}
+      {/* 生图行（一对一才有：群聊里没有“给谁画”这个主角，生图只走 Agent——用户在群里让谁发图，谁就发）。 */}
       {imageRowOpen && !group && contact && (
         <div className="flex shrink-0 items-center gap-2 border-t border-neutral-200 bg-white px-3 py-2">
           <input
