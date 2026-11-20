@@ -16,8 +16,8 @@
  *     朋友圈、重置（群跟着一起清，联系人重新初始化）。
  *
  * 假模型：按 system prompt 里的“你要扮演「X」”认出是哪个成员在回，
- * 永远回一句短聊 + 一个 `{image:…}` 标记——这样“没要图就不发图”
- * 才是真守门（和 PR #40 的 v11 脚本同款做法，标记版）。Tag 转写（system 里
+ * 永远回一句短聊 + 一个 send_image 工具调用——这样“没要图就不发图”
+ * 才是真守门（和 PR #40 的 v11 脚本同款做法）。Tag 转写（system 里
  * 有 Danbooru）回一串 Danbooru 标签；初始化（system 里有“角色卡解析
  * 助手”）回联系人 JSON。生图走 OpenAI 兼容接口，返回 1×1 PNG。
  */
@@ -122,20 +122,6 @@ const mock = createServer((req, res) => {
         ]);
         return;
       }
-      // 回复：按 system prompt 里的“你要扮演「X」”认出是哪个成员。
-      // 注意：回复的 system prompt 里“回复格式”那一节也提到了 Danbooru
-      // 标签，所以回复判断要在 Tag 转写之前，不然回复会被当成转写调用。
-      const who = allText.match(/你要扮演「([^」]+)」/)?.[1];
-      if (who) {
-        // 永远带一个 {image:…} 标记：用户要图时才该真发出来，
-        // 没要图时守门必须拦住（PR #40 同款做法，标记版）。
-        sseReply(res, [
-          {
-            content: `{chat:我是${who}，收到啦。}{image:在宿舍楼下拍的照片 ||| 1girl, solo, dorm building}`,
-          },
-        ]);
-        return;
-      }
       // Tag 转写：回一串 Danbooru 标签。
       if (allText.includes('Danbooru')) {
         sseReply(res, [
@@ -143,7 +129,35 @@ const mock = createServer((req, res) => {
         ]);
         return;
       }
-      sseReply(res, [{ content: '收到。' }]);
+      // 回复：按 system prompt 里的“你要扮演「X」”认出是哪个成员。
+      const who = allText.match(/你要扮演「([^」]+)」/)?.[1] ?? '成员';
+      const lastUser = [...(body.messages ?? [])]
+        .reverse()
+        .find((m) => m.role === 'user');
+      const userText = lastUser?.content ?? '';
+      const wantsImage = /发张图|发照片|发个图|自拍|看看你/.test(userText);
+      // 永远带一个 send_image 工具调用：用户要图时才该真发出来，
+      // 没要图时守门必须拦住（PR #40 同款做法）。
+      const toolDelta = {
+        tool_calls: [
+          {
+            index: 0,
+            id: 'call_1',
+            function: {
+              name: 'send_image',
+              arguments: JSON.stringify({
+                description: '在宿舍楼下拍的照片',
+                people: 'solo',
+              }),
+            },
+          },
+        ],
+      };
+      sseReply(
+        res,
+        [{ content: `我是${who}，收到啦。` }, toolDelta],
+        wantsImage ? 'tool_calls' : 'stop',
+      );
     });
     return;
   }
