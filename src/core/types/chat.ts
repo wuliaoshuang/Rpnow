@@ -10,6 +10,7 @@
 import type { ActivationSnapshot } from '../lorebook/engine.js';
 import type { MemoryRecord, MemorySettings } from '../memory/types.js';
 import type { ToolSettings } from '../tools/types.js';
+import type { PhoneSettings } from '../phone/types.js';
 import { DEFAULT_TAG_PROMPT } from '../image/nai.js';
 
 export interface RPPersona {
@@ -205,6 +206,8 @@ export interface RPAppSettings {
     /** LLM model used for tag conversion; empty = the connection's default. */
     tagModel: string;
   };
+  /** "小手机" simulation: its own chat model + image config. */
+  phone: PhoneSettings;
   /** Cloud backup endpoint (optional, self-hosted). */
   backup: {
     serverURL: string;
@@ -376,6 +379,13 @@ export const DEFAULT_SETTINGS: RPAppSettings = {
     tagPrompt: DEFAULT_TAG_PROMPT,
     tagConnectionId: '',
     tagModel: '',
+  },
+  phone: {
+    chatConnectionId: '',
+    chatModel: '',
+    imageConnectionId: '',
+    imageModel: '',
+    imageSize: 'square',
   },
   backup: {
     serverURL: '',

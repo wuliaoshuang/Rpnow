@@ -23,6 +23,7 @@ import {
   Plus,
   X,
   SlidersHorizontal,
+  Smartphone,
   Wand2,
 } from 'lucide-react';
 import { cn, estimateTokens, uid } from '@/lib/utils';
@@ -74,6 +75,7 @@ import { dataUrlToBlob, deleteMediaImage, mediaIdFromRef, mediaRef, saveMediaIma
 import { SLOT, SlotOutlet } from '@/core/plugin/slots.js';
 import { PromptInspector } from '@/components/chat/PromptInspector.js';
 import { ImageStudio } from '@/components/chat/ImageStudio.js';
+import { MiniPhone } from '@/components/phone/MiniPhone.js';
 import { ModelPicker, type ModelPickerTarget } from '@/components/chat/ModelPicker.js';
 import { ChatQuickPanel } from '@/components/chat/ChatQuickPanel.js';
 import { MODEL_SLOTS, chatImmersive, slotIdForModel, slotModels } from '@/core/llm/modelSlots.js';
@@ -199,6 +201,7 @@ export function ChatView({
   const setBranchOpen = onBranchesOpenChange ?? setBranchOpenLocal;
   const [quota, setQuota] = React.useState<{ used: number; total: number } | null>(null);
   const [imageOpen, setImageOpen] = React.useState(false);
+  const [phoneOpen, setPhoneOpen] = React.useState(false);
   /** N02/N03/R04: 输入岛快捷面板与模型选择器。 */
   const [quickPanelOpen, setQuickPanelOpen] = React.useState(false);
   const [modelPickerOpen, setModelPickerOpen] = React.useState(false);
@@ -2229,7 +2232,7 @@ export function ChatView({
           />
           <div className="rp-anim-pop absolute inset-x-0 bottom-0 rounded-t-2xl border-t border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-3 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] shadow-rp">
             <div className="mx-auto mb-2 h-1 w-10 rounded-full bg-[var(--rp-border-strong)]" />
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               <button
                 type="button"
                 onClick={() => {
@@ -2262,6 +2265,17 @@ export function ChatView({
               >
                 <SlidersHorizontal className="size-5 text-[var(--rp-accent)]" aria-hidden="true" />
                 提示词构成
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSheetOpen(false);
+                  setPhoneOpen(true);
+                }}
+                className="flex min-h-[76px] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border border-[var(--rp-border)] text-[12px] transition-colors hover:bg-[var(--rp-bg-sunken)]"
+              >
+                <Smartphone className="size-5 text-[var(--rp-accent)]" aria-hidden="true" />
+                小手机
               </button>
             </div>
             <p className="mt-2 text-center text-[10.5px] text-[var(--rp-fg-subtle)]">
@@ -2323,6 +2337,7 @@ export function ChatView({
           toast.success('已设为角色头像');
         }}
       />
+      <MiniPhone open={phoneOpen} onOpenChange={setPhoneOpen} />
       </div>
     </div>
   );
