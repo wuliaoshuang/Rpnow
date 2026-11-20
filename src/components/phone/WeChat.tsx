@@ -1,15 +1,17 @@
 /**
  * WeChat — 小手机里的微信。
  *
- * 联系人是当前聊天卡里出现的人物：主角 + 卡里提到的人。第一次打开时调一次
- * 模型找出来（见 `@/core/phone/contacts.js`），按聊天缓存进 IndexedDB，
- * 之后直接读缓存。每个联系人有自己的聊天记录，按联系人单独保存。
+ * 联系人是当前聊天卡里提到的人物：去世界书 / 设定里找提到了哪些人，
+ * 转成联系人（卡的主角本人不是联系人——微信是主角的手机，联系人是
+ * 主角世界里的其他人）。第一次打开时调一次模型找出来（见
+ * `@/core/phone/contacts.js`），按聊天缓存进 IndexedDB，之后直接读缓存。
+ * 每个联系人有自己的聊天记录，按联系人单独保存；每个联系人还带一条
+ * 自己的人设（profile），回复时写进他/她自己的 system prompt，模型
+ * 扮演他/她才不会 OOC。
  *
  * 小手机是独立系统：微信是单独的聊天，不续写主线剧情；但回复时会把
  * 主线聊天（手机外面那个正常聊天）的最近进展当剧情进度放进提示词，
- * 只做了解，让角色知道剧情到了哪一步（见 `@/core/phone/reply.js`）。旧逻辑存的缓存（主角开场白就是卡
- * 的 first_mes 原文）会在打开时丢掉、重新初始化，并把主角存过的微信记录
- * 第一条也换成新开场白。角色还是个 Agent：回复时模型能自己调发图和发表
+ * 只做了解，让角色知道剧情到了哪一步（见 `@/core/phone/reply.js`）。旧逻辑存的缓存（里面还留着卡的主角本人）会在打开时丢掉、重新初始化。角色还是个 Agent：回复时模型能自己调发图和发表
  * 情包两个工具（见 `@/core/phone/tools.js`），用户要看图就真发一张图，
  * 想表达情绪就发表情包，不只靠文字；不支持工具调用的提供商改走文字里的
  * `[发图：…]` / `[表情：…]` 标记兜底。联系人列表右上角有个“重置”：
@@ -50,7 +52,6 @@ import {
   greetingMessage,
   loadContacts,
   loadWeChatChat,
-  migrateStaleGreeting,
   saveContacts,
   saveWeChatChat,
 } from '@/core/phone/wechatStore.js';
@@ -157,17 +158,18 @@ export function WeChat({
 
   const phone = settings.phone ?? {};
 
-  // 联系人：先读缓存；没缓存、或缓存是旧逻辑存的（主角开场白就是卡的
-  // first_mes 原文），才调一次模型初始化，失败就只留主角。
-  // 旧缓存命中时，初始化成功后还会把主角存过的微信记录第一条也换掉。
+  // 联系人：先读缓存；没缓存、或缓存是旧逻辑存的（里面还留着卡的主角
+  // 本人），才调一次模型初始化。初始化成功就存下来——哪怕一个人都没
+  // 提到（空列表也存，下次打开直接用，不用每次都再调一次模型）；
+  // 初始化失败才用兜底（空列表，不存，下次打开再试一次）。
   React.useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const cached = await loadContacts(chatId);
         if (cancelled) return;
-        const stale = !!cached && cached.length > 0 && isStaleContacts(cached, card);
-        if (cached && cached.length > 0 && !stale) {
+        const stale = !!cached && isStaleContacts(cached, card);
+        if (cached && !stale) {
           setContacts(cached);
           return;
         }
@@ -190,25 +192,17 @@ export function WeChat({
               connectionId,
               model,
               initLorebookText,
+              // 旧缓存判定为过期要重算时，把旧列表传进去：名字对得上的
+              // 联系人沿用以前的 id，微信记录不断档。
+              cached ?? undefined,
             );
             if (cancelled) return;
-            const list = initialized ?? fallbackContacts(card);
-            // 先迁存过的第一条消息，再把新联系人摆出来：列表预览读的
-            // 就是迁过的记录，不会闪一下旧的 first_mes。
-            if (stale) {
-              const freshMain = list.find((c) => c.isMain);
-              if (freshMain) {
-                try {
-                  await migrateStaleGreeting(card, freshMain);
-                } catch {
-                  // 迁移失败不挡路，下次打开还会再试。
-                }
-              }
+            if (initialized !== null) {
+              setContacts(initialized);
+              await saveContacts(chatId, initialized);
+              return;
             }
-            if (cancelled) return;
-            setContacts(list);
-            await saveContacts(chatId, list);
-            return;
+            // 初始化失败（解析不出来），掉到下面的兜底，不存——下次打开再试。
           } catch {
             // 初始化失败，掉到下面的兜底。
           }
@@ -786,6 +780,10 @@ export function WeChat({
             <p className="animate-pulse px-4 py-8 text-center text-sm text-neutral-500">
               正在认识卡里的人…
             </p>
+          ) : contacts.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-neutral-500">
+              卡里没有提到其他人，微信里暂时没有联系人。
+            </p>
           ) : (
             contacts.map((contact) => (
               <button
@@ -796,7 +794,6 @@ export function WeChat({
               >
                 <Avatar
                   name={contact.name}
-                  avatarUrl={contact.isMain ? card.avatar : undefined}
                   size="size-12"
                 />
                 <span className="min-w-0 flex-1">
@@ -893,7 +890,6 @@ export function WeChat({
                 {!isOwn && (
                   <Avatar
                     name={contact.name}
-                    avatarUrl={contact.isMain ? card.avatar : undefined}
                     size="size-9"
                   />
                 )}
@@ -925,7 +921,6 @@ export function WeChat({
             <div className="flex items-start gap-2">
               <Avatar
                 name={contact.name}
-                avatarUrl={contact.isMain ? card.avatar : undefined}
                 size="size-9"
               />
               <div className="rounded-xl bg-white px-3 py-2 text-[15px] text-neutral-500 shadow-sm">
