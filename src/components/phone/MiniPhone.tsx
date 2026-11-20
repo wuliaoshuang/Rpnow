@@ -2,34 +2,30 @@
  * MiniPhone — “小手机”：悬浮在聊天上的一部模拟手机。
  *
  * 不是全屏页，是带手机壳的悬浮窗：深色外壳边框、灵动岛、底部 home 条，
- * 屏幕嵌在壳里。桌面上有两个应用：微信、相册。以后加新应用时往 `apps`
- * 数组里加一项，再在 `screen` 联合类型里加一个分支。
+ * 屏幕嵌在壳里。桌面上有三个应用：微信、朋友圈、相册（注册表在
+ * `@/core/phone/apps.js`，插件 panel.html 里 `registerApp` 的 Rpnow 版）。
+ *
+ * 主屏幕按注册表画一排图标（4 列网格，点图标进应用）；应用打开时只用
+ * CSS 藏起别的、从来不卸载——微信、朋友圈、相册一直挂在 DOM 里，
+ * 切来切去状态都在（比如微信聊到一半去看朋友圈，回来还在）。底部 home
+ * 条和每个应用自己的返回键都回主屏幕；每次重新打开手机都先回主屏幕。
  *
  * 联系人来自当前聊天的卡（见 WeChat），所以要把 chatId 和 card 传进来。
  */
 import * as React from 'react';
 import { createPortal } from 'react-dom';
-import { BatteryMedium, Images, MessageCircle, Signal, Wifi, X } from 'lucide-react';
+import { BatteryMedium, Camera, Images, MessageCircle, Signal, Wifi, X } from 'lucide-react';
 import type { RPCard } from '@/core/types/card.js';
+import { PHONE_APPS, type PhoneAppId, type PhoneAppIcon } from '@/core/phone/apps.js';
 import { WeChat } from './WeChat.js';
+import { Moments } from './Moments.js';
 import { Album } from './Album.js';
 
-type Screen = 'home' | 'wechat' | 'album';
-
-interface PhoneApp {
-  id: string;
-  name: string;
-  /** 圆角图标的背景色。 */
-  color: string;
-  /** 图标本身的颜色（默认白色）。 */
-  iconColor?: string;
-  icon: React.ComponentType<{ className?: string; color?: string }>;
-}
-
-const APPS: PhoneApp[] = [
-  { id: 'wechat', name: '微信', color: '#07C160', icon: MessageCircle },
-  { id: 'album', name: '相册', color: '#f5f5f7', iconColor: '#007AFF', icon: Images },
-];
+const APP_ICONS: Record<PhoneAppIcon, React.ComponentType<{ className?: string; color?: string }>> = {
+  wechat: MessageCircle,
+  moments: Camera,
+  album: Images,
+};
 
 function useClock(): string {
   const [now, setNow] = React.useState(() => new Date());
@@ -53,7 +49,7 @@ export function MiniPhone({
   chatId: string;
   card: RPCard;
 }) {
-  const [screen, setScreen] = React.useState<Screen>('home');
+  const [screen, setScreen] = React.useState<PhoneAppId | 'home'>('home');
   const clock = useClock();
 
   // 每次打开都先回主屏幕。
@@ -63,10 +59,8 @@ export function MiniPhone({
 
   if (!open) return null;
 
-  const openApp = (id: string) => {
-    if (id === 'wechat') setScreen('wechat');
-    else if (id === 'album') setScreen('album');
-  };
+  const openApp = (id: PhoneAppId) => setScreen(id);
+  const goHome = () => setScreen('home');
 
   return createPortal(
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 p-3">
@@ -101,13 +95,14 @@ export function MiniPhone({
             </div>
           </div>
 
-          {/* 屏幕内容 */}
+          {/* 屏幕内容：主屏幕和三个应用一直挂着，当前这个显示、别的藏起
+              （display:none，不卸载），切应用状态不丢。 */}
           <div className="flex min-h-0 flex-1 flex-col">
-            {screen === 'home' ? (
+            <div className={screen === 'home' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
               <div className="flex-1 px-6 pt-8">
                 <div className="grid grid-cols-4 gap-x-4 gap-y-6">
-                  {APPS.map((app) => {
-                    const Icon = app.icon;
+                  {PHONE_APPS.map((app) => {
+                    const Icon = APP_ICONS[app.icon];
                     return (
                       <button
                         key={app.id}
@@ -124,17 +119,22 @@ export function MiniPhone({
                             {...(app.iconColor ? { color: app.iconColor } : {})}
                           />
                         </span>
-                        <span className="text-xs text-white/90">{app.name}</span>
+                        <span className="text-xs text-white/90">{app.label}</span>
                       </button>
                     );
                   })}
                 </div>
               </div>
-            ) : screen === 'wechat' ? (
-              <WeChat chatId={chatId} card={card} onBack={() => setScreen('home')} />
-            ) : (
-              <Album onBack={() => setScreen('home')} />
-            )}
+            </div>
+            <div className={screen === 'wechat' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+              <WeChat chatId={chatId} card={card} onBack={goHome} />
+            </div>
+            <div className={screen === 'moments' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+              <Moments chatId={chatId} card={card} onBack={goHome} active={screen === 'moments'} />
+            </div>
+            <div className={screen === 'album' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+              <Album onBack={goHome} active={screen === 'album'} />
+            </div>
           </div>
 
           {/* 底部小横条：点一下回主屏幕 */}
@@ -142,7 +142,7 @@ export function MiniPhone({
             <button
               type="button"
               aria-label="回到主屏幕"
-              onClick={() => setScreen('home')}
+              onClick={goHome}
               className="h-1.5 w-32 cursor-pointer rounded-full bg-white/70 transition-colors hover:bg-white"
             />
           </div>

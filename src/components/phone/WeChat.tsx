@@ -51,13 +51,11 @@ import {
 import { lorebookTextForInit } from '@/core/phone/lorebook.js';
 import { computeReplyExtras, historyEntries } from '@/core/phone/replyExtras.js';
 import {
-  buildImagePromptMessages,
-  buildImageTagContext,
   buildReplySystemPrompt,
-  enforceComposition,
   inferPeopleFromRequest,
   looksLikeImageRequest,
 } from '@/core/phone/reply.js';
+import { generatePhoneImage } from '@/core/phone/imageGen.js';
 import {
   PHONE_TOOLS,
   parseReplyMarkers,
@@ -74,10 +72,8 @@ import {
   saveWeChatChat,
 } from '@/core/phone/wechatStore.js';
 import { detectEmotion, pickSticker } from '@/core/phone/stickers.js';
-import { DEFAULT_TAG_PROMPT, normalizeTags } from '@/core/image/nai.js';
-import { cleanRewrittenTags, rewriteTags } from '@/core/image/tagRewrite.js';
-import { dataUrlToBlob, mediaRef, saveMediaImage } from '@/core/media/store.js';
 import { PressableImage } from '@/components/media/PressableImage.js';
+import { PhoneAvatar } from './PhoneAvatar.js';
 import { PhoneImageConfig } from './PhoneImageConfig.js';
 import { PhonePromptViewer } from './PhonePromptViewer.js';
 
@@ -85,42 +81,6 @@ function makeMessage(
   msg: Omit<PhoneMessage, 'id' | 'createdAt'> & { id?: string },
 ): PhoneMessage {
   return { id: msg.id ?? uid('m'), createdAt: Date.now(), ...msg };
-}
-
-/** 名字定一个头像底色（没头像的联系人用首字 + 底色）。 */
-function colorFor(name: string): string {
-  const palette = ['#7c6aae', '#5b8c5a', '#c07a5a', '#5a7fa6', '#a65a7a', '#8a7a3a'];
-  let h = 0;
-  for (const ch of name) h = (h * 31 + (ch.codePointAt(0) ?? 0)) >>> 0;
-  return palette[h % palette.length];
-}
-
-function Avatar({
-  name,
-  avatarUrl,
-  size,
-}: {
-  name: string;
-  avatarUrl?: string;
-  size: string;
-}) {
-  if (avatarUrl) {
-    return (
-      <img
-        src={avatarUrl}
-        alt={name}
-        className={`${size} shrink-0 rounded-lg object-cover`}
-      />
-    );
-  }
-  return (
-    <span
-      className={`${size} flex shrink-0 items-center justify-center rounded-lg text-lg font-semibold text-white`}
-      style={{ backgroundColor: colorFor(name) }}
-    >
-      {name.charAt(0) || '？'}
-    </span>
-  );
 }
 
 export function WeChat({
@@ -240,9 +200,10 @@ export function WeChat({
 
   /**
    * 清空并重置：删掉本聊天的全部小手机记录（联系人缓存 + 每个联系人的
-   * 微信记录），再把联系人置空、让加载 effect 重新跑一遍——缓存已经删
-   * 了，所以会真的再调一次模型重新初始化。主聊天、相册、其他聊天不动。
-   * 先等删完再触发 effect，不然 effect 可能读到还没删掉的旧缓存。
+   * 微信记录 + 朋友圈动态），再把联系人置空、让加载 effect 重新跑一遍——
+   * 缓存已经删了，所以会真的再调一次模型重新初始化。主聊天、相册、
+   * 其他聊天不动。朋友圈清掉之后从空开始（动态只在用户点“发朋友圈”
+   * 时才生成，不会自动回来）。
    */
   const confirmReset = () => {
     const list = contacts;
@@ -387,8 +348,9 @@ export function WeChat({
   );
 
   /**
-   * 按一段描述生成一张图发给用户：先让模型按角色形象写正面提示词，
-   * 再调生图工具（正面提示词＋画师串、负面提示词按配置来），存进相册。
+   * 按一段描述生成一张图发给用户（流程在 `@/core/phone/imageGen.js`，
+   * 朋友圈点图片生图走同一条线：先转写 Tag，再按人数强制，最后调生图
+   * 接口、图存进相册）。
    *
    * “＋”按钮（用输入框的文字）和 Agent 的 send_image 工具调用
    * （用工具的 description）都走这里。生成中的状态提示同一条，就地更新。
@@ -411,7 +373,6 @@ export function WeChat({
       others: PhoneContact[] = [],
     ) => {
       if (generating) return;
-      const rawPrompt = description.trim() || `${contact.name}，精美插画`;
       const connectionId = phone.imageConnectionId || imageConnections[0]?.id || '';
       if (!image || !connectionId) {
         appendMessages(contact, [
@@ -424,102 +385,38 @@ export function WeChat({
         return;
       }
       setGenerating(true);
-      // 生图前先转写 Tag：把场景＋人物外貌的上下文（对话里的场景、人数、
-      // 角色和他人的样子）交给 Tag 转写（设置 → 生图里配的转写模型，留空
-      // 跟随当前对话），拿回 Danbooru 标签再出图——直接让模型写 Tag 的图
-      // 全都不能看，转写这一步就是用来修这个的。
-      // 转写失败、空手而回时，退回原来的做法：让模型直接写提示词，不挡生图。
-      // 转写这一步替换了原来那次“模型写提示词”的调用，所以每次生图还是只
-      // 调一次模型（转写），没有额外增加；画师串和负面提示词是用户在设置里
-      // 配好的，模型不管，只拼进去。
-      const llmConnectionId = phone.chatConnectionId || settings.defaultConnectionId || '';
-      const llmConnection = llmConnections.find((c) => c.id === llmConnectionId);
-      const useAgent = Boolean(llm && llmConnection);
       const note = makeMessage({
         role: 'system',
         type: 'text',
-        content: useAgent ? '正在想要画什么…' : '正在生成图片…',
+        content: '正在生成图片…',
       });
       appendMessages(contact, [note]);
-      let positivePrompt = rawPrompt;
-      if (useAgent && llm && llmConnection) {
-        const contextText = buildImageTagContext(card, contact, rawPrompt, historyEntries(history), {
+      try {
+        const { imageSrc, prompt } = await generatePhoneImage(
+          {
+            llm,
+            image,
+            llmConnections,
+            imageConnections,
+            phone,
+            imageGen: settings.imageGen,
+            defaultConnectionId: settings.defaultConnectionId,
+            card,
+            chatId,
+          },
+          contact,
+          description,
+          history,
           people,
           others,
-        });
-        const tagConnectionId = settings.imageGen.tagConnectionId || llmConnectionId;
-        const tagConnection = llmConnections.find((c) => c.id === tagConnectionId) ?? llmConnection;
-        const tagModel =
-          settings.imageGen.tagModel || phone.chatModel || tagConnection.defaultModel || '';
-        let rewritten = '';
-        try {
-          const res = await rewriteTags(llm, {
-            connectionId: tagConnection.id,
-            model: tagModel,
-            systemPrompt: settings.imageGen.tagPrompt || DEFAULT_TAG_PROMPT,
-            description: contextText,
-          });
-          rewritten = cleanRewrittenTags(res.text);
-        } catch {
-          rewritten = '';
-        }
-        if (rewritten) {
-          positivePrompt = rewritten;
-        } else {
-          try {
-            const model = phone.chatModel || llmConnection.defaultModel || '';
-            const result = await llm.complete(llmConnectionId, {
-              model,
-              messages: buildImagePromptMessages(card, contact, rawPrompt, historyEntries(history), {
-                people,
-                others,
-              }),
-              temperature: 0.7,
-              maxTokens: 300,
-            });
-            const agentPrompt = result.text.trim();
-            if (agentPrompt) positivePrompt = agentPrompt;
-          } catch {
-            // 模型写不出来就用用户原话，不挡生图。
-          }
-        }
-      }
-      // 按人数强制：不管模型写了什么提示词（哪怕写了 2girls、写了 group，
-      // 或者双人图里写了 solo），代码在这里把人数标签改成这张图实际该有
-      // 的人数（单人 1girl, solo / 双人 2girls / 多人 multiple girls……），
-      // 再去调生图。这一步在模型返回之后由代码做，模型改不掉。
-      // 性别是初始化时按卡存下来的；老缓存没有这个字段时按 unknown，
-      // 单人只加 solo，双人/多人按默认标记。
-      positivePrompt = enforceComposition(positivePrompt, people, contact.gender ?? 'unknown');
-      const artistTags = normalizeTags(phone.imageArtistTags ?? '');
-      const prompt = artistTags ? `${positivePrompt}, ${artistTags}` : positivePrompt;
-      const negativePrompt = phone.imageNegativePrompt?.trim() || undefined;
-      updateNote(contact, note.id, '正在生成图片…');
-      try {
-        const results = await image.generate(connectionId, {
-          prompt,
-          ...(negativePrompt ? { negativePrompt } : {}),
-          size: phone.imageSize ?? 'square',
-          model: phone.imageModel || undefined,
-        });
-        const first = results[0];
-        if (!first) throw new Error('没有生成出图片');
-        const blob = await dataUrlToBlob(first.dataUrl);
-        const saved = await saveMediaImage(blob, {
-          chatId,
-          cardId: card.id,
-          prompt,
-          provider: first.provider,
-          model: first.model,
-          // 手机里生的图进相册留存。
-          source: 'phone',
-        });
+        );
+        updateNote(contact, note.id, '图片生成好了');
         appendMessages(contact, [
           makeMessage({
             role: 'assistant',
             type: 'image',
             content: prompt,
-            imageSrc: mediaRef(saved.id),
+            imageSrc,
           }),
         ]);
       } catch (err) {
@@ -543,17 +440,9 @@ export function WeChat({
       imageConnections,
       llm,
       llmConnections,
-      phone.chatConnectionId,
-      phone.chatModel,
-      phone.imageArtistTags,
-      phone.imageConnectionId,
-      phone.imageModel,
-      phone.imageNegativePrompt,
-      phone.imageSize,
+      phone,
       settings.defaultConnectionId,
-      settings.imageGen.tagConnectionId,
-      settings.imageGen.tagModel,
-      settings.imageGen.tagPrompt,
+      settings.imageGen,
       updateNote,
     ],
   );
@@ -868,7 +757,7 @@ export function WeChat({
                 onClick={() => void openChat(contact)}
                 className="flex w-full cursor-pointer items-center gap-3 border-b border-neutral-100 px-4 py-3 text-left transition-colors hover:bg-neutral-50"
               >
-                <Avatar
+                <PhoneAvatar
                   name={contact.name}
                   size="size-12"
                 />
@@ -896,7 +785,7 @@ export function WeChat({
             <div className="w-full max-w-[280px] rounded-2xl bg-white p-4 shadow-xl">
               <h3 className="text-[15px] font-semibold text-neutral-900">清空并重置？</h3>
               <p className="mt-1.5 text-[13px] leading-relaxed text-neutral-600">
-                会删掉这个聊天的全部小手机记录（联系人和聊天记录），然后让 AI
+                会删掉这个聊天的全部小手机记录（联系人、聊天记录和朋友圈），然后让 AI
                 根据角色卡重新初始化。主聊天和相册不受影响。
               </p>
               <div className="mt-4 flex gap-2">
@@ -980,7 +869,7 @@ export function WeChat({
             return (
               <div key={m.id} className={`flex items-start gap-2 ${isOwn ? 'flex-row-reverse' : ''}`}>
                 {!isOwn && (
-                  <Avatar
+                  <PhoneAvatar
                     name={contact.name}
                     size="size-9"
                   />
@@ -1011,7 +900,7 @@ export function WeChat({
           })}
           {busy && (
             <div className="flex items-start gap-2">
-              <Avatar
+              <PhoneAvatar
                 name={contact.name}
                 size="size-9"
               />

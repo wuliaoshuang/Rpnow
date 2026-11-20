@@ -11,10 +11,13 @@ import type { GeneratedImageMeta } from '@/core/media/store.js';
 import { listMediaImages, mediaRef } from '@/core/media/store.js';
 import { PressableImage } from '@/components/media/PressableImage.js';
 
-export function Album({ onBack }: { onBack: () => void }) {
+export function Album({ onBack, active = true }: { onBack: () => void; active?: boolean }) {
   const [images, setImages] = React.useState<GeneratedImageMeta[] | null>(null);
 
+  // 主屏幕切回来时重新读一遍：应用常驻挂载（切走不卸载），微信或朋友圈
+  // 里新生的图要在这里出现，不能只在第一次挂载时读。
   React.useEffect(() => {
+    if (!active) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -27,7 +30,7 @@ export function Album({ onBack }: { onBack: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [active]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-white text-neutral-900">
