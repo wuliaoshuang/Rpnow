@@ -11,7 +11,11 @@
  *
  * 小手机是独立系统：微信是单独的聊天，不续写主线剧情；但回复时会把
  * 主线聊天（手机外面那个正常聊天）的最近进展当剧情进度放进提示词，
- * 只做了解，让角色知道剧情到了哪一步（见 `@/core/phone/reply.js`）。旧逻辑存的缓存（里面还留着卡的主角本人）会在打开时丢掉、重新初始化。角色还是个 Agent：回复时模型能自己调发图和发表
+ * 只做了解，让角色知道剧情到了哪一步（见 `@/core/phone/reply.js`）。
+ * 联系人缓存是权威的：初始化只做一次，之后不管缓存是哪个版本存的
+ * （里面还留着卡的主角本人、relation 还是按主角算的 v1 旧关系），都
+ * 原样保留、绝不悄悄重新初始化、绝不悄悄改动；只有用户点“重置”才
+ * 会删掉缓存、重新初始化一次。角色还是个 Agent：回复时模型能自己调发图和发表
  * 情包两个工具（见 `@/core/phone/tools.js`），用户要看图就真发一张图，
  * 想表达情绪就发表情包，不只靠文字；不支持工具调用的提供商改走文字里的
  * `[发图：…]` / `[表情：…]` 标记兜底。联系人列表右上角有个“重置”：
@@ -29,8 +33,8 @@ import type { ImagePeople, PhoneContact, PhoneMessage, StickerEmotion } from '@/
 import {
   displayRelation,
   fallbackContacts,
+  hasUsableCache,
   initContacts,
-  isStaleContacts,
   resolvePhoneUser,
 } from '@/core/phone/contacts.js';
 import { lorebookTextForInit } from '@/core/phone/lorebook.js';
@@ -144,19 +148,21 @@ export function WeChat({
 
   const phone = settings.phone ?? {};
 
-  // 联系人：先读缓存；没缓存、或缓存是旧逻辑存的（里面还留着卡的主角
-  // 本人，或 relation 还是按主角算的、没按 User 算过），才调一次模型
-  // 初始化。初始化成功就存下来——哪怕一个人都没提到（空列表也存，下次
-  // 打开直接用，不用每次都再调一次模型）；初始化失败才用兜底（空列表，
-  // 不存，下次打开再试一次）。
+  // 联系人：先读缓存；有缓存就直接用——缓存是权威的，初始化只做一次。
+  // 哪怕缓存是旧逻辑存的（里面还留着卡的主角本人，或 relation 还是按
+  // 主角算的、没按 User 算过），也原样保留，绝不悄悄丢掉重算、绝不悄悄
+  // 改动；想用新规则的旧聊天，点“重置”重新初始化。
+  // 只有没缓存（第一次打开）、缓存是空列表或读出来的不是列表时，才调
+  // 一次模型初始化。初始化成功就存下来；缓存写失败也不影响本次使用——
+  // 内存里的联系人照常用，下次打开再试一次初始化（这是首次打开的重试，
+  // 不是重算已有数据）。初始化失败才用兜底（空列表，不存，下次打开再试一次）。
   React.useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const cached = await loadContacts(chatId);
         if (cancelled) return;
-        const stale = !!cached && isStaleContacts(cached, card);
-        if (cached && !stale) {
+        if (hasUsableCache(cached)) {
           setContacts(cached);
           return;
         }
@@ -185,15 +191,16 @@ export function WeChat({
               connectionId,
               model,
               initLorebookText,
-              // 旧缓存判定为过期要重算时，把旧列表传进去：名字对得上的
-              // 联系人沿用以前的 id，微信记录不断档。
-              cached ?? undefined,
               initUser,
             );
             if (cancelled) return;
             if (initialized !== null) {
               setContacts(initialized);
-              await saveContacts(chatId, initialized);
+              try {
+                await saveContacts(chatId, initialized);
+              } catch {
+                // 缓存写失败：本次照常用内存里的联系人，下次打开再试一次初始化。
+              }
               return;
             }
             // 初始化失败（解析不出来），掉到下面的兜底，不存——下次打开再试。

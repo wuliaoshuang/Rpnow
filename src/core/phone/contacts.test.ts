@@ -15,7 +15,7 @@ import {
   cleanOpeningMessage,
   displayRelation,
   fallbackContacts,
-  isStaleContacts,
+  hasUsableCache,
   parseContactsJson,
   resolvePhoneUser,
 } from './contacts.js';
@@ -424,41 +424,56 @@ describe('buildInitMessages', () => {
   });
 });
 
-describe('isStaleContacts', () => {
-  const staleList: PhoneContact[] = [
+/**
+ * 缓存就是权威的：只要是非空列表就原样用，绝不因为“旧”就丢掉重算。
+ * 旧缓存（里面还留着主角本人、relation 还是按主角算的 v1、开场白还是
+ * first_mes 原文）也是可用缓存——打开时直接用，想用新规则就点重置。
+ * 只有没缓存（null、空列表、读出来的不是数组）时，调用方才调一次模型初始化。
+ */
+describe('hasUsableCache', () => {
+  const oldList: PhoneContact[] = [
     {
       id: 'card-1',
       name: '李淑纯',
       relation: '本人',
-      openingMessage: '嗨，我是淑纯',
+      openingMessage: '你来啦，今天想买点什么花？',
     },
     { id: 'c_1', name: '小雨', relation: '闺蜜', openingMessage: '在吗在吗' },
   ];
 
-  it('列表里还留着卡的主角本人时，是旧缓存', () => {
-    expect(isStaleContacts(staleList, fakeCard())).toBe(true);
+  it('旧缓存（还留着主角本人、relation 按主角算、没有 v）也是可用的，原样用', () => {
+    expect(hasUsableCache(oldList)).toBe(true);
   });
 
-  it('v 是 2 且只有其他人时，不是旧缓存', () => {
-    const fresh: PhoneContact[] = [
-      { id: 'c_1', name: '小雨', relation: '闺蜜', relationToMain: '闺蜜', openingMessage: '在吗在吗', v: 2 },
-    ];
-    expect(isStaleContacts(fresh, fakeCard())).toBe(false);
-  });
-
-  it('没有 v（v1 旧缓存，relation 还是按主角算的、没按 User 算过）时，是旧缓存', () => {
-    // 只有其他人、也没有主角，但 relation 是旧逻辑按主角算的，必须重算。
-    expect(isStaleContacts([staleList[1]], fakeCard())).toBe(true);
-  });
-
-  it('relation 写“本人”的条目也算主角，是旧缓存', () => {
+  it('relation 写“本人”的条目在旧缓存里也是可用的，不丢掉', () => {
     const list: PhoneContact[] = [
       { id: 'c_9', name: '淑纯', relation: '本人', openingMessage: '嗨' },
     ];
-    expect(isStaleContacts(list, fakeCard())).toBe(true);
+    expect(hasUsableCache(list)).toBe(true);
   });
 
-  it('空列表不是旧缓存', () => {
-    expect(isStaleContacts([], fakeCard())).toBe(false);
+  it('v 是 2 的新缓存是可用的', () => {
+    const fresh: PhoneContact[] = [
+      { id: 'c_1', name: '小雨', relation: '闺蜜', relationToMain: '闺蜜', openingMessage: '在吗在吗', v: 2 },
+    ];
+    expect(hasUsableCache(fresh)).toBe(true);
+  });
+
+  it('空列表算没缓存（调用方会调一次模型初始化）', () => {
+    expect(hasUsableCache([])).toBe(false);
+  });
+
+  it('null 算没缓存', () => {
+    expect(hasUsableCache(null)).toBe(false);
+  });
+
+  it('undefined 算没缓存', () => {
+    expect(hasUsableCache(undefined)).toBe(false);
+  });
+
+  it('读出来的不是数组（缓存损坏）算没缓存', () => {
+    expect(hasUsableCache('小雨')).toBe(false);
+    expect(hasUsableCache({ name: '小雨' })).toBe(false);
+    expect(hasUsableCache(42)).toBe(false);
   });
 });

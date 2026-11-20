@@ -128,16 +128,17 @@ function isMainCharacter(contact: { name: string; relation: string }, card: RPCa
 }
 
 /**
- * 旧缓存判定：联系人列表里还留着卡的主角本人，或联系人的 relation
- * 还是按旧逻辑算的（v 不是 2——v2 起 relation 是和 User 的关系，
- * v1 及更早是和主角的关系，关系没按 User 算过）。
+ * 缓存有没有可用的联系人列表：非空数组就是可用，原样用——不管它是
+ * 不是旧逻辑存的（里面还留着卡的主角本人、relation 还是按主角算的
+ * v1 旧关系、开场白还是卡的 first_mes 原文），都绝不因为“旧”就丢掉
+ * 重算。小手机的数据一旦初始化就定下来，只有用户点“重置”才能重新
+ * 初始化；想用新规则的旧聊天，点重置走一遍新的初始化。
  *
- * 旧逻辑初始化的缓存长这样：第一位是主角（卡名、relation 本人）。
- * 主角不是联系人，命中时调用方应丢掉缓存、重新初始化一次。
+ * 空列表、null、读出来的不是数组（缓存损坏），都算没缓存——调用方
+ * 这时才调一次模型初始化（首次打开的重试，不是重算已有数据）。
  */
-export function isStaleContacts(contacts: PhoneContact[], card: RPCard): boolean {
-  if (contacts.length === 0) return false;
-  return contacts.some((c) => isMainCharacter(c, card) || c.v !== 2);
+export function hasUsableCache(cached: unknown): cached is PhoneContact[] {
+  return Array.isArray(cached) && cached.length > 0;
 }
 
 /** 从模型返回的文本里抠出 JSON 数组（允许 ```json 代码块包裹）。 */
@@ -284,9 +285,6 @@ export function buildInitMessages(
  * 的）：初始化时还没对话可匹配，key 匹配会漏人，所以直接把世界书条目
  * 内容交给模型，让它把只在世界书里出现的人物也找出来。
  *
- * previousContacts 是以前缓存里的联系人（比如旧缓存判定为过期要重算
- * 时）：名字对得上的沿用以前的 id，微信记录不断档。
- *
  * user 是这个聊天的 User 身份（resolvePhoneUser 从聊天的 persona
  * 算出来）：初始化要告诉模型 User 是谁，联系人的 relation 才能按
  * User 来算；没传时提示词里明说没有单独定义 User 的身份。
@@ -297,7 +295,6 @@ export async function initContacts(
   connectionId: string,
   model: string,
   lorebookText = '',
-  previousContacts?: PhoneContact[],
   user?: PhoneUserIdentity,
 ): Promise<PhoneContact[] | null> {
   const result = await llm.complete(connectionId, {
@@ -307,5 +304,5 @@ export async function initContacts(
     maxTokens: 800,
     signal: AbortSignal.timeout(30_000),
   });
-  return parseContactsJson(result.text, card, previousContacts);
+  return parseContactsJson(result.text, card);
 }

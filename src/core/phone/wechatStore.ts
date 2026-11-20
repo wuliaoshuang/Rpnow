@@ -3,6 +3,8 @@
  *
  *   - 联系人：按聊天存，`rpnow:phone:contacts:<chatId>`，AI 初始化一次后缓存。
  *     联系人是卡里提到的其他人物（卡的主角本人不是联系人）。
+ *     缓存是权威的：一旦存下来就原样保留，打开时只读不改；只有用户点
+ *     “重置”（clearPhoneChat）才会删掉它、重新初始化。
  *   - 聊天记录：按联系人存，`rpnow:phone:wechat:<contactId>`。
  */
 import { idbStorage } from '@/core/storage/index.js';
