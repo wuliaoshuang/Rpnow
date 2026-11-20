@@ -113,6 +113,51 @@ export type StickerEmotion =
   | 'affectionate'
   | 'neutral';
 
+/**
+ * 朋友圈里的一条评论。用户和角色的评论存法一样：
+ * author 是“用户”（User 的名字）或某个角色名；replyTo 是被回复的那条
+ * 评论的作者（没有就是直接评这条朋友圈）；atName 是 @ 的那个人（没有
+ * 就是没 @ 谁）。AI 回复的评论也是这个形状。
+ */
+export interface MomentComment {
+  id: string;
+  author: string;
+  text: string;
+  replyTo?: string | null;
+  atName?: string | null;
+  timestamp: number;
+}
+
+/**
+ * 朋友圈里的一条动态。只由角色发——用户不发朋友圈（插件同款规矩）。
+ *
+ * text / summary / imageDesc / location / time / likers / likes 都是发帖
+ * 那次模型调用写出来的；imageUrl 是用户点图片后真的生出来的图（没点
+ * 之前是空的，只显示 imageDesc 的文字）；comments 是用户评论 + AI 回复，
+ * 和动态存在同一个对象里、一起进 IndexedDB。
+ */
+export interface MomentPost {
+  id: string;
+  /** 发帖的联系人（名字，和 PhoneContact.name 对得上）。 */
+  contactName: string;
+  text: string;
+  /** 一句话简介（约 30 字），供世界书记录；没有时用正文前 40 字代替。 */
+  summary: string;
+  /** 附图描述：模型写的画面描述，点图片后按它生图。 */
+  imageDesc: string;
+  location: string;
+  /** 模型写的发布时间（如“2026年11月20日 星期五 18:30”），显示用。 */
+  time: string;
+  /** 点赞人名单（顿号分隔的字符串，模型编的，只做展示）。 */
+  likers: string;
+  likes: number;
+  comments: MomentComment[];
+  /** 排序和持久化用的时间戳（发帖那一刻）。 */
+  timestamp: number;
+  /** 生出来的图的 media 引用（`media:<id>`），没生图时是 ''。 */
+  imageUrl: string;
+}
+
 /** The phone's own settings (lives under `settings.phone`). */
 export interface PhoneSettings {
   /** Chat model connection id (empty = main chat default). */
