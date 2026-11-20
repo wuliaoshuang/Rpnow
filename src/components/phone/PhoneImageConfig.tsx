@@ -77,6 +77,27 @@ export function PhoneImageConfig({
             />
           </label>
 
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium">画师串</span>
+            <input
+              value={phone.imageArtistTags ?? ''}
+              onChange={(e) => write({ imageArtistTags: e.target.value })}
+              placeholder="画师/画风标签，用逗号分隔，会加到提示词后面"
+              className="w-full rounded-lg border border-[var(--rp-border)] bg-[var(--rp-bg)] px-3 py-2 text-sm outline-none"
+            />
+          </label>
+
+          <label className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium">负面提示词</span>
+            <textarea
+              value={phone.imageNegativePrompt ?? ''}
+              onChange={(e) => write({ imageNegativePrompt: e.target.value })}
+              placeholder="不想出现的东西，会传给生图接口"
+              rows={2}
+              className="w-full resize-none rounded-lg border border-[var(--rp-border)] bg-[var(--rp-bg)] px-3 py-2 text-sm outline-none"
+            />
+          </label>
+
           <div className="flex flex-col gap-1.5">
             <span className="text-sm font-medium">图片尺寸</span>
             <div className="flex gap-2">

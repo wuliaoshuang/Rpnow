@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { RPCard } from '@/core/types/card.js';
-import { buildInitMessages, cleanOpeningMessage, fallbackContacts, parseContactsJson } from './contacts.js';
+import { buildInitMessages, cleanOpeningMessage, fallbackContacts, isStaleContacts, parseContactsJson } from './contacts.js';
+import type { PhoneContact } from './types.js';
 
 function fakeCard(overrides: Partial<RPCard['data']> = {}): RPCard {
   return {
@@ -208,5 +209,52 @@ describe('buildInitMessages', () => {
     expect(userText).toContain('照抄');
     expect(userText).toContain('*动作描写*');
     expect(userText).toContain('一大段角色扮演描写');
+  });
+
+  it('提示词要求写之前先想一想，写的时候保持在角色里、不 OOC、不提 AI', () => {
+    const messages = buildInitMessages(fakeCard());
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('先想一想');
+    expect(userText).toContain('这个人是谁');
+    expect(userText).toContain('不要 OOC');
+    expect(userText).toContain('绝不提自己是 AI');
+  });
+});
+
+describe('isStaleContacts', () => {
+  const staleList: PhoneContact[] = [
+    {
+      id: 'card-1',
+      name: '李淑纯',
+      relation: '本人',
+      // 旧逻辑存的缓存：主角开场白就是卡的 first_mes 原文。
+      openingMessage: '你来啦，今天想买点什么花？',
+      isMain: true,
+    },
+    { id: 'c_1', name: '小雨', relation: '闺蜜', openingMessage: '在吗在吗', isMain: false },
+  ];
+
+  it('主角开场白就是 first_mes 原文时，是旧缓存', () => {
+    expect(isStaleContacts(staleList, fakeCard())).toBe(true);
+  });
+
+  it('主角开场白是模型写的短消息时，不是旧缓存', () => {
+    const fresh: PhoneContact[] = [
+      { ...staleList[0], openingMessage: '嗨，我是淑纯，今天花店好热闹' },
+      staleList[1],
+    ];
+    expect(isStaleContacts(fresh, fakeCard())).toBe(false);
+  });
+
+  it('卡没有 first_mes 时，不是旧缓存', () => {
+    expect(isStaleContacts(staleList, fakeCard({ first_mes: '' }))).toBe(false);
+  });
+
+  it('空列表不是旧缓存', () => {
+    expect(isStaleContacts([], fakeCard())).toBe(false);
+  });
+
+  it('列表里没有主角时，不是旧缓存', () => {
+    expect(isStaleContacts([staleList[1]], fakeCard())).toBe(false);
   });
 });

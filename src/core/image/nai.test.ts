@@ -5,6 +5,7 @@ import {
   hasImageMarkers,
   IMAGE_SIZES,
   markerForTags,
+  naiJobAdapter,
   normalizeTags,
   parseImageMarkers,
   pollJob,
@@ -165,5 +166,76 @@ describe('extractSceneText', () => {
   it('keeps a long reply in full instead of cutting it off', () => {
     const text = extractSceneText('啊'.repeat(600));
     expect(text.length).toBe(600);
+  });
+});
+
+describe('naiJobAdapter', () => {
+  const conn = {
+    id: 'img_nai',
+    name: 'NAI',
+    provider: 'nai',
+    baseURL: 'https://nai.sta1n.cn',
+    apiKey: 'test-token',
+    defaultModel: 'nai-diffusion-5-full',
+  };
+
+  it('key 是 nai：image.generate 能按它找到这个适配器', () => {
+    expect(naiJobAdapter.key).toBe('nai');
+  });
+
+  it('提交时提示词和负面提示词都在 query 里，轮询后返回 data URL', async () => {
+    const calls: string[] = [];
+    const fakeFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      calls.push(`${init?.method ?? 'GET'} ${u}`);
+      if (u.includes('/api/jobs?')) {
+        return new Response(JSON.stringify({ id: 'job-1' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (u.includes('/api/jobs/job-1')) {
+        return new Response(JSON.stringify({ status: 'done', imageUrl: 'data:image/png;base64,AAA' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      // fetchAsDataUrl 取图：返回一小段 png。
+      return new Response(new Uint8Array([137, 80, 78, 71]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      });
+    }) as unknown as typeof fetch;
+
+    const results = await naiJobAdapter.generate(
+      conn,
+      {
+        prompt: '1girl, long blue hair, artist:test_artist',
+        negativePrompt: 'lowres, bad hands',
+        size: 'square',
+        model: 'nai-diffusion-5-full',
+      },
+      fakeFetch,
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0].provider).toBe('nai');
+    expect(results[0].model).toBe('nai-diffusion-5-full');
+    expect(results[0].dataUrl.startsWith('data:image/png;base64,')).toBe(true);
+
+    const submitCall = calls.find((c) => c.startsWith('POST'));
+    expect(submitCall).toBeDefined();
+    const submitUrl = new URL(submitCall!.slice('POST '.length));
+    expect(submitUrl.searchParams.get('prompt')).toBe('1girl, long blue hair, artist:test_artist');
+    expect(submitUrl.searchParams.get('negative')).toBe('lowres, bad hands');
+    expect(submitUrl.searchParams.get('token')).toBe('test-token');
+    expect(calls.some((c) => c.includes('/api/jobs/job-1'))).toBe(true);
+  });
+
+  it('提交失败时抛错，调用方能报出来', async () => {
+    const fakeFetch = (async () =>
+      new Response('nope', { status: 500 })) as unknown as typeof fetch;
+    await expect(
+      naiJobAdapter.generate(conn, { prompt: '1girl', size: 'square' }, fakeFetch),
+    ).rejects.toThrow('HTTP 500');
   });
 });

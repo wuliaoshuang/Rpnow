@@ -4,6 +4,11 @@
  * 联系人是当前聊天卡里出现的人物：主角 + 卡里提到的人。第一次打开时调一次
  * 模型找出来（见 `@/core/phone/contacts.js`），按聊天缓存进 IndexedDB，
  * 之后直接读缓存。每个联系人有自己的聊天记录，按联系人单独保存。
+ *
+ * 小手机是独立系统：回复只认角色本身是谁和微信自己的聊天记录，不跟主线
+ * 剧情走（见 `@/core/phone/reply.js`）。旧逻辑存的缓存（主角开场白就是卡
+ * 的 first_mes 原文）会在打开时丢掉、重新初始化，并把主角存过的微信记录
+ * 第一条也换成新开场白。
  */
 import * as React from 'react';
 import { ChevronLeft, Image as ImageIcon, Plus, Send, Settings } from 'lucide-react';
@@ -13,16 +18,19 @@ import { uid } from '@/lib/utils.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { LLMMessage } from '@/core/llm/types.js';
 import type { PhoneContact, PhoneMessage } from '@/core/phone/types.js';
-import { fallbackContacts, initContacts } from '@/core/phone/contacts.js';
+import { fallbackContacts, initContacts, isStaleContacts } from '@/core/phone/contacts.js';
+import { buildImagePromptMessages, buildReplySystemPrompt } from '@/core/phone/reply.js';
 import {
   ensureChat,
   greetingMessage,
   loadContacts,
   loadWeChatChat,
+  migrateStaleGreeting,
   saveContacts,
   saveWeChatChat,
 } from '@/core/phone/wechatStore.js';
 import { detectEmotion, pickSticker } from '@/core/phone/stickers.js';
+import { normalizeTags } from '@/core/image/nai.js';
 import { dataUrlToBlob, mediaRef, saveMediaImage } from '@/core/media/store.js';
 import { PressableImage } from '@/components/media/PressableImage.js';
 import { PhoneImageConfig } from './PhoneImageConfig.js';
@@ -99,14 +107,17 @@ export function WeChat({
 
   const phone = settings.phone ?? {};
 
-  // 联系人：先读缓存；没缓存才调一次模型初始化，失败就只留主角。
+  // 联系人：先读缓存；没缓存、或缓存是旧逻辑存的（主角开场白就是卡的
+  // first_mes 原文），才调一次模型初始化，失败就只留主角。
+  // 旧缓存命中时，初始化成功后还会把主角存过的微信记录第一条也换掉。
   React.useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
         const cached = await loadContacts(chatId);
         if (cancelled) return;
-        if (cached && cached.length > 0) {
+        const stale = !!cached && cached.length > 0 && isStaleContacts(cached, card);
+        if (cached && cached.length > 0 && !stale) {
           setContacts(cached);
           return;
         }
@@ -118,6 +129,19 @@ export function WeChat({
             const initialized = await initContacts(card, llm, connectionId, model);
             if (cancelled) return;
             const list = initialized ?? fallbackContacts(card);
+            // 先迁存过的第一条消息，再把新联系人摆出来：列表预览读的
+            // 就是迁过的记录，不会闪一下旧的 first_mes。
+            if (stale) {
+              const freshMain = list.find((c) => c.isMain);
+              if (freshMain) {
+                try {
+                  await migrateStaleGreeting(card, freshMain);
+                } catch {
+                  // 迁移失败不挡路，下次打开还会再试。
+                }
+              }
+            }
+            if (cancelled) return;
             setContacts(list);
             await saveContacts(chatId, list);
             return;
@@ -201,6 +225,18 @@ export function WeChat({
     [persist],
   );
 
+  /** 就地改一条系统提示的内容（生图的两段状态共用同一条提示）。 */
+  const updateNote = React.useCallback(
+    (contact: PhoneContact, noteId: string, content: string) => {
+      setMessages((prev) => {
+        const next = prev.map((m) => (m.id === noteId ? { ...m, content } : m));
+        void persist(contact, next);
+        return next;
+      });
+    },
+    [persist],
+  );
+
   const openChat = React.useCallback(
     async (contact: PhoneContact) => {
       setSelected(contact);
@@ -238,28 +274,9 @@ export function WeChat({
       }
       const model = phone.chatModel || connection.defaultModel || '';
       const recent = history.filter((m) => m.role !== 'system').slice(-10);
-      const systemPrompt = contact.isMain
-        ? [
-            `你是「${card.data.name}」，正在微信上和用户聊天。`,
-            card.data.description ? `角色介绍：${card.data.description}` : '',
-            card.data.personality ? `性格：${card.data.personality}` : '',
-            card.data.scenario ? `场景：${card.data.scenario}` : '',
-            card.data.first_mes ? `开场白：${card.data.first_mes}` : '',
-            '请用角色的口吻简短回复，像在微信上发消息：1–3 句短句，口语化、亲切。不要写长段角色扮演，不要加舞台提示、括号说明或动作描写。',
-          ]
-            .filter(Boolean)
-            .join('\n')
-        : [
-            `你是「${contact.name}」，是「${card.data.name}」的${contact.relation}，正在微信上和用户聊天。`,
-            card.data.description ? `角色卡介绍：${card.data.description}` : '',
-            card.data.scenario ? `场景：${card.data.scenario}` : '',
-            contact.openingMessage
-              ? `你发来的第一条消息：${contact.openingMessage}`
-              : '',
-            '请用这个人的口吻简短回复，像在微信上发消息：1–3 句短句，口语化、亲切。不要写长段角色扮演，不要加舞台提示、括号说明或动作描写。',
-          ]
-            .filter(Boolean)
-            .join('\n');
+      // 小手机是独立系统：回复只认角色本身是谁和微信自己的聊天记录，
+      // 不跟主线剧情走——场景、开场白、主线消息一律不进提示词。
+      const systemPrompt = buildReplySystemPrompt(card, contact);
       const llmMessages: LLMMessage[] = [
         { role: 'system', content: systemPrompt },
         ...recent.map((m): LLMMessage => ({
@@ -337,7 +354,7 @@ export function WeChat({
   const generateImage = async () => {
     const contact = selected;
     if (!contact || generating) return;
-    const prompt = imagePrompt.trim() || `${contact.name}，精美插画`;
+    const rawPrompt = imagePrompt.trim() || `${contact.name}，精美插画`;
     const connectionId = phone.imageConnectionId || imageConnections[0]?.id || '';
     if (!image || !connectionId) {
       appendMessages(contact, [
@@ -350,11 +367,41 @@ export function WeChat({
       return;
     }
     setGenerating(true);
-    const note = makeMessage({ role: 'system', type: 'text', content: '正在生成图片…' });
+    // Agent 流程：先让模型按角色形象写正面提示词，再调生图工具。
+    // 画师串和负面提示词是用户在设置里配好的，模型不管，只拼进去。
+    const llmConnectionId = phone.chatConnectionId || settings.defaultConnectionId || '';
+    const llmConnection = llmConnections.find((c) => c.id === llmConnectionId);
+    const useAgent = Boolean(llm && llmConnection);
+    const note = makeMessage({
+      role: 'system',
+      type: 'text',
+      content: useAgent ? '正在想要画什么…' : '正在生成图片…',
+    });
     appendMessages(contact, [note]);
+    let positivePrompt = rawPrompt;
+    if (useAgent && llm && llmConnection) {
+      try {
+        const model = phone.chatModel || llmConnection.defaultModel || '';
+        const result = await llm.complete(llmConnectionId, {
+          model,
+          messages: buildImagePromptMessages(card, contact, rawPrompt),
+          temperature: 0.7,
+          maxTokens: 300,
+        });
+        const agentPrompt = result.text.trim();
+        if (agentPrompt) positivePrompt = agentPrompt;
+      } catch {
+        // 模型写不出来就用用户原话，不挡生图。
+      }
+    }
+    const artistTags = normalizeTags(phone.imageArtistTags ?? '');
+    const prompt = artistTags ? `${positivePrompt}, ${artistTags}` : positivePrompt;
+    const negativePrompt = phone.imageNegativePrompt?.trim() || undefined;
+    updateNote(contact, note.id, '正在生成图片…');
     try {
       const results = await image.generate(connectionId, {
         prompt,
+        ...(negativePrompt ? { negativePrompt } : {}),
         size: phone.imageSize ?? 'square',
         model: phone.imageModel || undefined,
       });

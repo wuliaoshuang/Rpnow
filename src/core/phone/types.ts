@@ -36,7 +36,10 @@ export interface PhoneContact {
   name: string;
   /** 和主角的关系，如“本人”“闺蜜”“哥哥”。 */
   relation: string;
-  /** 它发来的第一条消息（微信口吻）。主角用卡的 first_mes。 */
+  /**
+   * 它发来的第一条消息（微信口吻），由模型按剧情写的短消息；
+   * 主角也一样，不再直接用卡的 first_mes。
+   */
   openingMessage: string;
   /** 是否主角（卡本身）。 */
   isMain: boolean;
@@ -73,6 +76,10 @@ export interface PhoneSettings {
   imageModel?: string;
   /** Image shape. */
   imageSize?: PhoneImageSize;
+  /** 画师串：画师/画风标签，生图时加到正面提示词后面（空着不加）。 */
+  imageArtistTags?: string;
+  /** 负面提示词：不想出现的东西，生图时传给生图接口（空着不传）。 */
+  imageNegativePrompt?: string;
 }
 
 /** Image size options the phone's image config offers. */
