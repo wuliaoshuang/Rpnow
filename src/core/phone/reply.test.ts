@@ -120,7 +120,7 @@ describe('buildReplySystemPrompt', () => {
 
 describe('buildImagePromptMessages', () => {
   it('带着角色的介绍和性格，让模型提炼外貌特征', () => {
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花');
+    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', []);
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain('和闺蜜小雨一起开花店');
     expect(userText).toContain('蓝发蓝眼');
@@ -132,13 +132,13 @@ describe('buildImagePromptMessages', () => {
   });
 
   it('带着用户想画的内容', () => {
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花');
+    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', []);
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain('李淑纯在花店里包花');
   });
 
   it('要求只输出提示词本身，不要解释、不要 JSON', () => {
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花');
+    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', []);
     const systemText = messages.find((m) => m.role === 'system')?.content ?? '';
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(systemText).toContain('只返回提示词本身');
@@ -148,10 +148,48 @@ describe('buildImagePromptMessages', () => {
   });
 
   it('非主角：带着名字和与主角的关系', () => {
-    const messages = buildImagePromptMessages(fakeCard(), otherContact, '小雨在花店门口招手');
+    const messages = buildImagePromptMessages(fakeCard(), otherContact, '小雨在花店门口招手', []);
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain('小雨');
     expect(userText).toContain('闺蜜');
     expect(userText).toContain('小雨在花店门口招手');
+  });
+
+  it('带着最近的聊天记录，让模型按对话里的场景画图', () => {
+    const history = [
+      {
+        role: 'assistant' as const,
+        content: '九月的阳光从法桐树冠的缝隙间漏下来，在柏油路面上铺展出一片碎金般的光斑。',
+      },
+      { role: 'user' as const, content: '今天天气真好，你在哪呢？' },
+      {
+        role: 'assistant' as const,
+        content: '我在老街这边买凉皮呢，就在那家法桐树底下等位置。',
+      },
+      { role: 'user' as const, content: '在哪呢？你给我发张图片，我去找你' },
+    ];
+    const messages = buildImagePromptMessages(fakeCard(), mainContact, '在老街法桐树下买凉皮', history);
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    // 场景从聊天记录里来：地点、动作、光线都在提示词的消息里。
+    expect(userText).toContain('老街');
+    expect(userText).toContain('法桐树');
+    expect(userText).toContain('凉皮');
+    expect(userText).toContain('阳光');
+    expect(userText).toContain('最近的微信聊天记录');
+    // 要的是有场景的图，不是白底人像。
+    expect(userText).toContain('现在的场景');
+    expect(userText).toContain('不是白底人像');
+    expect(userText).toContain('场景从聊天记录里来');
+  });
+
+  it('没有聊天记录时也能用：只有外貌和想画的内容，不带对话段', () => {
+    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', []);
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('蓝发蓝眼');
+    expect(userText).toContain('李淑纯在花店里包花');
+    // 没有对话段：既没有对话段的标题，也没有“用户：/角色名：”这种对话行
+    // （要求里那句“先读最近的微信聊天记录”是写提示词的指令，不算对话段）。
+    expect(userText).not.toContain('最近的微信聊天记录（按时间顺序');
+    expect(userText).not.toContain('用户：');
   });
 });

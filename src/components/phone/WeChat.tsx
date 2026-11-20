@@ -25,6 +25,7 @@ import type { LLMMessage, LLMResult } from '@/core/llm/types.js';
 import type { PhoneContact, PhoneMessage, StickerEmotion } from '@/core/phone/types.js';
 import { fallbackContacts, initContacts, isStaleContacts } from '@/core/phone/contacts.js';
 import { buildImagePromptMessages, buildReplySystemPrompt } from '@/core/phone/reply.js';
+import type { ChatHistoryEntry } from '@/core/phone/reply.js';
 import {
   PHONE_TOOLS,
   parseReplyMarkers,
@@ -87,6 +88,26 @@ function Avatar({
       {name.charAt(0) || '？'}
     </span>
   );
+}
+
+/**
+ * 把微信聊天记录换成纯文字条目（回复和生图提示词都用它）：
+ * 系统消息不要；图片和表情包换成占位文字；只留最近 10 条。
+ * 生图尤其需要它——没有对话场景，模型只能画一张白底人像。
+ */
+function historyEntries(messages: PhoneMessage[]): ChatHistoryEntry[] {
+  return messages
+    .filter((m) => m.role !== 'system')
+    .slice(-10)
+    .map((m) => ({
+      role: m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+      content:
+        m.type === 'text'
+          ? m.content
+          : m.type === 'image'
+            ? '[对方发来一张图片]'
+            : '[表情]',
+    }));
 }
 
 export function WeChat({
@@ -304,9 +325,13 @@ export function WeChat({
    *
    * “＋”按钮（用输入框的文字）和 Agent 的 send_image 工具调用
    * （用工具的 description）都走这里。生成中的状态提示同一条，就地更新。
+   *
+   * history 是这个联系人的微信聊天记录：写提示词的模型要先读它，弄清楚
+   * 现在的场景（在哪、在做什么、周围有什么），才能把角色画进场景里，
+   * 而不是只画一张白底人像。
    */
   const generateImageFromDescription = React.useCallback(
-    async (contact: PhoneContact, description: string) => {
+    async (contact: PhoneContact, description: string, history: PhoneMessage[]) => {
       if (generating) return;
       const rawPrompt = description.trim() || `${contact.name}，精美插画`;
       const connectionId = phone.imageConnectionId || imageConnections[0]?.id || '';
@@ -338,7 +363,7 @@ export function WeChat({
           const model = phone.chatModel || llmConnection.defaultModel || '';
           const result = await llm.complete(llmConnectionId, {
             model,
-            messages: buildImagePromptMessages(card, contact, rawPrompt),
+            messages: buildImagePromptMessages(card, contact, rawPrompt, historyEntries(history)),
             temperature: 0.7,
             maxTokens: 300,
           });
@@ -444,15 +469,7 @@ export function WeChat({
       const systemPrompt = buildReplySystemPrompt(card, contact);
       const llmMessages: LLMMessage[] = [
         { role: 'system', content: systemPrompt },
-        ...recent.map((m): LLMMessage => ({
-          role: m.role === 'assistant' ? 'assistant' : 'user',
-          content:
-            m.type === 'text'
-              ? m.content
-              : m.type === 'image'
-                ? '[对方发来一张图片]'
-                : '[表情]',
-        })),
+        ...historyEntries(recent),
       ];
       const baseRequest = {
         model,
@@ -503,7 +520,8 @@ export function WeChat({
           ]);
         }
         for (const description of imageDescriptions) {
-          await generateImageFromDescription(contact, description);
+          // 生图要带着最近的对话：模型得知道现在是什么场景，才能把角色画进场景里。
+          await generateImageFromDescription(contact, description, recent);
         }
         for (const emotion of stickerEmotions) {
           const stickerUrl = pickSticker(emotion);
@@ -572,11 +590,11 @@ export function WeChat({
     void requestReply(contact, next);
   };
 
-  /** “＋”里的生图按钮：用输入框的文字调同一条 Agent 生图流程。 */
+  /** “＋”里的生图按钮：用输入框的文字调同一条 Agent 生图流程，带着当前聊天的记录当场景。 */
   const generateImage = () => {
     const contact = selected;
     if (!contact) return;
-    void generateImageFromDescription(contact, imagePrompt);
+    void generateImageFromDescription(contact, imagePrompt, messages);
   };
 
   // ---------------- 联系人列表 ----------------
