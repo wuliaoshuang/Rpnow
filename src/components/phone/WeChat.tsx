@@ -1,18 +1,17 @@
 /**
  * WeChat — 小手机里的微信。
  *
- * 联系人是当前聊天卡里提到的人物：去世界书 / 设定里找提到了哪些人，
- * 转成联系人（卡的主角本人不是联系人——微信是主角的手机，联系人是
- * 主角世界里的其他人）。第一次打开时调一次模型找出来（见
- * `@/core/phone/contacts.js`），按聊天缓存进 IndexedDB，之后直接读缓存。
- * 之后还有一条持续更新路（PR #54，见 `@/core/phone/phoneData.js`）：
- * 打开手机时建一本内置预设书“小手机·预设”挂到聊天上，主聊天的模型每轮
- * 回复后在正文末尾追加一个隐藏数据块（HTML 注释，聊天里不显示），列出
- * 本轮出现的人物；手机扫主聊天消息里的块，把新人合并进联系人（已有的
- * 人不动 id 和好感度），不用等“重置”。
+ * 联系人是主聊天里出现过的人物（卡的主角本人不是联系人——微信是
+ * 主角的手机，联系人是主角世界里的其他人）。联系人只从一个地方来：
+ * 主聊天的模型每轮回复后在正文末尾追加的隐藏数据块（HTML 注释，见
+ * `@/core/phone/phoneData.js`），手机扫到块就把里面的人合并进联系人
+ * 列表、把里面的新消息贴进对应联系人的微信记录。手机自己不调模型认人——
+ * 旧的初始化（PR #53：第一次打开时读最近 30 条主聊天消息、调一次模型
+ * 认人）已经删掉了。所以第一次打开时联系人列表是空的，主聊天产出
+ * 隐藏数据块后才慢慢填进来；点“重置”清掉后，也是等主聊天后续产出
+ * 新的数据块再填回来。
  * 每个联系人有自己的聊天记录，按联系人单独保存；每个联系人还带一条
  * 自己的人设（profile），回复时写进他/她自己的 system prompt，模型
- * 扮演他/她才不会 OOC。每个联系人还有好感度（0–100，从 0 开始）：
  * 用户发消息 +1，角色回一次 +1，封顶 100，存在联系人缓存里、关掉重开
  * 还在；50 解锁约会请求，80 解锁私密照；好感度也写进回复提示词，模型
  * 按亲密度回。
@@ -20,15 +19,14 @@
  * 小手机是独立系统：微信是单独的聊天，不续写主线剧情；但回复时会把
  * 主线聊天（手机外面那个正常聊天）的最近进展当剧情进度放进提示词，
  * 只做了解，让角色知道剧情到了哪一步（见 `@/core/phone/reply.js`）。
- * 联系人缓存是权威的：初始化只做一次，之后不管缓存是哪个版本存的
- * （里面还留着卡的主角本人、relation 还是按主角算的 v1 旧关系），都
- * 原样保留、绝不悄悄重新初始化、绝不悄悄改动；只有用户点“重置”才
- * 会删掉缓存、重新初始化一次。角色还是个 Agent：回复时模型能自己调发图和发表
+ * 联系人缓存是权威的：有缓存就原样保留、绝不悄悄重新认人、绝不悄悄
+ * 改动；只有用户点“重置”才会删掉缓存、清掉微信记录。角色还是个 Agent：回复时模型能自己调发图和发表
  * 情包两个工具（见 `@/core/phone/tools.js`），用户要看图就真发一张图，
  * 想表达情绪就发表情包，不只靠文字；不支持工具调用的提供商改走文字里的
  * `[发图：…]` / `[表情：…]` 标记兜底。联系人列表右上角有个“重置”：
  * 点它确认后会删掉本聊天的全部小手机记录（联系人缓存 + 每个联系人的
- * 微信记录 + 群聊 + 朋友圈），再让 AI 根据角色卡重新初始化一次；主聊天和相册不受影响。
+ * 微信记录 + 群聊 + 朋友圈），联系人列表回到空的，等主聊天后续产出
+ * 隐藏数据块再填回来；主聊天和相册不受影响。
  *
  * 群聊（PR #49，插件 v1.8.7 群聊逻辑的 Rpnow 版）：从联系人里多选
  * 成员、起个群名就能建群（同名不让建），群和一对一一起按最后一条
@@ -60,10 +58,8 @@ import {
   displayRelation,
   fallbackContacts,
   hasUsableCache,
-  initContacts,
   isDateUnlocked,
   isPrivatePhotoUnlocked,
-  resolvePhoneUser,
 } from '@/core/phone/contacts.js';
 import { currentMessages } from '@/core/branch/engine.js';
 import { computeReplyExtras, historyEntries } from '@/core/phone/replyExtras.js';
@@ -110,8 +106,9 @@ import {
   saveWeChatChat,
 } from '@/core/phone/wechatStore.js';
 import {
-  extractHiddenCharactersFromMessages,
+  extractHiddenDataFromMessages,
   mergeHiddenCharacters,
+  mergeHiddenData,
 } from '@/core/phone/phoneData.js';
 import { ensurePhonePresetBook } from '@/core/phone/phonePresetStore.js';
 import { detectEmotion, pickSticker } from '@/core/phone/stickers.js';
@@ -159,9 +156,9 @@ export function WeChat({
   const llm = useLLM();
   const image = useImage();
 
-  /** null = 还在认识卡里的人（只在第一次打开这个聊天时出现）。 */
+  /** null = 还在读缓存（第一次打开这个聊天时出现）。 */
   const [contacts, setContacts] = React.useState<PhoneContact[] | null>(null);
-  /** 群列表：null = 还没读出来；[] = 这部聊天没有群（老聊天第一次打开就是这样，不触发重新初始化）。 */
+  /** 群列表：null = 还没读出来；[] = 这部聊天没有群（老聊天第一次打开就是这样，不会凭空多出群）。 */
   const [groups, setGroups] = React.useState<PhoneGroup[] | null>(null);
   const [selected, setSelected] = React.useState<PhoneContact | null>(null);
   /** 打开的群聊（和 selected 二选一）。 */
@@ -201,21 +198,20 @@ export function WeChat({
 
   const phone = settings.phone ?? {};
 
-  // 联系人：先读缓存；有缓存就直接用——缓存是权威的，初始化只做一次。
+  // 联系人：先读缓存；有缓存就直接用——缓存是权威的，只读不改。
   // 哪怕缓存是旧逻辑存的（里面还留着卡的主角本人，或 relation 还是按
   // 主角算的、没按 User 算过），也原样保留，绝不悄悄丢掉重算、绝不悄悄
-  // 改动；想用新规则的旧聊天，点“重置”重新初始化。
-  // 只有没缓存（第一次打开）、缓存是空列表或读出来的不是列表时，才调
-  // 一次模型初始化。初始化成功就存下来；缓存写失败也不影响本次使用——
-  // 内存里的联系人照常用，下次打开再试一次初始化（这是首次打开的重试，
-  // 不是重算已有数据）。初始化失败才用兜底（空列表，不存，下次打开再试一次）。
+  // 改动；想清掉就点“重置”。
+  // 没有缓存（第一次打开）、缓存是空列表或读出来的不是列表时，给空列表，
+  // 不调模型：联系人只从主聊天回复里的隐藏数据块里来（见下面那个扫描
+  // effect），主聊天产出数据块后才慢慢填进来。读缓存失败也一样给空列表。
   React.useEffect(() => {
     let cancelled = false;
     void (async () => {
-      // 小手机预设（PR #54）：打开手机就把“小手机·预设”这本世界书建出来/
+      // 小手机预设：打开手机就把“小手机·预设”这本世界书建出来/
       // 更新好，挂到这个聊天的 lorebookIds 上——主聊天的提示词流水线每轮
       // 都会读到它，模型在正文末尾追加隐藏数据块，小手机再从主聊天消息里
-      // 读出来认人。只建书、不调模型；建失败也不挡联系人加载，下次打开再试。
+      // 读出来认人、贴消息。只建书、不调模型；建失败也不挡联系人加载，下次打开再试。
       try {
         const presetState = useApp.getState();
         const presetChat = presetState.chats.find((c) => c.id === chatId);
@@ -228,7 +224,7 @@ export function WeChat({
           });
         }
       } catch {
-        // 预设书建失败不挡路：联系人初始化照常走，下次打开再试。
+        // 预设书建失败不挡路：联系人加载照常走，下次打开再试。
       }
       try {
         const cached = await loadContacts(chatId);
@@ -237,48 +233,7 @@ export function WeChat({
           setContacts(cached);
           return;
         }
-        const connectionId = phone.chatConnectionId || settings.defaultConnectionId || '';
-        const connection = llmConnections.find((c) => c.id === connectionId);
-        if (llm && connection) {
-          try {
-            const model = phone.chatModel || connection.defaultModel || '';
-            // 联系人从主聊天里来：初始化只读主聊天的消息记录，让模型从
-            // 对话里找出出现过的人物（最近 30 条，buildInitMessages 里
-            // 压成对话记录）。世界书、预设、卡的字段一律不读——只在世界书
-            // 里出现、还没在主聊天里露过面的人，不进联系人列表。
-            const state = useApp.getState();
-            const chatForInit = state.chats.find((c) => c.id === chatId);
-            const initMessages = chatForInit ? currentMessages(chatForInit) : [];
-            // User 的身份：主聊天里 {{user}} 就是这么定的（聊天的 persona，
-            // 没有就第一个人设）。初始化要告诉模型 User 是谁，联系人的
-            // relation 才能按 User 来算，而不是只按主角来算、搞不清关系。
-            const initUser = chatForInit
-              ? resolvePhoneUser(chatForInit, state.personas)
-              : undefined;
-            const initialized = await initContacts(
-              card,
-              llm,
-              connectionId,
-              model,
-              initMessages,
-              initUser,
-            );
-            if (cancelled) return;
-            if (initialized !== null) {
-              setContacts(initialized);
-              try {
-                await saveContacts(chatId, initialized);
-              } catch {
-                // 缓存写失败：本次照常用内存里的联系人，下次打开再试一次初始化。
-              }
-              return;
-            }
-            // 初始化失败（解析不出来），掉到下面的兜底，不存——下次打开再试。
-          } catch {
-            // 初始化失败，掉到下面的兜底。
-          }
-        }
-        if (!cancelled) setContacts(fallbackContacts(card));
+        if (!cancelled) setContacts([]);
       } catch {
         if (!cancelled) setContacts(fallbackContacts(card));
       }
@@ -286,19 +241,10 @@ export function WeChat({
     return () => {
       cancelled = true;
     };
-  }, [
-    chatId,
-    card,
-    llm,
-    llmConnections,
-    phone.chatConnectionId,
-    phone.chatModel,
-    settings.defaultConnectionId,
-    resetNonce,
-  ]);
+  }, [chatId, card, resetNonce]);
 
   // 群列表：只读缓存。老聊天第一次打开是空的（没有群），不触发任何
-  // 重新初始化——群是用户后来建的，建群时才写缓存。
+  // 重新认人——群是用户后来建的，建群时才写缓存。
   React.useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -317,8 +263,9 @@ export function WeChat({
   /**
    * 清空并重置：删掉本聊天的全部小手机记录（联系人缓存 + 每个联系人的
    * 微信记录 + 群列表和群聊记录 + 朋友圈动态），再把联系人置空、让加载 effect 重新跑一遍——
-   * 缓存已经删了，所以会真的再调一次模型重新初始化。主聊天、相册、
-   * 其他聊天不动。朋友圈清掉之后从空开始（动态只在用户点“发朋友圈”
+   * 缓存已经删了，加载 effect 会给空列表；联系人之后等主聊天后续产出
+   * 隐藏数据块、由扫描 effect 重新填回来（已经扫过的数据块不会重扫）。
+   * 主聊天、相册、其他聊天不动。朋友圈清掉之后从空开始（动态只在用户点“发朋友圈”
    * 时才生成，不会自动回来）。群也一样：清掉之后从空开始，不会自动回来。
    */
   const confirmReset = () => {
@@ -329,7 +276,7 @@ export function WeChat({
       try {
         await clearPhoneChat(chatId, list);
       } catch {
-        // 清理失败也不挡路：缓存读不到时初始化一样会重跑。
+        // 清理失败也不挡路：缓存读不到时，加载 effect 会给空列表。
       }
       try {
         await clearPhoneGroups(chatId, groups ?? []);
@@ -501,25 +448,98 @@ export function WeChat({
     contactsRef.current = contacts;
   }, [contacts]);
 
+  /** 当前打开的联系人（隐藏数据扫描 effect 用：新消息来了直接刷进正在看的窗口）。 */
+  const selectedRef = React.useRef<PhoneContact | null>(null);
+  React.useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+
   /** 主聊天（手机外面那个正常聊天）：手机开着的时候，主聊天有新消息就扫一遍隐藏数据块。 */
   const mainChat = useApp((s) => s.chats.find((c) => c.id === chatId));
 
-  // 隐藏数据合并（PR #54）：主聊天消息里的隐藏数据块是联系人的持续更新路。
-  // 联系人加载好之后、以及主聊天有新消息时（手机开着的时候），扫一遍主聊天
-  // 的当前消息，把块里的人合并进联系人列表：已经在的人原样保留（id、好感度、
-  // 微信记录都不动），新人才加进来、好感度从 0 开始。没扫到新东西时不碰缓存。
-  // 不调模型——数据就是主聊天自己的回复里已经写好的东西。
+  /**
+   * 隐藏数据扫描的水位线：上次扫到哪条主聊天消息（按消息 id 记，
+   * 每个聊天一份，存在内存里）。每次只扫水位线之后的新消息，不把整个
+   * 历史从头扫一遍——主聊天越聊越长，全量重扫会越来越慢。
+   * 第一次打开手机时水位线是空的，会把已有的消息全扫一遍（把聊天里
+   * 已经有的数据块捡起来）；之后主聊天每来一条新消息，只扫那一条。
+   * 重开手机会重建水位线、再全扫一遍历史，这时去重靠合并那一步
+   * （mergeHiddenData 按记录里最后 20 条去重），消息不会贴两遍。
+   * 点“重置”不清水位线：重置后联系人等主聊天后续产出新的数据块再填回来。
+   */
+  const hiddenScanRef = React.useRef<{ chatId: string; lastId: string | null }>({
+    chatId: '',
+    lastId: null,
+  });
+
+  // 隐藏数据合并：主聊天消息里的隐藏数据块是联系人和微信消息的唯一来源。
+  // 联系人加载好之后、以及主聊天有新消息时（手机开着的时候），扫水位线
+  // 之后的新消息，把块里的人合并进联系人列表（已经在的人原样保留 id、
+  // 好感度、微信记录，新人才加进来、好感度从 0 开始），把块里的新消息
+  // 贴进对应联系人的微信记录（user 角色的是 User 发给这个联系人的，
+  // character 角色的是这个联系人发来的；去重按记录里最后 20 条）。
+  // 贴进微信记录就是写进上下文：手机回复时读的就是微信记录。
+  // 不调模型——数据就是主聊天自己的回复里已经写好的东西。没扫到新东西
+  // 时不碰缓存、不碰记录。
   React.useEffect(() => {
     if (!contacts || !mainChat) return;
-    const found = extractHiddenCharactersFromMessages(currentMessages(mainChat), card.data.name);
-    if (found.length === 0) return;
-    const merged = mergeHiddenCharacters(contactsRef.current ?? contacts, found);
-    if (!merged.changed) return;
-    contactsRef.current = merged.contacts;
-    setContacts(merged.contacts);
-    void saveContacts(chatId, merged.contacts).catch(() => {
-      // 缓存写失败：内存里是对的，本次照常用。
-    });
+    const all = currentMessages(mainChat);
+    let start = 0;
+    if (hiddenScanRef.current.chatId === chatId && hiddenScanRef.current.lastId) {
+      const idx = all.findIndex((m) => m.id === hiddenScanRef.current.lastId);
+      if (idx >= 0) start = idx + 1;
+    }
+    const fresh = all.slice(start);
+    if (fresh.length === 0) return;
+    hiddenScanRef.current = { chatId, lastId: fresh[fresh.length - 1].id };
+    const found = extractHiddenDataFromMessages(fresh, card.data.name);
+    if (found.characters.length === 0 && found.messages.length === 0) return;
+    void (async () => {
+      const base = contactsRef.current ?? contacts;
+      // 先算出这次会涉及哪些联系人（块里点名的人），把他们已有的微信记录
+      // 读出来，合并时拿它去重；块里只带了消息、没带人时，合并那一步会先
+      // 建最小联系人（没有旧记录，按空记录算）。
+      const mergedChars = mergeHiddenCharacters(base, found.characters);
+      const involvedIds = new Set<string>();
+      for (const msg of found.messages) {
+        const c = mergedChars.contacts.find(
+          (x) => x.name.trim().toLowerCase() === msg.character.trim().toLowerCase(),
+        );
+        if (c) involvedIds.add(c.id);
+      }
+      const existingChats = new Map<string, PhoneMessage[]>();
+      for (const id of involvedIds) {
+        try {
+          const chat = await loadWeChatChat(id);
+          if (chat) existingChats.set(id, chat.messages);
+        } catch {
+          // 读不到就按空记录算，合并那一步会以开场白起头。
+        }
+      }
+      const res = mergeHiddenData(base, found, existingChats, card.data.name);
+      if (res.contactsChanged) {
+        contactsRef.current = res.contacts;
+        setContacts(res.contacts);
+        void saveContacts(chatId, res.contacts).catch(() => {
+          // 缓存写失败：内存里是对的，本次照常用。
+        });
+      }
+      for (const [contactId, messages] of res.chats) {
+        void saveWeChatChat({
+          cardId: card.id,
+          contactId,
+          messages,
+          updatedAt: Date.now(),
+        }).catch(() => {
+          // 写失败不挡路：内存里那份（正在看的聊天窗口）下面会直接刷出来。
+        });
+      }
+      // 正在看的那个联系人刚好收到新消息，直接刷出来，不用退出重进。
+      const open = selectedRef.current;
+      if (open && res.chats.has(open.id)) {
+        setMessages(res.chats.get(open.id) ?? []);
+      }
+    })();
   }, [mainChat, contacts, chatId, card]);
 
   /** 群列表的 ref：回群消息时要读最新的成员（踢人/加人后群会变）。 */
@@ -1272,7 +1292,7 @@ export function WeChat({
         <div className="min-h-0 flex-1 overflow-y-auto">
           {loading ? (
             <p className="animate-pulse px-4 py-8 text-center text-sm text-neutral-500">
-              正在认识卡里的人…
+              正在打开微信…
             </p>
           ) : (listItems?.length ?? 0) === 0 ? (
             <p className="px-4 py-8 text-center text-sm text-neutral-500">
@@ -1411,8 +1431,8 @@ export function WeChat({
             <div className="w-full max-w-[280px] rounded-2xl bg-white p-4 shadow-xl">
               <h3 className="text-[15px] font-semibold text-neutral-900">清空并重置？</h3>
               <p className="mt-1.5 text-[13px] leading-relaxed text-neutral-600">
-                会删掉这个聊天的全部小手机记录（联系人、聊天记录、群聊和朋友圈），然后让 AI
-                根据角色卡重新初始化。主聊天和相册不受影响。
+                会删掉这个聊天的全部小手机记录（联系人、聊天记录、群聊和朋友圈）。之后主聊天
+                再产出新的隐藏数据块时，联系人才会重新出现。主聊天和相册不受影响。
               </p>
               <div className="mt-4 flex gap-2">
                 <button

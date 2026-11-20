@@ -1,33 +1,31 @@
 /**
- * 联系人初始化的单元测试：只测纯函数（解析、兜底、提示词），
- * 不测真的调模型——模型调用在 Playwright 里用假接口验。
+ * 联系人的单元测试：只测还留着的纯函数（兜底、开场白、User 身份、
+ * 关系显示、缓存判定、好感度），不测真的调模型。
  *
- * 卡的主角本人不是联系人：解析时名字是卡名、或 relation 写“本人”
- * 的条目都跳过；兜底是空列表，不编联系人。
- * relation 是和 User 的关系（不是和主角的关系），和主角的关系写进
- * relationToMain；新解析的联系人一律写 v: 2。
+ * 旧的初始化（PR #53：读最近 30 条主聊天消息、调一次模型认人）已经
+ * 删掉了：initContacts / buildInitMessages / formatChatTranscript /
+ * parseContactsJson / INIT_CHAT_WINDOW 都不在了，下面的“旧初始化已删”
+ * 一节就是证明——直接读源码断言这些名字在 src 里已经不存在。
+ *
+ * 卡的主角本人不是联系人；relation 是和 User 的关系（不是和主角的关系），
+ * 和主角的关系写进 relationToMain；新认出来的联系人一律写 v: 2。
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { RPCard } from '@/core/types/card.js';
-import type { RPChatMessage, RPPersona } from '@/core/types/chat.js';
-import type { LLMService } from '@/core/llm/types.js';
+import type { RPPersona } from '@/core/types/chat.js';
 import {
   AFFECTION_DATE_UNLOCK,
   AFFECTION_MAX,
   AFFECTION_PRIVATE_PHOTO_UNLOCK,
   addAffection,
   affectionOf,
-  buildInitMessages,
   cleanOpeningMessage,
   displayRelation,
   fallbackContacts,
-  formatChatTranscript,
   hasUsableCache,
-  initContacts,
-  INIT_CHAT_WINDOW,
   isDateUnlocked,
   isPrivatePhotoUnlocked,
-  parseContactsJson,
   resolvePhoneUser,
 } from './contacts.js';
 import type { PhoneContact } from './types.js';
@@ -80,214 +78,6 @@ describe('cleanOpeningMessage', () => {
   });
 });
 
-describe('parseContactsJson', () => {
-  it('正常 JSON：主角条目被排除，只留其他人；relation 是和 User 的关系，relationToMain 是和主角的关系，新联系人写 v: 2', () => {
-    const text = JSON.stringify([
-      { name: '李淑纯', relation: '本人', openingMessage: '嗨，我是淑纯' },
-      { name: '小雨', relation: '闺蜜', relationToMain: '闺蜜', openingMessage: '在吗在吗，出来玩呀' },
-      { name: '阿杰', relation: '哥哥', relationToMain: '哥哥', openingMessage: '今天花店忙不忙' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list).not.toBeNull();
-    expect(list!.map((c) => c.name)).toEqual(['小雨', '阿杰']);
-    expect(list![0]).toMatchObject({ name: '小雨', relation: '闺蜜', relationToMain: '闺蜜', v: 2 });
-    expect(list![1]).toMatchObject({ name: '阿杰', relation: '哥哥', relationToMain: '哥哥', v: 2 });
-    expect(list!.some((c) => c.name === '李淑纯')).toBe(false);
-  });
-
-  it('和 User 的关系、和主角的关系各存各的：两边不一样时都不丢', () => {
-    const text = JSON.stringify([
-      { name: '小雨', relation: '室友', relationToMain: '闺蜜', openingMessage: '嗨' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list![0].relation).toBe('室友');
-    expect(list![0].relationToMain).toBe('闺蜜');
-    expect(list![0].v).toBe(2);
-  });
-
-  it('主角条目靠 relation 本人也能认出来并排除', () => {
-    const text = JSON.stringify([
-      { name: '淑纯', relation: '本人', openingMessage: '在吗？' },
-      { name: '小雨', relation: '闺蜜', openingMessage: '嗨' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list).not.toBeNull();
-    expect(list!.map((c) => c.name)).toEqual(['小雨']);
-  });
-
-  it('模型只返回主角一人时，结果是空数组，不编联系人', () => {
-    const text = JSON.stringify([
-      { name: '李淑纯', relation: '本人', openingMessage: '嗨，我是淑纯' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list).not.toBeNull();
-    expect(list).toEqual([]);
-  });
-
-  it('空数组返回空数组', () => {
-    const list = parseContactsJson('[]', fakeCard());
-    expect(list).not.toBeNull();
-    expect(list).toEqual([]);
-  });
-
-  it('模型没列主角时也一样：只留其他人', () => {
-    const text = JSON.stringify([
-      { name: '小雨', relation: '闺蜜', openingMessage: '嗨' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list!.map((c) => c.name)).toEqual(['小雨']);
-  });
-
-  it('```json 代码块包裹也能解析', () => {
-    const text = '```json\n[{"name": "小雨", "relation": "闺蜜", "openingMessage": "嗨"}]\n```';
-    const list = parseContactsJson(text, fakeCard());
-    expect(list).not.toBeNull();
-    expect(list!.map((c) => c.name)).toEqual(['小雨']);
-  });
-
-  it('JSON 前后有多余文字也能解析', () => {
-    const text = '好的，这是人物列表：[{"name": "小雨", "relation": "闺蜜", "openingMessage": "嗨"}] 以上。';
-    const list = parseContactsJson(text, fakeCard());
-    expect(list).not.toBeNull();
-    expect(list).toHaveLength(1);
-  });
-
-  it('解析不出来返回 null，调用方走兜底', () => {
-    expect(parseContactsJson('抱歉，我不知道', fakeCard())).toBeNull();
-    expect(parseContactsJson('这不是 JSON', fakeCard())).toBeNull();
-  });
-
-  it('没名字的条目丢掉；都没名字时返回空数组', () => {
-    const text = JSON.stringify([
-      { relation: '闺蜜', openingMessage: '嗨' },
-      { name: '  ', relation: '哥哥', openingMessage: '你好' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list).not.toBeNull();
-    expect(list).toEqual([]);
-  });
-
-  it('重名去重，只留第一个', () => {
-    const text = JSON.stringify([
-      { name: '小雨', relation: '闺蜜', openingMessage: '嗨' },
-      { name: '小雨', relation: '同事', openingMessage: '你好' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list).toHaveLength(1);
-    expect(list![0].relation).toBe('闺蜜');
-  });
-
-  it('缺字段时：开场白补默认问候；relation 留空（不编一个和 User 的关系），relationToMain 不写', () => {
-    const text = JSON.stringify([{ name: '阿杰' }]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list![0]).toMatchObject({
-      name: '阿杰',
-      relation: '',
-      openingMessage: '你好，我是阿杰。',
-    });
-    expect(list![0].relationToMain).toBeUndefined();
-    expect(list![0].v).toBe(2);
-  });
-
-  it('模型开场白写成大段时压短，不展示长段落', () => {
-    const long = '这句'.concat('特别'.repeat(40));
-    const text = JSON.stringify([
-      { name: '小雨', relation: '闺蜜', openingMessage: long },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list![0].openingMessage.length).toBe(61);
-  });
-
-  it('性别从模型 JSON 里存下来', () => {
-    const text = JSON.stringify([
-      { name: '小雨', relation: '闺蜜', openingMessage: '嗨', gender: 'female' },
-      { name: '阿杰', relation: '哥哥', openingMessage: '你好', gender: 'male' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list![0].gender).toBe('female');
-    expect(list![1].gender).toBe('male');
-  });
-
-  it('模型没给性别时按 unknown 存，不崩', () => {
-    const text = JSON.stringify([
-      { name: '小雨', relation: '闺蜜', openingMessage: '嗨' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list![0].gender).toBe('unknown');
-  });
-
-  it('性别写了别的值时按 unknown 存', () => {
-    const text = JSON.stringify([
-      { name: '小雨', relation: '闺蜜', openingMessage: '嗨', gender: 'girl' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list![0].gender).toBe('unknown');
-  });
-
-  it('人设（profile）从模型 JSON 里存下来，每个人是自己的', () => {
-    const text = JSON.stringify([
-      { name: '小雨', relation: '闺蜜', openingMessage: '嗨', profile: '活泼开朗，短发，爱笑，喜欢拉着人出去玩' },
-      { name: '阿杰', relation: '哥哥', openingMessage: '你好', profile: '沉稳可靠，高个子，常穿围裙在花店帮忙' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list![0].profile).toBe('活泼开朗，短发，爱笑，喜欢拉着人出去玩');
-    expect(list![1].profile).toBe('沉稳可靠，高个子，常穿围裙在花店帮忙');
-    expect(list![0].profile).not.toContain('沉稳可靠');
-    expect(list![1].profile).not.toContain('活泼开朗');
-  });
-
-  it('模型没给人设时，profile 字段不写', () => {
-    const text = JSON.stringify([
-      { name: '小雨', relation: '闺蜜', openingMessage: '嗨' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list![0].profile).toBeUndefined();
-  });
-
-  it('人设写得太长时压短到 200 字', () => {
-    const long = '很长的人设'.repeat(60); // 300 字
-    const text = JSON.stringify([
-      { name: '小雨', relation: '闺蜜', openingMessage: '嗨', profile: long },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list![0].profile!.length).toBe(201);
-    expect(list![0].profile!.endsWith('…')).toBe(true);
-  });
-
-  it('重新初始化时，名字和以前缓存里的联系人对得上的，沿用以前的 id', () => {
-    const previous: PhoneContact[] = [
-      { id: 'c_xiaoyu', name: '小雨', relation: '闺蜜', openingMessage: '旧开场白' },
-      { id: 'c_ajie', name: '阿杰', relation: '哥哥', openingMessage: '旧开场白' },
-    ];
-    const text = JSON.stringify([
-      { name: '小雨', relation: '闺蜜', openingMessage: '新开场白' },
-      { name: '阿杰', relation: '哥哥', openingMessage: '新开场白' },
-      { name: '王阿姨', relation: '房东', openingMessage: '新开场白' },
-    ]);
-    const list = parseContactsJson(text, fakeCard(), previous);
-    expect(list![0].id).toBe('c_xiaoyu');
-    expect(list![1].id).toBe('c_ajie');
-    // 新出现的人（王阿姨）没有旧 id，重新生成一个。
-    expect(list![2].id).toMatch(/^c_/);
-    expect(list![2].id).not.toBe('c_xiaoyu');
-    expect(list![2].id).not.toBe('c_ajie');
-  });
-
-  it('主角的旧 id 不会被沿用（主角根本不在新列表里）', () => {
-    const previous: PhoneContact[] = [
-      { id: 'card-1', name: '李淑纯', relation: '本人', openingMessage: '旧开场白' },
-      { id: 'c_xiaoyu', name: '小雨', relation: '闺蜜', openingMessage: '旧开场白' },
-    ];
-    const text = JSON.stringify([
-      { name: '李淑纯', relation: '本人', openingMessage: '新开场白' },
-      { name: '小雨', relation: '闺蜜', openingMessage: '新开场白' },
-    ]);
-    const list = parseContactsJson(text, fakeCard(), previous);
-    expect(list!.map((c) => c.name)).toEqual(['小雨']);
-    expect(list![0].id).toBe('c_xiaoyu');
-  });
-});
-
 describe('resolvePhoneUser', () => {
   const personas: RPPersona[] = [
     { id: 'p-1', name: '转学生小林', description: '刚转学来的新生，和李淑纯同班', createdAt: 0, updatedAt: 0 },
@@ -332,263 +122,12 @@ describe('displayRelation', () => {
   });
 });
 
-/** 主聊天的对话记录：小雨和阿杰在对话里出现过，王阿姨只在世界书里、对话里没有。 */
-function fakeChatMessages(): RPChatMessage[] {
-  return [
-    { id: 'm1', role: 'user', content: '今天小雨来花店帮忙，她说想学插花。', createdAt: 1 },
-    { id: 'm2', role: 'assistant', content: '小雨手很巧，让她先从包花束学起。', createdAt: 2 },
-    { id: 'm3', role: 'user', content: '阿杰刚才也来了，说下周带一批新花过来。', createdAt: 3 },
-    { id: 'm4', role: 'assistant', content: '阿杰每次来都带东西，让他别破费了。', createdAt: 4 },
-  ];
-}
-
-function initUserText(messages: RPChatMessage[], user?: { name: string; description: string }): string {
-  return (
-    buildInitMessages(fakeCard(), messages, user).find((m) => m.role === 'user')?.content ?? ''
-  );
-}
-
-describe('formatChatTranscript', () => {
-  it('只留最近 30 条（INIT_CHAT_WINDOW = 30），说话人写清楚：用户 / 主角名', () => {
-    expect(INIT_CHAT_WINDOW).toBe(30);
-    const messages: RPChatMessage[] = Array.from({ length: 35 }, (_, i) => ({
-      id: `m${i}`,
-      role: i % 2 === 0 ? 'user' : 'assistant',
-      content: `第${i + 1}句`,
-      createdAt: i,
-    }));
-    const text = formatChatTranscript(messages, '李淑纯');
-    expect(text).not.toContain('第1句');
-    expect(text).not.toContain('第5句');
-    expect(text).toContain('第6句');
-    expect(text).toContain('第35句');
-    expect(text).toContain('用户：第7句');
-    expect(text).toContain('李淑纯：第8句');
-  });
-
-  it('系统消息、隐藏消息、开场白和空消息都不要', () => {
-    const messages: RPChatMessage[] = [
-      { id: 's', role: 'system', content: '系统提示', createdAt: 1 },
-      { id: 'h', role: 'user', content: '藏起来的话', hidden: true, createdAt: 2 },
-      { id: 'g', role: 'assistant', content: '你来啦，今天想买点什么花？', isGreeting: true, createdAt: 3 },
-      { id: 'e', role: 'user', content: '   ', createdAt: 4 },
-      { id: 'u', role: 'user', content: '小雨今天来帮忙。', createdAt: 5 },
-    ];
-    const text = formatChatTranscript(messages, '李淑纯');
-    expect(text).toBe('用户：小雨今天来帮忙。');
-  });
-
-  it('只有开场白时返回空字符串', () => {
-    expect(
-      formatChatTranscript(
-        [{ id: 'g', role: 'assistant', content: '你来啦。', isGreeting: true, createdAt: 1 }],
-        '李淑纯',
-      ),
-    ).toBe('');
-  });
-
-  it('单条超 200 字截断，加“…”收尾', () => {
-    const text = formatChatTranscript(
-      [{ id: 'u', role: 'user', content: '小雨'.repeat(150), createdAt: 1 }],
-      '李淑纯',
-    );
-    expect(text.endsWith('…')).toBe(true);
-    expect([...text].length).toBeLessThanOrEqual('用户：'.length + 201);
-  });
-});
-
-describe('buildInitMessages', () => {
-  it('初始化输入里有主聊天的对话记录（对话里出现过的小雨和阿杰）', () => {
-    const userText = initUserText(fakeChatMessages());
-    expect(userText).toContain('用户：今天小雨来花店帮忙');
-    expect(userText).toContain('李淑纯：小雨手很巧');
-    expect(userText).toContain('阿杰刚才也来了');
-    expect(userText).toContain('JSON');
-    expect(userText).toContain('主聊天的对话记录');
-  });
-
-  it('初始化输入里没有卡的字段内容（介绍、性格、场景、开场白都不读）', () => {
-    const userText = initUserText(fakeChatMessages());
-    expect(userText).not.toContain('和闺蜜小雨一起开花店');
-    expect(userText).not.toContain('温柔细心');
-    expect(userText).not.toContain('花店里的一天');
-    expect(userText).not.toContain('你来啦，今天想买点什么花？');
-  });
-
-  it('初始化输入里没有世界书内容：只在世界书里的人不该出现在输入里', () => {
-    const userText = initUserText(fakeChatMessages());
-    expect(userText).not.toContain('世界书内容');
-    expect(userText).not.toContain('王阿姨');
-    expect(userText).not.toContain('每周三来收租');
-    expect(userText).toContain('只在别处');
-  });
-
-  it('主角名只用来排除主角本人', () => {
-    const userText = initUserText(fakeChatMessages());
-    expect(userText).toContain('李淑纯');
-    expect(userText).toContain('主角本人不是联系人');
-    expect(userText).toContain('不要把主角算进去');
-  });
-
-  it('传了 User 身份：初始化输入里有 User 是谁，relation 按 User 来算', () => {
-    const userText = initUserText(fakeChatMessages(), {
-      name: '转学生小林',
-      description: '刚转学来的新生，和李淑纯同班',
-    });
-    expect(userText).toContain('转学生小林');
-    expect(userText).toContain('刚转学来的新生');
-    expect(userText).toContain('User');
-    expect(userText).toContain('relationToMain');
-    expect(userText).toContain('relation 是和 User 的关系');
-    expect(userText).toContain('不要把和主角的关系写进 relation 里');
-  });
-
-  it('没传 User 身份：明说没有单独定义 User 的身份，不让模型猜', () => {
-    const userText = initUserText(fakeChatMessages());
-    expect(userText).toContain('没有单独定义 User 的身份');
-  });
-
-  it('提示词让模型把 relation 写成和 User 的关系、relationToMain 写成和主角的关系；没写不要编', () => {
-    const userText = initUserText(fakeChatMessages(), {
-      name: '转学生小林',
-      description: '刚转学来的新生',
-    });
-    expect(userText).toContain('relationToMain');
-    expect(userText).toContain('和 User 的关系');
-    expect(userText).toContain('和主角的关系');
-    expect(userText).toContain('没写不要编');
-    expect(userText).toContain('relation 写空字符串');
-  });
-
-  it('提示词要求只找对话里出现过的人，不把主角本人算进去；没别人时返回空数组', () => {
-    const userText = initUserText(fakeChatMessages());
-    expect(userText).toContain('只看上面的对话记录');
-    expect(userText).toContain('不要把主角算进去');
-    expect(userText).toContain('空数组 []');
-    expect(userText).not.toContain('包括主角本人');
-  });
-
-  it('对话是空的：明说主聊天里还没有对话、不要编人', () => {
-    const userText = initUserText([]);
-    expect(userText).toContain('还没有对话');
-    expect(userText).toContain('空数组 []');
-  });
-
-  it('提示词要求开场白短、按对话里的剧情写，不照抄 first_mes、不带动作描写', () => {
-    const userText = initUserText(fakeChatMessages());
-    expect(userText).toContain('40 字');
-    expect(userText).toContain('照抄');
-    expect(userText).toContain('*动作描写*');
-    expect(userText).toContain('一大段角色扮演描写');
-  });
-
-  it('提示词要求写之前先想一想，写的时候保持在角色里、不 OOC、不提 AI', () => {
-    const userText = initUserText(fakeChatMessages());
-    expect(userText).toContain('先想一想');
-    expect(userText).toContain('这个人是谁');
-    expect(userText).toContain('不要 OOC');
-    expect(userText).toContain('绝不提自己是 AI');
-  });
-
-  it('提示词让模型给每个人返回性别（female / male / unknown）', () => {
-    const userText = initUserText(fakeChatMessages());
-    expect(userText).toContain('gender');
-    expect(userText).toContain('female');
-    expect(userText).toContain('male');
-    expect(userText).toContain('unknown');
-  });
-
-  it('提示词让模型给每个人写人设（profile），按对话里写到的来，没写的不要编', () => {
-    const userText = initUserText(fakeChatMessages());
-    expect(userText).toContain('profile');
-    expect(userText).toContain('人设');
-    expect(userText).toContain('按对话里写到的来');
-    expect(userText).toContain('不要编');
-    expect(userText).toContain('空字符串');
-  });
-});
-
-describe('initContacts', () => {
-  /**
-   * 假模型：只读初始化请求里的对话记录，返回对话里出现过的人——
-   * 模拟真的模型按聊天认人。请求里没提到的名字，它也不会返回。
-   */
-  function chatReadingFakeLlm() {
-    const seen: { messages: { content?: string }[] }[] = [];
-    const llm = {
-      complete: async (
-        _connectionId: string,
-        req: { messages: { content?: string }[] },
-      ) => {
-        seen.push(req);
-        const text = req.messages.map((m) => m.content ?? '').join('\n');
-        const found = ['小雨', '阿杰'].filter((name) => text.includes(name));
-        return {
-          text: JSON.stringify(
-            found.map((name) => ({
-              name,
-              relation: '朋友',
-              relationToMain: '',
-              openingMessage: '在吗',
-              gender: 'female',
-              profile: '对话里提到的朋友',
-            })),
-          ),
-          toolCalls: [],
-        };
-      },
-    } as unknown as LLMService;
-    return { llm, seen };
-  }
-
-  it('从对话里找出出现过的人（小雨和阿杰），并且只找对话里的人', async () => {
-    const { llm, seen } = chatReadingFakeLlm();
-    const contacts = await initContacts(fakeCard(), llm, 'conn', 'model', fakeChatMessages());
-    expect(contacts?.map((c) => c.name).sort()).toEqual(['小雨', '阿杰']);
-    expect(contacts?.every((c) => c.affection === 0 && c.v === 2)).toBe(true);
-    // 发给模型的请求里有对话记录、没有世界书里的人。
-    const sent = seen[0]?.messages.map((m) => m.content ?? '').join('\n') ?? '';
-    expect(sent).toContain('小雨来花店帮忙');
-    expect(sent).not.toContain('王阿姨');
-  });
-
-  it('对话里没出现过其他人：返回空列表，不编联系人', async () => {
-    const { llm } = chatReadingFakeLlm();
-    const onlyMain: RPChatMessage[] = [
-      { id: 'm1', role: 'user', content: '今天天气真好。', createdAt: 1 },
-      { id: 'm2', role: 'assistant', content: '是啊，适合开门营业。', createdAt: 2 },
-    ];
-    expect(await initContacts(fakeCard(), llm, 'conn', 'model', onlyMain)).toEqual([]);
-    expect(await initContacts(fakeCard(), llm, 'conn', 'model', [])).toEqual([]);
-  });
-
-  it('模型返回里混进主角本人：解析时拦住，不进联系人', async () => {
-    const llm = {
-      complete: async () => ({
-        text: JSON.stringify([
-          { name: '李淑纯', relation: '本人', openingMessage: '你好', gender: 'female', profile: '' },
-          { name: '小雨', relation: '朋友', openingMessage: '在吗', gender: 'female', profile: '对话里提到的朋友' },
-        ]),
-        toolCalls: [],
-      }),
-    } as unknown as LLMService;
-    const contacts = await initContacts(fakeCard(), llm, 'conn', 'model', fakeChatMessages());
-    expect(contacts?.map((c) => c.name)).toEqual(['小雨']);
-  });
-
-  it('模型返回解析不出来：返回 null（调用方走兜底）', async () => {
-    const llm = {
-      complete: async () => ({ text: '我不知道', toolCalls: [] }),
-    } as unknown as LLMService;
-    expect(await initContacts(fakeCard(), llm, 'conn', 'model', fakeChatMessages())).toBeNull();
-  });
-});
-
 /**
  * 缓存就是权威的：只要是非空列表就原样用，绝不因为“旧”就丢掉重算。
  * 旧缓存（里面还留着主角本人、relation 还是按主角算的 v1、开场白还是
- * first_mes 原文）也是可用缓存——打开时直接用，想用新规则就点重置。
- * 只有没缓存（null、空列表、读出来的不是数组）时，调用方才调一次模型初始化。
+ * first_mes 原文）也是可用缓存——打开时直接用，想清掉就点重置。
+ * 只有没缓存（null、空列表、读出来的不是数组）时，调用方给空列表，
+ * 等主聊天产出隐藏数据块再填进来（不再调模型初始化）。
  */
 describe('hasUsableCache', () => {
   const oldList: PhoneContact[] = [
@@ -619,7 +158,7 @@ describe('hasUsableCache', () => {
     expect(hasUsableCache(fresh)).toBe(true);
   });
 
-  it('空列表算没缓存（调用方会调一次模型初始化）', () => {
+  it('空列表算没缓存（调用方给空列表，等隐藏数据块）', () => {
     expect(hasUsableCache([])).toBe(false);
   });
 
@@ -712,12 +251,60 @@ describe('解锁阈值', () => {
   });
 });
 
-describe('parseContactsJson 好感度', () => {
-  it('新解析的联系人好感度从 0 开始', () => {
-    const text = JSON.stringify([
-      { name: '小雨', relation: '闺蜜', openingMessage: '嗨' },
-    ]);
-    const list = parseContactsJson(text, fakeCard());
-    expect(list![0].affection).toBe(0);
+/**
+ * 旧初始化已删的证明：直接读源码，断言 PR #53 的初始化路径在 src 里
+ * 已经不存在——删掉的函数名、常量名一个都不能剩。
+ * 注意：contacts.ts 顶部的注释里会提到这些名字（写明“已经删掉”），
+ * 所以只查“代码”里的出现：去掉注释行再查，提到删掉的那几行注释本身
+ * 不算。WeChat.tsx 也一样：注释里可以提，import 和调用里不能有。
+ */
+describe('旧初始化已删', () => {
+  function codeWithoutComments(path: string): string {
+    const src = readFileSync(new URL(path, import.meta.url), 'utf8');
+    return src
+      .split('\n')
+      .filter((line) => {
+        const t = line.trim();
+        return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+      })
+      .join('\n');
+  }
+
+  const REMOVED = [
+    'initContacts',
+    'buildInitMessages',
+    'formatChatTranscript',
+    'parseContactsJson',
+    'INIT_CHAT_WINDOW',
+  ];
+
+  it('contacts.ts 里没有旧初始化的函数和常量', () => {
+    const code = codeWithoutComments('./contacts.ts');
+    for (const name of REMOVED) {
+      expect(code, `contacts.ts 里还留着 ${name}`).not.toContain(name);
+    }
+    // 调模型初始化用的类型也不该再被 contacts.ts 引进来。
+    expect(code).not.toContain('LLMService');
+    expect(code).not.toContain('RPChatMessage');
+  });
+
+  it('WeChat.tsx 里没有旧初始化的 import 和调用', () => {
+    const code = codeWithoutComments('../../components/phone/WeChat.tsx');
+    for (const name of REMOVED) {
+      expect(code, `WeChat.tsx 里还留着 ${name}`).not.toContain(name);
+    }
+    // 初始化不再读主聊天的消息记录：currentMessages 只剩隐藏数据扫描
+    // 和回复提示词在用，初始化那条路已经没了——上面不断言 currentMessages
+    // 本身，只断言它不再和 init 一起出现。
+    expect(code).not.toContain('chatForInit');
+    expect(code).not.toContain('initMessages');
+    expect(code).not.toContain('initUser');
+  });
+
+  it('phoneData.ts 里没有旧初始化的引用', () => {
+    const code = codeWithoutComments('./phoneData.ts');
+    for (const name of REMOVED) {
+      expect(code, `phoneData.ts 里还留着 ${name}`).not.toContain(name);
+    }
   });
 });
