@@ -23,6 +23,7 @@ import type { LorebookDefaults, RPLorebook } from '@/core/types/lorebook.js';
 import { fromCardEntry } from '@/core/types/lorebook.js';
 import type { RPCard } from '@/core/types/card.js';
 import { substituteMacros } from '@/core/prompt/macros.js';
+import { PHONE_PRESET_BOOK_ID_PREFIX } from './phoneData.js';
 
 /** 回复提示词里世界书一节最多占多少字。 */
 export const LOREBOOK_REPLY_BUDGET_CHARS = 2000;
@@ -56,6 +57,10 @@ export function cardBookToLorebook(card: RPCard): RPLorebook | null {
 /**
  * 小手机的世界书集合：卡的角色书在先（角色范围优先，和主聊天一致），
  * 再接该聊天选中的用户世界书（按 chat.lorebookIds 的顺序）。
+ *
+ * 小手机预设书（`phone-preset:<chatId>`）不算进来：它是给主聊天读的
+ * 指令，不是世界知识；微信气泡是纯文本渲染，指令一旦进了微信回复的
+ * 提示词，模型在微信里输出的隐藏数据块就会原文显示出来。
  */
 export function getPhoneBooks(
   card: RPCard,
@@ -68,6 +73,7 @@ export function getPhoneBooks(
     if (cb) books.push(cb);
   }
   for (const id of chat.lorebookIds) {
+    if (id.startsWith(PHONE_PRESET_BOOK_ID_PREFIX)) continue;
     const b = userBooks.find((x) => x.id === id);
     if (b) books.push(b);
   }

@@ -5,6 +5,11 @@
  * 转成联系人（卡的主角本人不是联系人——微信是主角的手机，联系人是
  * 主角世界里的其他人）。第一次打开时调一次模型找出来（见
  * `@/core/phone/contacts.js`），按聊天缓存进 IndexedDB，之后直接读缓存。
+ * 之后还有一条持续更新路（PR #54，见 `@/core/phone/phoneData.js`）：
+ * 打开手机时建一本内置预设书“小手机·预设”挂到聊天上，主聊天的模型每轮
+ * 回复后在正文末尾追加一个隐藏数据块（HTML 注释，聊天里不显示），列出
+ * 本轮出现的人物；手机扫主聊天消息里的块，把新人合并进联系人（已有的
+ * 人不动 id 和好感度），不用等“重置”。
  * 每个联系人有自己的聊天记录，按联系人单独保存；每个联系人还带一条
  * 自己的人设（profile），回复时写进他/她自己的 system prompt，模型
  * 扮演他/她才不会 OOC。每个联系人还有好感度（0–100，从 0 开始）：
@@ -104,6 +109,11 @@ import {
   saveContacts,
   saveWeChatChat,
 } from '@/core/phone/wechatStore.js';
+import {
+  extractHiddenCharactersFromMessages,
+  mergeHiddenCharacters,
+} from '@/core/phone/phoneData.js';
+import { ensurePhonePresetBook } from '@/core/phone/phonePresetStore.js';
 import { detectEmotion, pickSticker } from '@/core/phone/stickers.js';
 import { PressableImage } from '@/components/media/PressableImage.js';
 import { GroupAvatar, PhoneAvatar } from './PhoneAvatar.js';
@@ -202,6 +212,24 @@ export function WeChat({
   React.useEffect(() => {
     let cancelled = false;
     void (async () => {
+      // 小手机预设（PR #54）：打开手机就把“小手机·预设”这本世界书建出来/
+      // 更新好，挂到这个聊天的 lorebookIds 上——主聊天的提示词流水线每轮
+      // 都会读到它，模型在正文末尾追加隐藏数据块，小手机再从主聊天消息里
+      // 读出来认人。只建书、不调模型；建失败也不挡联系人加载，下次打开再试。
+      try {
+        const presetState = useApp.getState();
+        const presetChat = presetState.chats.find((c) => c.id === chatId);
+        if (presetChat) {
+          await ensurePhonePresetBook(chatId, card.data.name, {
+            lorebooks: presetState.lorebooks,
+            saveLorebook: (book) => presetState.saveLorebook(book),
+            chat: presetChat,
+            saveChat: (c) => presetState.saveChat(c),
+          });
+        }
+      } catch {
+        // 预设书建失败不挡路：联系人初始化照常走，下次打开再试。
+      }
       try {
         const cached = await loadContacts(chatId);
         if (cancelled) return;
@@ -472,6 +500,27 @@ export function WeChat({
   React.useEffect(() => {
     contactsRef.current = contacts;
   }, [contacts]);
+
+  /** 主聊天（手机外面那个正常聊天）：手机开着的时候，主聊天有新消息就扫一遍隐藏数据块。 */
+  const mainChat = useApp((s) => s.chats.find((c) => c.id === chatId));
+
+  // 隐藏数据合并（PR #54）：主聊天消息里的隐藏数据块是联系人的持续更新路。
+  // 联系人加载好之后、以及主聊天有新消息时（手机开着的时候），扫一遍主聊天
+  // 的当前消息，把块里的人合并进联系人列表：已经在的人原样保留（id、好感度、
+  // 微信记录都不动），新人才加进来、好感度从 0 开始。没扫到新东西时不碰缓存。
+  // 不调模型——数据就是主聊天自己的回复里已经写好的东西。
+  React.useEffect(() => {
+    if (!contacts || !mainChat) return;
+    const found = extractHiddenCharactersFromMessages(currentMessages(mainChat), card.data.name);
+    if (found.length === 0) return;
+    const merged = mergeHiddenCharacters(contactsRef.current ?? contacts, found);
+    if (!merged.changed) return;
+    contactsRef.current = merged.contacts;
+    setContacts(merged.contacts);
+    void saveContacts(chatId, merged.contacts).catch(() => {
+      // 缓存写失败：内存里是对的，本次照常用。
+    });
+  }, [mainChat, contacts, chatId, card]);
 
   /** 群列表的 ref：回群消息时要读最新的成员（踢人/加人后群会变）。 */
   const groupsRef = React.useRef<PhoneGroup[] | null>(null);
