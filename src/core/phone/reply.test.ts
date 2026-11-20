@@ -871,6 +871,25 @@ describe('buildReplySystemPromptSections', () => {
     expect(sections[13].content).toContain('PRESET_写短句');
   });
 
+  it('群聊注脚拼进“独立系统”那一节，不另起一节——查看器还是 14 节', () => {
+    const sections = buildReplySystemPromptSections(fakeCard(), xiaoyuContact, {
+      groupNote: '你在群聊「宿舍小分队」里，和阿杰一起和用户聊天。',
+    });
+    expect(sections.map((s) => s.label)).toEqual(SECTION_LABELS);
+    expect(sections[8].content).toContain('独立的微信聊天');
+    expect(sections[8].content).toContain('群聊「宿舍小分队」');
+    expect(
+      sections
+        .map((s) => s.content)
+        .filter(Boolean)
+        .join('\n'),
+    ).toBe(
+      buildReplySystemPrompt(fakeCard(), xiaoyuContact, {
+        groupNote: '你在群聊「宿舍小分队」里，和阿杰一起和用户聊天。',
+      }),
+    );
+  });
+
   it('可选内容全缺时，对应节是空的（查看器里标“未包含”），拼出来的字符串里没有这些节', () => {
     const bare: PhoneContact = { id: 'c_bare', name: '路人', relation: '', openingMessage: '嗨' };
     const card = fakeCard({ description: '', scenario: '', first_mes: '' });

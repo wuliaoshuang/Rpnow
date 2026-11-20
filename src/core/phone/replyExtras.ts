@@ -36,6 +36,9 @@ export function historyEntries(messages: PhoneMessage[]): ChatHistoryEntry[] {
           : m.type === 'image'
             ? '[对方发来一张图片]'
             : '[表情]',
+      // 群聊里这条是谁说的：有 characterName 就带上，生图提示词和
+      // 回复上下文按它分清每句话是谁说的；一对一里没有，不写。
+      ...(m.characterName ? { speaker: m.characterName } : {}),
     }));
 }
 
@@ -49,6 +52,8 @@ export interface ReplyExtrasInput {
   defaultPresetId?: string;
   /** 这个联系人的微信聊天记录（用来匹配世界书，也给回复当上下文）。 */
   history: PhoneMessage[];
+  /** 群聊注脚（groups.ts 的 buildGroupNote 拼的）：只在群聊回复里传。 */
+  groupNote?: string;
 }
 
 /**
@@ -81,5 +86,5 @@ export function computeReplyExtras(input: ReplyExtrasInput): ReplyPromptExtras {
       ...historyEntries(recent),
     ],
   );
-  return { plotProgress, lorebookText, presetText };
+  return { plotProgress, lorebookText, presetText, groupNote: input.groupNote };
 }

@@ -137,6 +137,15 @@ describe('historyEntries', () => {
       { role: 'assistant', content: '[对方发来一张图片]' },
       { role: 'assistant', content: '[表情]' },
     ]);
+    // 群聊里 assistant 消息的说话人带上（生图提示词和回复上下文按它分清谁说的）。
+    const groupMessages: PhoneMessage[] = [
+      { id: 'g1', role: 'assistant', type: 'text', content: '在呢', characterName: '小雨', createdAt: 0 },
+      { id: 'g2', role: 'assistant', type: 'text', content: '来了', characterName: '阿杰', createdAt: 0 },
+    ];
+    expect(historyEntries(groupMessages)).toEqual([
+      { role: 'assistant', content: '在呢', speaker: '小雨' },
+      { role: 'assistant', content: '来了', speaker: '阿杰' },
+    ]);
     const many: PhoneMessage[] = Array.from({ length: 12 }, (_, i) => ({
       id: `m${i}`,
       role: 'user' as const,

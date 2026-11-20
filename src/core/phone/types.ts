@@ -25,6 +25,12 @@ export interface PhoneMessage {
   imageSrc?: string;
   /** Sticker message: public sticker image URL. */
   stickerUrl?: string;
+  /**
+   * 群聊里这条消息是谁说的（说话的成员名）。一对一聊天里不写——
+   * 那里的 assistant 一定是当前联系人；群聊里 assistant 的每条消息
+   * 都带它，界面按它显示说话人名字、回复按它算谁最后说过话。
+   */
+  characterName?: string;
   createdAt: number;
 }
 
@@ -99,6 +105,31 @@ export interface WeChatChat {
   cardId: string;
   /** 哪个联系人的会话：联系人 id（卡的主角本人不是联系人）。 */
   contactId: string;
+  messages: PhoneMessage[];
+  updatedAt: number;
+}
+
+/**
+ * 一个微信群聊：名字 + 成员（联系人 id 列表，按建群时选的顺序）。
+ * User 不在成员列表里——群是 User 和这些联系人一起聊的地方。
+ * 群按聊天存（`rpnow:phone:groups:<chatId>`），老聊天第一次打开是
+ * 空的（没有群，不触发重新初始化——PR #46 的规矩）。
+ */
+export interface PhoneGroup {
+  /** Stable id：`g_<uid>`。 */
+  id: string;
+  /** 群名：同一部聊天里不能重名（建群时拦）。 */
+  name: string;
+  /** 成员的联系人 id（PhoneContact.id），不含 User。 */
+  memberIds: string[];
+  createdAt: number;
+}
+
+/** 一个群聊的聊天记录：和一对一同一个消息形状，群里每条 assistant 消息带 characterName（说话人）。 */
+export interface PhoneGroupChat {
+  cardId: string;
+  /** 哪个群的记录：群 id。 */
+  groupId: string;
   messages: PhoneMessage[];
   updatedAt: number;
 }
