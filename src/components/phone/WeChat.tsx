@@ -22,12 +22,13 @@ import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { uid } from '@/lib/utils.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { LLMMessage, LLMResult } from '@/core/llm/types.js';
-import type { PhoneContact, PhoneMessage, StickerEmotion } from '@/core/phone/types.js';
+import type { ImagePeople, PhoneContact, PhoneMessage, StickerEmotion } from '@/core/phone/types.js';
 import { fallbackContacts, initContacts, isStaleContacts } from '@/core/phone/contacts.js';
 import {
   buildImagePromptMessages,
   buildReplySystemPrompt,
-  enforceSoloPrompt,
+  enforceComposition,
+  inferPeopleFromRequest,
 } from '@/core/phone/reply.js';
 import type { ChatHistoryEntry } from '@/core/phone/reply.js';
 import {
@@ -333,9 +334,20 @@ export function WeChat({
    * history 是这个联系人的微信聊天记录：写提示词的模型要先读它，弄清楚
    * 现在的场景（在哪、在做什么、周围有什么），才能把角色画进场景里，
    * 而不是只画一张白底人像。
+   *
+   * people 是这张图里有几个人（回复模型按场景在 send_image 里定的；
+   * “＋”按钮按输入框的文字简单判断，默认 solo）：写提示词的模型按这个
+   * 人数写出画面里每个人的外貌，others 是图里可能出现的其他联系人
+   * （名字、关系），模型按他们和聊天记录写样子，不编场景外的人。
    */
   const generateImageFromDescription = React.useCallback(
-    async (contact: PhoneContact, description: string, history: PhoneMessage[]) => {
+    async (
+      contact: PhoneContact,
+      description: string,
+      history: PhoneMessage[],
+      people: ImagePeople = 'solo',
+      others: PhoneContact[] = [],
+    ) => {
       if (generating) return;
       const rawPrompt = description.trim() || `${contact.name}，精美插画`;
       const connectionId = phone.imageConnectionId || imageConnections[0]?.id || '';
@@ -367,7 +379,10 @@ export function WeChat({
           const model = phone.chatModel || llmConnection.defaultModel || '';
           const result = await llm.complete(llmConnectionId, {
             model,
-            messages: buildImagePromptMessages(card, contact, rawPrompt, historyEntries(history)),
+            messages: buildImagePromptMessages(card, contact, rawPrompt, historyEntries(history), {
+              people,
+              others,
+            }),
             temperature: 0.7,
             maxTokens: 300,
           });
@@ -377,11 +392,13 @@ export function WeChat({
           // 模型写不出来就用用户原话，不挡生图。
         }
       }
-      // 单人强制：不管模型写了什么提示词（哪怕写了 2girls、group），
-      // 代码在这里把多人标签去掉、在最前面加上 solo 标记，再去调生图。
-      // 这一步在模型返回之后由代码做，模型改不掉，生出来的图只能有一个人。
-      // 性别是初始化时按卡存下来的；老缓存没有这个字段时按 unknown，只加 solo。
-      positivePrompt = enforceSoloPrompt(positivePrompt, contact.gender ?? 'unknown');
+      // 按人数强制：不管模型写了什么提示词（哪怕写了 2girls、写了 group，
+      // 或者双人图里写了 solo），代码在这里把人数标签改成这张图实际该有
+      // 的人数（单人 1girl, solo / 双人 2girls / 多人 multiple girls……），
+      // 再去调生图。这一步在模型返回之后由代码做，模型改不掉。
+      // 性别是初始化时按卡存下来的；老缓存没有这个字段时按 unknown，
+      // 单人只加 solo，双人/多人按默认标记。
+      positivePrompt = enforceComposition(positivePrompt, people, contact.gender ?? 'unknown');
       const artistTags = normalizeTags(phone.imageArtistTags ?? '');
       const prompt = artistTags ? `${positivePrompt}, ${artistTags}` : positivePrompt;
       const negativePrompt = phone.imageNegativePrompt?.trim() || undefined;
@@ -504,14 +521,21 @@ export function WeChat({
         const markers = parseReplyMarkers(result.text ?? '');
         const hasImageTool = toolCalls.some((tc) => tc.name === 'send_image');
         const hasStickerTool = toolCalls.some((tc) => tc.name === 'send_sticker');
-        const imageDescriptions: string[] = [];
+        const imageRequests: Array<{ description: string; people: ImagePeople }> = [];
         for (const tc of toolCalls) {
           if (tc.name === 'send_image') {
-            const description = parseSendImageArgs(tc.arguments);
-            if (description) imageDescriptions.push(description);
+            const parsed = parseSendImageArgs(tc.arguments);
+            if (parsed) imageRequests.push(parsed);
           }
         }
-        if (!hasImageTool) imageDescriptions.push(...markers.imageDescriptions);
+        // 标记兜底没有人数：按 solo 算（角色自己的一张照片）。
+        if (!hasImageTool)
+          imageRequests.push(
+            ...markers.imageDescriptions.map((description) => ({
+              description,
+              people: 'solo' as ImagePeople,
+            })),
+          );
         const stickerEmotions: StickerEmotion[] = [];
         for (const tc of toolCalls) {
           if (tc.name === 'send_sticker') {
@@ -528,9 +552,17 @@ export function WeChat({
             makeMessage({ role: 'assistant', type: 'text', content: text }),
           ]);
         }
-        for (const description of imageDescriptions) {
-          // 生图要带着最近的对话：模型得知道现在是什么场景，才能把角色画进场景里。
-          await generateImageFromDescription(contact, description, recent);
+        const otherContacts = (contacts ?? []).filter((c) => c.id !== contact.id);
+        for (const req of imageRequests) {
+          // 生图要带着最近的对话：模型得知道现在是什么场景，才能把角色画进场景里；
+          // 人数是回复模型按场景定的，其他联系人一并给写提示词的模型当参考。
+          await generateImageFromDescription(
+            contact,
+            req.description,
+            recent,
+            req.people,
+            otherContacts,
+          );
         }
         for (const emotion of stickerEmotions) {
           const stickerUrl = pickSticker(emotion);
@@ -578,6 +610,7 @@ export function WeChat({
     [
       appendMessages,
       card,
+      contacts,
       generateImageFromDescription,
       llm,
       llmConnections,
@@ -599,11 +632,22 @@ export function WeChat({
     void requestReply(contact, next);
   };
 
-  /** “＋”里的生图按钮：用输入框的文字调同一条 Agent 生图流程，带着当前聊天的记录当场景。 */
+  /**
+   * “＋”里的生图按钮：用输入框的文字调同一条 Agent 生图流程，带着当前聊天的记录当场景。
+   * 没有回复模型给人数，就按输入框的文字简单判断（明确提到用户也在画面里就是双人、
+   * 提到一群人就是多人，否则默认单人——角色自己的一张照片），其他联系人一并给参考。
+   */
   const generateImage = () => {
     const contact = selected;
     if (!contact) return;
-    void generateImageFromDescription(contact, imagePrompt, messages);
+    const otherContacts = (contacts ?? []).filter((c) => c.id !== contact.id);
+    void generateImageFromDescription(
+      contact,
+      imagePrompt,
+      messages,
+      inferPeopleFromRequest(imagePrompt),
+      otherContacts,
+    );
   };
 
   // ---------------- 联系人列表 ----------------

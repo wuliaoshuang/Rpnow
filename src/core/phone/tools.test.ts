@@ -22,11 +22,16 @@ describe('PHONE_TOOLS', () => {
       expect(Array.isArray(params.required)).toBe(true);
     }
     const imageParams = PHONE_TOOLS[0].parameters as {
-      properties: { description: { type: string } };
+      properties: {
+        description: { type: string };
+        people: { type: string; enum: string[] };
+      };
       required: string[];
     };
     expect(imageParams.properties.description.type).toBe('string');
-    expect(imageParams.required).toEqual(['description']);
+    expect(imageParams.properties.people.type).toBe('string');
+    expect(imageParams.properties.people.enum).toEqual(['solo', 'duo', 'multi']);
+    expect(imageParams.required).toEqual(['description', 'people']);
     const stickerParams = PHONE_TOOLS[1].parameters as {
       properties: { emotion: { type: string; enum: string[] } };
       required: string[];
@@ -43,16 +48,24 @@ describe('PHONE_TOOLS', () => {
     expect(stickerParams.required).toEqual(['emotion']);
   });
 
-  it('send_image 的描述要带上现在的场景，不让模型只写“我的照片”', () => {
+  it('send_image 的描述要带上现在的场景和人数判断，不让模型只写“我的照片”', () => {
     const imageTool = PHONE_TOOLS.find((t) => t.name === 'send_image');
     expect(imageTool?.description).toContain('现在的场景');
     expect(imageTool?.description).toContain('在哪里');
     expect(imageTool?.description).toContain('在做什么');
+    expect(imageTool?.description).toContain('有几个人');
+    expect(imageTool?.description).toContain('不要默认只画一个人');
     const params = imageTool?.parameters as {
-      properties: { description: { type: string; description: string } };
+      properties: {
+        description: { type: string; description: string };
+        people: { type: string; description: string };
+      };
     };
     expect(params.properties.description.description).toContain('现在在哪里');
     expect(params.properties.description.description).toContain('在做什么');
+    expect(params.properties.people.description).toContain('solo');
+    expect(params.properties.people.description).toContain('duo');
+    expect(params.properties.people.description).toContain('multi');
   });
 });
 
@@ -67,10 +80,29 @@ describe('parseToolArguments', () => {
 });
 
 describe('parseSendImageArgs', () => {
-  it('取到 description，空的或缺失的返回 null', () => {
-    expect(parseSendImageArgs('{"description":"在树荫下排队的照片"}')).toBe(
-      '在树荫下排队的照片',
-    );
+  it('取到 description 和 people', () => {
+    expect(parseSendImageArgs('{"description":"在树荫下排队的照片","people":"duo"}')).toEqual({
+      description: '在树荫下排队的照片',
+      people: 'duo',
+    });
+    expect(parseSendImageArgs('{"description":"在树荫下排队的照片","people":"multi"}')).toEqual({
+      description: '在树荫下排队的照片',
+      people: 'multi',
+    });
+  });
+
+  it('模型没给 people、或给了非法值时按 solo 算', () => {
+    expect(parseSendImageArgs('{"description":"在树荫下排队的照片"}')).toEqual({
+      description: '在树荫下排队的照片',
+      people: 'solo',
+    });
+    expect(parseSendImageArgs('{"description":"在树荫下排队的照片","people":"four"}')).toEqual({
+      description: '在树荫下排队的照片',
+      people: 'solo',
+    });
+  });
+
+  it('空的或缺失的 description 返回 null', () => {
     expect(parseSendImageArgs('{"description":"  "}')).toBeNull();
     expect(parseSendImageArgs('{}')).toBeNull();
     expect(parseSendImageArgs('{bad json')).toBeNull();
