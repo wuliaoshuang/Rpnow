@@ -6,6 +6,7 @@
  *     contactId 就是卡 id，所以以前存的记录不断档。
  */
 import { idbStorage } from '@/core/storage/index.js';
+import type { StorageService } from '@/core/agent/types.js';
 import { uid } from '@/lib/utils.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { PhoneContact, PhoneMessage, WeChatChat } from './types.js';
@@ -27,6 +28,35 @@ export async function loadContacts(chatId: string): Promise<PhoneContact[] | nul
 /** 保存指定聊天的联系人列表（AI 初始化的结果）。 */
 export async function saveContacts(chatId: string, contacts: PhoneContact[]): Promise<void> {
   await idbStorage.set(contactsKey(chatId), contacts);
+}
+
+/** 删掉指定聊天的联系人缓存。 */
+export async function removeContacts(
+  chatId: string,
+  store: StorageService = idbStorage,
+): Promise<void> {
+  await store.remove(contactsKey(chatId));
+}
+
+/** 删掉指定联系人的微信聊天记录。 */
+export async function removeWeChatChat(
+  contactId: string,
+  store: StorageService = idbStorage,
+): Promise<void> {
+  await store.remove(chatKey(contactId));
+}
+
+/**
+ * 清空一部聊天的全部小手机记录：联系人缓存 + 每个联系人的微信记录。
+ * 相册、主聊天、其他聊天的记录一律不动。
+ */
+export async function clearPhoneChat(
+  chatId: string,
+  contacts: PhoneContact[],
+  store: StorageService = idbStorage,
+): Promise<void> {
+  await removeContacts(chatId, store);
+  await Promise.all(contacts.map((c) => removeWeChatChat(c.id, store)));
 }
 
 /** 读出指定联系人的微信聊天记录；没存过返回 null。 */
