@@ -38,3 +38,39 @@ export function PhoneAvatar({
     </span>
   );
 }
+
+/**
+ * 群聊头像：前 4 位成员名字的首字拼成 2×2 格（插件同款），右下角
+ * 一个“群”字角标。没成员（不应该发生）时显示一个“群”字。
+ */
+export function GroupAvatar({
+  names,
+  size,
+}: {
+  /** 成员名字（groups.ts 的 groupMembers 算出来的顺序，最多取前 4 位）。 */
+  names: string[];
+  size: string;
+}) {
+  const cells = names.slice(0, 4);
+  return (
+    <span className={`${size} relative shrink-0 overflow-visible rounded-lg`}>
+      <span className="grid h-full w-full grid-cols-2 grid-rows-2 overflow-hidden rounded-lg">
+        {[0, 1, 2, 3].map((i) => {
+          const name = cells[i];
+          return (
+            <span
+              key={i}
+              className="flex items-center justify-center text-[11px] font-semibold text-white"
+              style={{ backgroundColor: name ? colorFor(name) : '#a3a3a3' }}
+            >
+              {name ? name.charAt(0) : ''}
+            </span>
+          );
+        })}
+      </span>
+      <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full bg-[#07C160] text-[9px] font-bold text-white ring-2 ring-white">
+        群
+      </span>
+    </span>
+  );
+}

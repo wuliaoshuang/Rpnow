@@ -7,7 +7,9 @@
  *     “重置”（clearPhoneChat）才会删掉它、重新初始化。
  *   - 聊天记录：按联系人存，`rpnow:phone:wechat:<contactId>`。
  *   - 朋友圈动态：按聊天存，`rpnow:phone:moments:<chatId>`（见 momentsStore）。
- * “重置”（clearPhoneChat）会把这三样一起清掉。
+ *   - 群聊：群列表和群聊记录见 groupStore（`rpnow:phone:groups:<chatId>` /
+ *     `rpnow:phone:groupchat:<groupId>`）。
+ * “重置”（clearPhoneChat + clearPhoneGroups）会把这几样一起清掉。
  */
 import { idbStorage } from '@/core/storage/index.js';
 import type { StorageService } from '@/core/agent/types.js';

@@ -27,12 +27,15 @@ export function PhonePromptViewer({
   card,
   contact,
   history,
+  groupNote,
   onBack,
 }: {
   chatId: string;
   card: RPCard;
   contact: PhoneContact;
   history: PhoneMessage[];
+  /** 群聊注脚：群聊里看的是回话成员的提示词，带上它才和真正发出去的一致。 */
+  groupNote?: string;
   onBack: () => void;
 }) {
   const [tab, setTab] = React.useState<'sections' | 'raw'>('sections');
@@ -50,12 +53,13 @@ export function PhonePromptViewer({
       lorebookDefaults: state.settings.lorebook,
       defaultPresetId: state.settings.defaultPresetId,
       history,
+      groupNote,
     });
     return {
       sections: buildReplySystemPromptSections(card, contact, extras),
       raw: buildReplySystemPrompt(card, contact, extras),
     };
-  }, [chatId, card, contact, history]);
+  }, [chatId, card, contact, history, groupNote]);
 
   const includedCount = sections.filter((s) => s.content).length;
 

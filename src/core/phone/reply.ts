@@ -357,6 +357,12 @@ export interface ReplyPromptExtras {
   lorebookText?: string;
   /** 预设提示词文本（preset.ts 的 extractPresetPrompts 抽出来的）。 */
   presetText?: string;
+  /**
+   * 群聊注脚（groups.ts 的 buildGroupNote 拼的）：你在哪个群里、和谁
+   * 一起聊、记忆归属。只在群聊回复里有；拼进“独立系统”那一节，不另
+   * 起一节——提示词查看器还是 14 节。
+   */
+  groupNote?: string;
 }
 
 /** 开场白当参考时最多引用多少字（只取说话方式，不用整段）。 */
@@ -425,6 +431,11 @@ export function buildReplySystemPromptSections(
   const plotSection = extras.plotProgress
     ? [PLOT_PROGRESS_HEADER, extras.plotProgress, PLOT_PROGRESS_FOOTER].join('\n')
     : '';
+  // 群聊注脚拼进“独立系统”那一节：它说的就是“这次聊天是哪种聊天”，
+  // 和独立系统同一节最合适；不另起一节，查看器还是 14 节。
+  const independenceSection = extras.groupNote?.trim()
+    ? `${INDEPENDENCE}\n${extras.groupNote.trim()}`
+    : INDEPENDENCE;
   const presetSection = extras.presetText?.trim()
     ? [
         '【预设】',
@@ -441,7 +452,7 @@ export function buildReplySystemPromptSections(
     { key: 'lorebook', label: '世界书', content: lorebookSection },
     { key: 'firstMes', label: '开场白', content: firstMesSection },
     { key: 'plot', label: '剧情进度', content: plotSection },
-    { key: 'independence', label: '独立系统', content: INDEPENDENCE },
+    { key: 'independence', label: '独立系统', content: independenceSection },
     { key: 'thinkFirst', label: '先想一想', content: THINK_FIRST },
     { key: 'noOoc', label: '不跳出角色', content: NO_OOC },
     { key: 'shortStyle', label: '短聊格式', content: SHORT_STYLE },
@@ -483,6 +494,12 @@ export function buildReplySystemPrompt(
 export interface ChatHistoryEntry {
   role: 'user' | 'assistant';
   content: string;
+  /**
+   * 群聊里这条是谁说的（PhoneMessage.characterName）。一对一里不写，
+   * 调用方按联系人名字；群聊里写了它，生图提示词和回复上下文才能
+   * 分清每句话是谁说的。
+   */
+  speaker?: string;
 }
 
 export interface ImagePromptOptions {
@@ -578,7 +595,8 @@ export function buildImageTagContext(
       ? [
           '最近的微信聊天记录（按时间顺序，场景就从这里来）：',
           ...recentMessages.map(
-            (m) => `${m.role === 'assistant' ? contact.name : '用户'}：${m.content}`,
+            (m) =>
+              `${m.role === 'assistant' ? (m.speaker ?? contact.name) : '用户'}：${m.content}`,
           ),
         ].join('\n')
       : '';
