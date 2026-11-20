@@ -24,7 +24,11 @@ import type { RPCard } from '@/core/types/card.js';
 import type { LLMMessage, LLMResult } from '@/core/llm/types.js';
 import type { PhoneContact, PhoneMessage, StickerEmotion } from '@/core/phone/types.js';
 import { fallbackContacts, initContacts, isStaleContacts } from '@/core/phone/contacts.js';
-import { buildImagePromptMessages, buildReplySystemPrompt } from '@/core/phone/reply.js';
+import {
+  buildImagePromptMessages,
+  buildReplySystemPrompt,
+  enforceSoloPrompt,
+} from '@/core/phone/reply.js';
 import type { ChatHistoryEntry } from '@/core/phone/reply.js';
 import {
   PHONE_TOOLS,
@@ -373,6 +377,11 @@ export function WeChat({
           // 模型写不出来就用用户原话，不挡生图。
         }
       }
+      // 单人强制：不管模型写了什么提示词（哪怕写了 2girls、group），
+      // 代码在这里把多人标签去掉、在最前面加上 solo 标记，再去调生图。
+      // 这一步在模型返回之后由代码做，模型改不掉，生出来的图只能有一个人。
+      // 性别是初始化时按卡存下来的；老缓存没有这个字段时按 unknown，只加 solo。
+      positivePrompt = enforceSoloPrompt(positivePrompt, contact.gender ?? 'unknown');
       const artistTags = normalizeTags(phone.imageArtistTags ?? '');
       const prompt = artistTags ? `${positivePrompt}, ${artistTags}` : positivePrompt;
       const negativePrompt = phone.imageNegativePrompt?.trim() || undefined;

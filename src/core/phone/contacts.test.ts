@@ -56,6 +56,11 @@ describe('fallbackContacts', () => {
     const list = fallbackContacts(fakeCard({ first_mes: '' }));
     expect(list[0].openingMessage).toContain('李淑纯');
   });
+
+  it('兜底的性别是 unknown（生图时只加 solo，不加 1girl / 1boy）', () => {
+    const list = fallbackContacts(fakeCard());
+    expect(list[0].gender).toBe('unknown');
+  });
 });
 
 describe('cleanOpeningMessage', () => {
@@ -190,6 +195,38 @@ describe('parseContactsJson', () => {
       openingMessage: '你好，我是阿杰。',
     });
   });
+
+  it('性别从模型 JSON 里存下来：主角和别人都存', () => {
+    const text = JSON.stringify([
+      { name: '李淑纯', relation: '本人', openingMessage: '嗨', gender: 'female' },
+      { name: '小雨', relation: '闺蜜', openingMessage: '嗨', gender: 'female' },
+      { name: '阿杰', relation: '哥哥', openingMessage: '你好', gender: 'male' },
+    ]);
+    const list = parseContactsJson(text, fakeCard());
+    expect(list![0].gender).toBe('female');
+    expect(list![1].gender).toBe('female');
+    expect(list![2].gender).toBe('male');
+  });
+
+  it('模型没给性别时按 unknown 存，不崩', () => {
+    const text = JSON.stringify([
+      { name: '李淑纯', relation: '本人', openingMessage: '嗨' },
+      { name: '小雨', relation: '闺蜜', openingMessage: '嗨' },
+    ]);
+    const list = parseContactsJson(text, fakeCard());
+    expect(list![0].gender).toBe('unknown');
+    expect(list![1].gender).toBe('unknown');
+  });
+
+  it('性别写了别的值时按 unknown 存', () => {
+    const text = JSON.stringify([
+      { name: '李淑纯', relation: '本人', openingMessage: '嗨', gender: 'girl' },
+      { name: '小雨', relation: '闺蜜', openingMessage: '嗨', gender: '' },
+    ]);
+    const list = parseContactsJson(text, fakeCard());
+    expect(list![0].gender).toBe('unknown');
+    expect(list![1].gender).toBe('unknown');
+  });
 });
 
 describe('buildInitMessages', () => {
@@ -218,6 +255,15 @@ describe('buildInitMessages', () => {
     expect(userText).toContain('这个人是谁');
     expect(userText).toContain('不要 OOC');
     expect(userText).toContain('绝不提自己是 AI');
+  });
+
+  it('提示词让模型给每个人返回性别（female / male / unknown）', () => {
+    const messages = buildInitMessages(fakeCard());
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('gender');
+    expect(userText).toContain('female');
+    expect(userText).toContain('male');
+    expect(userText).toContain('unknown');
   });
 });
 

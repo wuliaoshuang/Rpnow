@@ -7,7 +7,72 @@
  */
 import type { RPCard } from '@/core/types/card.js';
 import type { LLMMessage } from '@/core/llm/types.js';
-import type { PhoneContact } from './types.js';
+import type { PhoneContact, PhoneContactGender } from './types.js';
+
+/**
+ * 多人标签黑名单：生图提示词里出现这些，画出来的图就可能不止一个人。
+ * 模型写提示词时靠不住（让它“只画一个人”，它照样能写出 2girls），
+ * 所以不在提示词里求它，改在这里由代码直接删掉。
+ */
+const MULTI_PERSON_TAGS = new Set([
+  '2girls',
+  '3girls',
+  '4girls',
+  '2boys',
+  '3boys',
+  '4boys',
+  '2 girls',
+  '3 girls',
+  '4 girls',
+  '2 boys',
+  '3 boys',
+  '4 boys',
+  'multiple girls',
+  'multiple boys',
+  'multiple people',
+  'group',
+  'crowd',
+  'couple',
+  'two people',
+  'three people',
+  'several people',
+  'harem',
+  'multiple',
+]);
+
+/**
+ * 单人强制：把一条生图提示词改成“只有这一个角色”。
+ *
+ * 模型写出来的提示词不管长什么样，经过这里之后一定是单人：
+ * 先把多人标签（2girls、group、multiple girls……）全部删掉，
+ * 再在最前面加上单人标记（1girl, solo / 1boy, solo / solo）。
+ * 这一步在模型返回之后、调生图接口之前由代码做，模型改不掉它——
+ * 就算模型写了 2girls、写了 group，最后进生图接口的提示词里也没有。
+ *
+ * 只动人数标签和开头的单人标记，角色外貌和场景标签原样保留；
+ * 提示词已经以 1girl / 1boy 开头时，不重复加性别标签，只补 solo。
+ */
+export function enforceSoloPrompt(prompt: string, gender: PhoneContactGender): string {
+  const kept = prompt
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0 && !MULTI_PERSON_TAGS.has(tag.toLowerCase()));
+  const first = kept[0]?.toLowerCase();
+  // 已经是单人开头：性别标签不重复加，solo 紧跟在它后面就行。
+  if (first === '1girl' || first === '1boy') {
+    if (kept[1]?.toLowerCase() === 'solo') return kept.join(', ');
+    return [kept[0], 'solo', ...kept.slice(1)].join(', ');
+  }
+  // 已经以 solo 开头：女/男再补一个性别标签，未知性别直接用。
+  if (first === 'solo') {
+    if (gender === 'female') return ['1girl', ...kept].join(', ');
+    if (gender === 'male') return ['1boy', ...kept].join(', ');
+    return kept.join(', ');
+  }
+  const head =
+    gender === 'female' ? ['1girl', 'solo'] : gender === 'male' ? ['1boy', 'solo'] : ['solo'];
+  return [...head, ...kept].join(', ');
+}
 
 /**
  * 独立系统的声明：微信聊天不是主线剧情的延续。

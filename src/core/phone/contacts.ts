@@ -10,7 +10,12 @@
 import type { RPCard } from '@/core/types/card.js';
 import type { LLMMessage, LLMService } from '@/core/llm/types.js';
 import { uid } from '@/lib/utils.js';
-import type { PhoneContact } from './types.js';
+import type { PhoneContact, PhoneContactGender } from './types.js';
+
+/** 模型给的 gender 只认三个值，其他一律按 unknown 算。 */
+function parseGender(raw: unknown): PhoneContactGender {
+  return raw === 'female' || raw === 'male' ? raw : 'unknown';
+}
 
 /** 联系人最多留几位：卡里人再多，微信列表也不宜太长。 */
 const MAX_CONTACTS = 8;
@@ -53,6 +58,8 @@ export function fallbackContacts(card: RPCard): PhoneContact[] {
       relation: '本人',
       openingMessage: cleanOpeningMessage(card.data.first_mes, name),
       isMain: true,
+      // 兜底不知道性别，生图时只加 solo，不加 1girl / 1boy。
+      gender: 'unknown',
     },
   ];
 }
@@ -103,6 +110,7 @@ export function parseContactsJson(text: string, card: RPCard): PhoneContact[] | 
   const cardName = card.data.name;
   const seen = new Set<string>([cardName]);
   let mainOpening = '';
+  let mainGender: PhoneContactGender = 'unknown';
   const others: PhoneContact[] = [];
   for (const item of parsed) {
     if (!item || typeof item !== 'object') continue;
@@ -111,9 +119,10 @@ export function parseContactsJson(text: string, card: RPCard): PhoneContact[] | 
     if (!name) continue;
     const relation = typeof raw.relation === 'string' ? raw.relation.trim() : '';
     const opening = typeof raw.openingMessage === 'string' ? raw.openingMessage.trim() : '';
-    // 主角的条目：只取它的开场白，不进联系人列表。
+    // 主角的条目：只取它的开场白和性别，不进联系人列表。
     if (name === cardName || relation === '本人') {
       if (!mainOpening) mainOpening = opening;
+      if (mainGender === 'unknown') mainGender = parseGender(raw.gender);
       seen.add(name);
       continue;
     }
@@ -125,6 +134,7 @@ export function parseContactsJson(text: string, card: RPCard): PhoneContact[] | 
       relation: relation || '朋友',
       openingMessage: opening ? limitOpening(opening, name) : `你好，我是${name}。`,
       isMain: false,
+      gender: parseGender(raw.gender),
     });
     if (others.length >= MAX_CONTACTS - 1) break;
   }
@@ -136,6 +146,7 @@ export function parseContactsJson(text: string, card: RPCard): PhoneContact[] | 
       ? limitOpening(mainOpening, cardName)
       : cleanOpeningMessage(card.data.first_mes, cardName),
     isMain: true,
+    gender: mainGender,
   };
   return [main, ...others];
 }
@@ -164,8 +175,8 @@ export function buildInitMessages(card: RPCard): LLMMessage[] {
         '以下是角色卡内容：',
         cardText,
         '',
-        '请从中找出出现的所有人物（包括主角本人），返回一个 JSON 数组。每个元素只有三个字段：',
-        '{"name": "名字", "relation": "和主角的关系，如 本人/闺蜜/哥哥/同事", "openingMessage": "这个人第一次在微信上发来的消息"}。',
+        '请从中找出出现的所有人物（包括主角本人），返回一个 JSON 数组。每个元素只有四个字段：',
+        '{"name": "名字", "relation": "和主角的关系，如 本人/闺蜜/哥哥/同事", "openingMessage": "这个人第一次在微信上发来的消息", "gender": "这个人的性别，按卡的内容判断：female 女 / male 男 / unknown 不知道"}。',
         '写每条 openingMessage 之前，先想一想：这个人是谁、性格怎么样、和主角是什么关系、卡里的剧情是什么；想清楚了再写。',
         'openingMessage 的要求：要像真人发微信，口语化、简短（1–2 句，最多 40 字），结合卡里的剧情跟对方打招呼或找对方；写的时候要保持在角色里，绝不跳出角色（不要 OOC），绝不提自己是 AI 或模型；绝不能照抄卡的开场白原文，不能带 *动作描写*，不能写成一大段角色扮演描写。主角本人的开场白也一样，按剧情重新写一句短消息，不要照搬开场白原文。',
         '主角本人放在第一位，relation 写“本人”。如果卡里除了主角没有其他人，只返回主角一人。',
