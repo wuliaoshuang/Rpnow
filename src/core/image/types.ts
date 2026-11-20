@@ -21,6 +21,7 @@
 
 import JSZip from 'jszip';
 import { describeHttpError } from '../llm/sse.js';
+import { naiJobAdapter } from './nai.js';
 
 export type ImageProviderKey = 'openai-image' | 'seedream' | 'novelai' | (string & {});
 
@@ -597,6 +598,7 @@ export const BUILTIN_IMAGE_ADAPTERS: ImageProviderAdapter[] = [
   openAIImageAdapter,
   seedreamAdapter,
   novelaiAdapter,
+  naiJobAdapter,
 ];
 
 export { blobToDataUrl };

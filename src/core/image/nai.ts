@@ -16,6 +16,13 @@
  *     discarding the model's intent.
  */
 
+import type {
+  ImageConnection,
+  ImageProviderAdapter,
+  ImageRequest,
+  ImageResult,
+} from './types.js';
+
 export interface ImageMarker {
   /** Index into the original text where the marker starts. */
   start: number;
@@ -221,9 +228,16 @@ export interface NAIJobParams {
   /** Force a fresh generation instead of reusing a cached result. */
   nocache?: boolean;
   fetchImpl?: typeof fetch;
+  /** Base URL override (default IMAGE_GEN_BASE_URL). */
+  baseUrl?: string;
   /** Polled every `intervalMs`, giving up after `maxFailures`. */
   intervalMs?: number;
   maxFailures?: number;
+}
+
+/** Resolve the job API base URL (trailing slashes stripped). */
+function jobBaseUrl(params: NAIJobParams): string {
+  return (params.baseUrl ?? IMAGE_GEN_BASE_URL).replace(/\/+$/, '');
 }
 
 export interface NAIJobResult {
@@ -256,7 +270,7 @@ export async function pollJob(
 
   for (;;) {
     try {
-      const res = await fetchImpl(`${IMAGE_GEN_BASE_URL}/api/jobs/${jobId}?token=${encodeURIComponent(params.token)}`);
+      const res = await fetchImpl(`${jobBaseUrl(params)}/api/jobs/${jobId}?token=${encodeURIComponent(params.token)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as NAIJobStatus;
       failures = 0;
@@ -288,7 +302,7 @@ export async function submitJob(params: NAIJobParams): Promise<{ jobId?: string;
   });
 
   try {
-    const res = await fetchImpl(`${IMAGE_GEN_BASE_URL}/api/jobs?${query.toString()}`, { method: 'POST' });
+    const res = await fetchImpl(`${jobBaseUrl(params)}/api/jobs?${query.toString()}`, { method: 'POST' });
     if (!res.ok) return { error: `HTTP ${res.status}` };
     const json = (await res.json()) as { id?: string };
     if (!json.id) return { error: '服务没有返回任务 id' };
@@ -339,3 +353,69 @@ export async function fetchQuota(
     return { ok: false };
   }
 }
+
+// ------------------------------------------------------- image-service adapter
+
+/** Phone sizes → the job API's pixel sizes (same as IMAGE_SIZES). */
+const NAI_JOB_SIZES: Record<'square' | 'portrait' | 'landscape', { width: number; height: number }> = {
+  square: IMAGE_SIZES.square,
+  portrait: IMAGE_SIZES.vertical,
+  landscape: IMAGE_SIZES.horizontal,
+};
+
+/**
+ * The sta1n job API as a first-class image provider, so `image.generate`
+ * can use it like any other provider (the phone's image generation, the
+ * avatar module, the image studio).
+ *
+ * The prompt goes in the query string (`prompt` param, negative as
+ * `negative`), the call returns a job id, and the result is polled until
+ * done and fetched as a data URL. The connection's apiKey is the token.
+ */
+export const naiJobAdapter: ImageProviderAdapter = {
+  key: 'nai',
+  label: 'NAI（sta1n 代理）',
+  defaultBaseURL: IMAGE_GEN_BASE_URL,
+  knownModels: [
+    'nai-diffusion-5-full',
+    'nai-diffusion-5-curated',
+    'nai-diffusion-4-5-full',
+    'nai-diffusion-4-full',
+    'nai-diffusion-3',
+  ],
+  browserCors: true,
+  note: '走 nai.sta1n.cn 的任务接口：提交后轮询取图。余额不足时会直接报错。',
+
+  async generate(
+    conn: ImageConnection,
+    req: ImageRequest,
+    fetchImpl: typeof fetch = fetch,
+  ): Promise<ImageResult[]> {
+    const sizeKey = req.size ?? 'square';
+    const [width, height] =
+      req.width && req.height
+        ? [req.width, req.height]
+        : sizeKey === 'auto'
+          ? [IMAGE_SIZES.square.width, IMAGE_SIZES.square.height]
+          : [NAI_JOB_SIZES[sizeKey].width, NAI_JOB_SIZES[sizeKey].height];
+    const model = req.model || conn.defaultModel || 'nai-diffusion-5-full';
+    const base: NAIJobParams = {
+      token: conn.apiKey,
+      tags: req.prompt,
+      model,
+      width,
+      height,
+      negative: req.negativePrompt,
+      baseUrl: conn.baseURL || undefined,
+      fetchImpl,
+    };
+    const submitted = await submitJob(base);
+    if (!submitted.jobId) throw new Error(submitted.error ?? '没有拿到任务 id');
+    const status = await pollJob(submitted.jobId, base);
+    if (status.status !== 'done' || !status.imageUrl) {
+      throw new Error(status.error ?? `任务状态：${status.status}`);
+    }
+    const dataUrl = await fetchAsDataUrl(status.imageUrl, fetchImpl);
+    return [{ dataUrl, provider: 'nai', model }];
+  },
+};

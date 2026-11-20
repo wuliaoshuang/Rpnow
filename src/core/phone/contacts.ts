@@ -57,6 +57,23 @@ export function fallbackContacts(card: RPCard): PhoneContact[] {
   ];
 }
 
+/**
+ * 旧缓存判定：联系人列表非空，且主角的开场白就是卡的 first_mes 原文。
+ *
+ * 旧逻辑初始化的缓存长这样；模型新写的短开场白几乎不可能和又长又带
+ * RP 描写的 first_mes 原文一字不差，所以这个检查是安全的。
+ * 命中时调用方应丢掉缓存、重新初始化一次（见 WeChat 的联系人加载），
+ * 并把主角存过的微信记录第一条也换掉（见 wechatStore 的迁移）。
+ */
+export function isStaleContacts(contacts: PhoneContact[], card: RPCard): boolean {
+  if (contacts.length === 0) return false;
+  const firstMes = card.data.first_mes;
+  if (!firstMes) return false;
+  const main = contacts.find((c) => c.isMain);
+  if (!main) return false;
+  return main.openingMessage === firstMes;
+}
+
 /** 从模型返回的文本里抠出 JSON 数组（允许 ```json 代码块包裹）。 */
 function extractJsonArray(text: string): unknown | null {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -149,7 +166,8 @@ export function buildInitMessages(card: RPCard): LLMMessage[] {
         '',
         '请从中找出出现的所有人物（包括主角本人），返回一个 JSON 数组。每个元素只有三个字段：',
         '{"name": "名字", "relation": "和主角的关系，如 本人/闺蜜/哥哥/同事", "openingMessage": "这个人第一次在微信上发来的消息"}。',
-        'openingMessage 的要求：要像真人发微信，口语化、简短（1–2 句，最多 40 字），结合卡里的剧情跟对方打招呼或找对方；绝不能照抄卡的开场白原文，不能带 *动作描写*，不能写成一大段角色扮演描写。主角本人的开场白也一样，按剧情重新写一句短消息，不要照搬开场白原文。',
+        '写每条 openingMessage 之前，先想一想：这个人是谁、性格怎么样、和主角是什么关系、卡里的剧情是什么；想清楚了再写。',
+        'openingMessage 的要求：要像真人发微信，口语化、简短（1–2 句，最多 40 字），结合卡里的剧情跟对方打招呼或找对方；写的时候要保持在角色里，绝不跳出角色（不要 OOC），绝不提自己是 AI 或模型；绝不能照抄卡的开场白原文，不能带 *动作描写*，不能写成一大段角色扮演描写。主角本人的开场白也一样，按剧情重新写一句短消息，不要照搬开场白原文。',
         '主角本人放在第一位，relation 写“本人”。如果卡里除了主角没有其他人，只返回主角一人。',
       ].join('\n'),
     },
