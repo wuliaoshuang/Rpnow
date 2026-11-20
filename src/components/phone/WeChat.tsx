@@ -11,10 +11,12 @@
  * 第一条也换成新开场白。角色还是个 Agent：回复时模型能自己调发图和发表
  * 情包两个工具（见 `@/core/phone/tools.js`），用户要看图就真发一张图，
  * 想表达情绪就发表情包，不只靠文字；不支持工具调用的提供商改走文字里的
- * `[发图：…]` / `[表情：…]` 标记兜底。
+ * `[发图：…]` / `[表情：…]` 标记兜底。联系人列表右上角有个“重置”：
+ * 点它确认后会删掉本聊天的全部小手机记录（联系人缓存 + 每个联系人的
+ * 微信记录），再让 AI 根据角色卡重新初始化一次；主聊天和相册不受影响。
  */
 import * as React from 'react';
-import { ChevronLeft, Image as ImageIcon, Plus, Send, Settings } from 'lucide-react';
+import { ChevronLeft, Image as ImageIcon, Plus, RotateCcw, Send, Settings } from 'lucide-react';
 import { useApp } from '@/state/store.js';
 import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { uid } from '@/lib/utils.js';
@@ -30,6 +32,7 @@ import {
   parseSendStickerArgs,
 } from '@/core/phone/tools.js';
 import {
+  clearPhoneChat,
   ensureChat,
   greetingMessage,
   loadContacts,
@@ -112,6 +115,10 @@ export function WeChat({
   const [imageRowOpen, setImageRowOpen] = React.useState(false);
   const [imagePrompt, setImagePrompt] = React.useState('');
   const [configOpen, setConfigOpen] = React.useState(false);
+  /** 重置计数：每次确认重置就 +1，让联系人加载 effect 重新跑一遍。 */
+  const [resetNonce, setResetNonce] = React.useState(0);
+  /** 是否正在弹“清空并重置”确认框。 */
+  const [resetConfirmOpen, setResetConfirmOpen] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
 
   const phone = settings.phone ?? {};
@@ -174,7 +181,31 @@ export function WeChat({
     phone.chatConnectionId,
     phone.chatModel,
     settings.defaultConnectionId,
+    resetNonce,
   ]);
+
+  /**
+   * 清空并重置：删掉本聊天的全部小手机记录（联系人缓存 + 每个联系人的
+   * 微信记录），再把联系人置空、让加载 effect 重新跑一遍——缓存已经删
+   * 了，所以会真的再调一次模型重新初始化。主聊天、相册、其他聊天不动。
+   * 先等删完再触发 effect，不然 effect 可能读到还没删掉的旧缓存。
+   */
+  const confirmReset = () => {
+    const list = contacts;
+    if (!list) return;
+    setResetConfirmOpen(false);
+    void (async () => {
+      try {
+        await clearPhoneChat(chatId, list);
+      } catch {
+        // 清理失败也不挡路：缓存读不到时初始化一样会重跑。
+      }
+      setSelected(null);
+      setPreviews({});
+      setContacts(null);
+      setResetNonce((n) => n + 1);
+    })();
+  };
 
   // 联系人列表：懒加载每个联系人的最后一条消息做预览。
   React.useEffect(() => {
@@ -551,7 +582,7 @@ export function WeChat({
   // ---------------- 联系人列表 ----------------
   if (!selected) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col bg-white text-neutral-900">
+      <div className="relative flex min-h-0 flex-1 flex-col bg-white text-neutral-900">
         <div className="flex shrink-0 items-center gap-1 border-b border-neutral-200 px-2 py-2.5">
           <button
             type="button"
@@ -561,7 +592,17 @@ export function WeChat({
           >
             <ChevronLeft className="size-6" />
           </button>
-          <h2 className="text-base font-semibold">微信</h2>
+          <h2 className="flex-1 text-base font-semibold">微信</h2>
+          <button
+            type="button"
+            aria-label="清空并重置"
+            onClick={() => setResetConfirmOpen(true)}
+            disabled={contacts === null}
+            className="flex shrink-0 cursor-pointer items-center gap-1 rounded-full px-2.5 py-1.5 text-[13px] text-neutral-500 transition-colors hover:bg-neutral-100 disabled:cursor-default disabled:opacity-40"
+          >
+            <RotateCcw className="size-4" />
+            重置
+          </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {contacts === null ? (
@@ -596,6 +637,33 @@ export function WeChat({
             ))
           )}
         </div>
+        {resetConfirmOpen && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/40 px-6">
+            <div className="w-full max-w-[280px] rounded-2xl bg-white p-4 shadow-xl">
+              <h3 className="text-[15px] font-semibold text-neutral-900">清空并重置？</h3>
+              <p className="mt-1.5 text-[13px] leading-relaxed text-neutral-600">
+                会删掉这个聊天的全部小手机记录（联系人和聊天记录），然后让 AI
+                根据角色卡重新初始化。主聊天和相册不受影响。
+              </p>
+              <div className="mt-4 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setResetConfirmOpen(false)}
+                  className="flex-1 cursor-pointer rounded-lg bg-neutral-100 px-3 py-2 text-sm text-neutral-700 transition-colors hover:bg-neutral-200"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmReset}
+                  className="flex-1 cursor-pointer rounded-lg bg-[#07C160] px-3 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90"
+                >
+                  确定重置
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
