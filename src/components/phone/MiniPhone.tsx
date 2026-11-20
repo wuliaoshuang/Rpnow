@@ -83,8 +83,8 @@ export function MiniPhone({
             aria-hidden
             className="pointer-events-none absolute left-1/2 top-2.5 z-30 h-[22px] w-24 -translate-x-1/2 rounded-full bg-black ring-1 ring-white/10"
           />
-          {/* 状态栏 */}
-          <div className="flex shrink-0 items-center justify-between px-5 pt-[calc(env(safe-area-inset-top,0px)+0.75rem)] pb-1 text-white">
+          {/* 状态栏：手机自己的固定高度，不用真机的安全区——壳外已经留边，真机刘海碰不到屏幕。 */}
+          <div className="flex h-11 shrink-0 items-center justify-between px-5 text-white">
             <span className="text-sm font-semibold tabular-nums">{clock}</span>
             <div className="flex items-center gap-1.5">
               <Signal className="size-4" aria-label="信号" />
@@ -138,7 +138,7 @@ export function MiniPhone({
           </div>
 
           {/* 底部小横条：点一下回主屏幕 */}
-          <div className="flex shrink-0 justify-center pb-[calc(env(safe-area-inset-bottom,0px)+0.5rem)] pt-1">
+          <div className="flex shrink-0 justify-center pb-2 pt-1">
             <button
               type="button"
               aria-label="回到主屏幕"

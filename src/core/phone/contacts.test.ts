@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { RPCard } from '@/core/types/card.js';
-import { buildInitMessages, fallbackContacts, parseContactsJson } from './contacts.js';
+import { buildInitMessages, cleanOpeningMessage, fallbackContacts, parseContactsJson } from './contacts.js';
 
 function fakeCard(overrides: Partial<RPCard['data']> = {}): RPCard {
   return {
@@ -26,7 +26,7 @@ function fakeCard(overrides: Partial<RPCard['data']> = {}): RPCard {
 }
 
 describe('fallbackContacts', () => {
-  it('只有主角，开场白就是卡的 first_mes', () => {
+  it('只有主角，开场白是 first_mes 压短后的版本（短的原样留）', () => {
     const list = fallbackContacts(fakeCard());
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({
@@ -38,14 +38,50 @@ describe('fallbackContacts', () => {
     });
   });
 
+  it('first_mes 是一大段 RP 描写时，只留第一句', () => {
+    const list = fallbackContacts(
+      fakeCard({
+        first_mes:
+          '她回头看过来，蓝色的眼睛里带着明显的水光，脸颊红透，嘴角却还残留着平时那种不服的弧度。*她把手背到身后*「主人，你可算来了。」',
+      }),
+    );
+    expect(list[0].openingMessage).toBe(
+      '她回头看过来，蓝色的眼睛里带着明显的水光，脸颊红透，嘴角却还残留着平时那种不服的弧度。',
+    );
+    expect(list[0].openingMessage).not.toContain('*');
+  });
+
   it('卡没有 first_mes 时用默认问候', () => {
     const list = fallbackContacts(fakeCard({ first_mes: '' }));
     expect(list[0].openingMessage).toContain('李淑纯');
   });
 });
 
+describe('cleanOpeningMessage', () => {
+  it('去掉 *动作描写*，只取第一句', () => {
+    const out = cleanOpeningMessage(
+      '*她抬起头*「主人，你可算来了。」*她把手背到身后*她等了你一整天。',
+      '雪奈',
+    );
+    expect(out).toBe('「主人，你可算来了。」');
+  });
+
+  it('第一句超过 60 字截断并加省略号', () => {
+    const long = '这句'.concat('特别'.repeat(40)); // 82 字，没有句末标点
+    const out = cleanOpeningMessage(long, '雪奈');
+    expect(out.length).toBe(61);
+    expect(out.endsWith('…')).toBe(true);
+    expect(out.startsWith('这句特别特别')).toBe(true);
+  });
+
+  it('只剩动作描写或空的，退回默认问候', () => {
+    expect(cleanOpeningMessage('*她笑了笑*', '雪奈')).toBe('你好，我是雪奈。');
+    expect(cleanOpeningMessage('', '雪奈')).toBe('你好，我是雪奈。');
+  });
+});
+
 describe('parseContactsJson', () => {
-  it('正常 JSON：主角排第一，id 用卡 id，开场白用 first_mes', () => {
+  it('正常 JSON：主角排第一，id 用卡 id，开场白用模型给的版本', () => {
     const text = JSON.stringify([
       { name: '李淑纯', relation: '本人', openingMessage: '嗨，我是淑纯' },
       { name: '小雨', relation: '闺蜜', openingMessage: '在吗在吗，出来玩呀' },
@@ -55,10 +91,39 @@ describe('parseContactsJson', () => {
     expect(list).not.toBeNull();
     expect(list!.map((c) => c.name)).toEqual(['李淑纯', '小雨', '阿杰']);
     expect(list![0]).toMatchObject({ id: 'card-1', isMain: true, relation: '本人' });
-    // 主角开场白固定用卡的 first_mes，不用模型给的版本。
-    expect(list![0].openingMessage).toBe('你来啦，今天想买点什么花？');
+    // 主角开场白用模型给的短消息，不再用卡的 first_mes 原文。
+    expect(list![0].openingMessage).toBe('嗨，我是淑纯');
     expect(list![1]).toMatchObject({ name: '小雨', relation: '闺蜜', isMain: false });
     expect(list![1].id).toMatch(/^c_/);
+  });
+
+  it('模型没给主角开场白时，主角用 first_mes 压短后的版本', () => {
+    const text = JSON.stringify([
+      { name: '李淑纯', relation: '本人', openingMessage: '' },
+      { name: '小雨', relation: '闺蜜', openingMessage: '嗨' },
+    ]);
+    const list = parseContactsJson(text, fakeCard());
+    expect(list![0].openingMessage).toBe('你来啦，今天想买点什么花？');
+  });
+
+  it('主角条目靠 relation 本人也能认出来', () => {
+    const text = JSON.stringify([
+      { name: '淑纯', relation: '本人', openingMessage: '在吗？' },
+      { name: '小雨', relation: '闺蜜', openingMessage: '嗨' },
+    ]);
+    const list = parseContactsJson(text, fakeCard());
+    expect(list).not.toBeNull();
+    expect(list!.map((c) => c.name)).toEqual(['李淑纯', '小雨']);
+    expect(list![0].openingMessage).toBe('在吗？');
+  });
+
+  it('模型开场白写成大段时压短，不展示长段落', () => {
+    const long = '这句'.concat('特别'.repeat(40));
+    const text = JSON.stringify([
+      { name: '李淑纯', relation: '本人', openingMessage: long },
+    ]);
+    const list = parseContactsJson(text, fakeCard());
+    expect(list![0].openingMessage.length).toBe(61);
   });
 
   it('```json 代码块包裹也能解析', () => {
@@ -134,5 +199,14 @@ describe('buildInitMessages', () => {
     expect(userText).toContain('闺蜜小雨');
     expect(userText).toContain('哥哥阿杰');
     expect(userText).toContain('JSON');
+  });
+
+  it('提示词要求开场白短、按剧情写，不照抄 first_mes、不带动作描写', () => {
+    const messages = buildInitMessages(fakeCard());
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('40 字');
+    expect(userText).toContain('照抄');
+    expect(userText).toContain('*动作描写*');
+    expect(userText).toContain('一大段角色扮演描写');
   });
 });
