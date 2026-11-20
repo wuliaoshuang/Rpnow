@@ -19,7 +19,7 @@
  * 微信记录），再让 AI 根据角色卡重新初始化一次；主聊天和相册不受影响。
  */
 import * as React from 'react';
-import { ChevronLeft, Image as ImageIcon, Plus, RotateCcw, Send, Settings } from 'lucide-react';
+import { ChevronLeft, Image as ImageIcon, Plus, RotateCcw, Send, Settings, SlidersHorizontal } from 'lucide-react';
 import { useApp } from '@/state/store.js';
 import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { uid } from '@/lib/utils.js';
@@ -33,19 +33,16 @@ import {
   isStaleContacts,
   resolvePhoneUser,
 } from '@/core/phone/contacts.js';
-import { lorebookTextForInit, selectLorebookText } from '@/core/phone/lorebook.js';
-import { extractPresetPrompts } from '@/core/phone/preset.js';
+import { lorebookTextForInit } from '@/core/phone/lorebook.js';
+import { computeReplyExtras, historyEntries } from '@/core/phone/replyExtras.js';
 import {
   buildImagePromptMessages,
   buildImageTagContext,
   buildReplySystemPrompt,
   enforceComposition,
-  formatPlotProgress,
   inferPeopleFromRequest,
   looksLikeImageRequest,
 } from '@/core/phone/reply.js';
-import { currentMessages } from '@/core/branch/engine.js';
-import type { ChatHistoryEntry } from '@/core/phone/reply.js';
 import {
   PHONE_TOOLS,
   parseReplyMarkers,
@@ -67,6 +64,7 @@ import { cleanRewrittenTags, rewriteTags } from '@/core/image/tagRewrite.js';
 import { dataUrlToBlob, mediaRef, saveMediaImage } from '@/core/media/store.js';
 import { PressableImage } from '@/components/media/PressableImage.js';
 import { PhoneImageConfig } from './PhoneImageConfig.js';
+import { PhonePromptViewer } from './PhonePromptViewer.js';
 
 function makeMessage(
   msg: Omit<PhoneMessage, 'id' | 'createdAt'> & { id?: string },
@@ -110,26 +108,6 @@ function Avatar({
   );
 }
 
-/**
- * 把微信聊天记录换成纯文字条目（回复和生图提示词都用它）：
- * 系统消息不要；图片和表情包换成占位文字；只留最近 10 条。
- * 生图尤其需要它——没有对话场景，模型只能画一张白底人像。
- */
-function historyEntries(messages: PhoneMessage[]): ChatHistoryEntry[] {
-  return messages
-    .filter((m) => m.role !== 'system')
-    .slice(-10)
-    .map((m) => ({
-      role: m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
-      content:
-        m.type === 'text'
-          ? m.content
-          : m.type === 'image'
-            ? '[对方发来一张图片]'
-            : '[表情]',
-    }));
-}
-
 export function WeChat({
   chatId,
   card,
@@ -156,6 +134,8 @@ export function WeChat({
   const [imageRowOpen, setImageRowOpen] = React.useState(false);
   const [imagePrompt, setImagePrompt] = React.useState('');
   const [configOpen, setConfigOpen] = React.useState(false);
+  /** 是否正在看提示词构成（小手机里的内嵌视图）。 */
+  const [promptOpen, setPromptOpen] = React.useState(false);
   /** 重置计数：每次确认重置就 +1，让联系人加载 effect 重新跑一遍。 */
   const [resetNonce, setResetNonce] = React.useState(0);
   /** 是否正在弹“清空并重置”确认框。 */
@@ -558,43 +538,24 @@ export function WeChat({
       // 用户在 4 栋），不然微信里会说出和主线矛盾的话——所以每次回复都
       // 读当前主聊天（手机外面那个正常聊天）的最新消息，当场压成剧情
       // 进度放进提示词里“只做了解”，主线推进了，这里的感知也跟着推进。
-      const mainChat = useApp.getState().chats.find((c) => c.id === chatId);
-      const plotProgress = mainChat
-        ? formatPlotProgress(currentMessages(mainChat), card.data.name)
-        : '';
-      // 小手机共享主聊天的素材，拼进回复提示词：
+      // 小手机共享主聊天的素材，拼进回复提示词（和提示词查看器共用
+      // computeReplyExtras 算，查看器里看到的就是这里发出去的东西）：
       //   世界书——走主聊天同一套 activate()，按最近的微信对话 + 主线聊天
       //     最近消息匹配，命中的条目才进提示词；
       //   预设——按主聊天同一个办法取（chat.presetId，没有就用默认预设），
       //     抽出来的提示词按最高注入深度放在 system prompt 最后。
       // 都是读现成的数据，不多调模型。
       const state = useApp.getState();
-      const preset = mainChat
-        ? state.presets.find(
-            (p) => p.id === (mainChat.presetId ?? settings.defaultPresetId),
-          )
-        : undefined;
-      const presetText = preset ? extractPresetPrompts(preset, card) : '';
-      const lorebookText = mainChat
-        ? selectLorebookText(
-            card,
-            mainChat,
-            state.lorebooks,
-            settings.lorebook,
-            [
-              ...currentMessages(mainChat)
-                .filter((m) => m.role !== 'system' && !m.hidden && m.content.trim())
-                .slice(-10)
-                .map((m) => ({ role: m.role, content: m.content })),
-              ...historyEntries(recent),
-            ],
-          )
-        : '';
-      const systemPrompt = buildReplySystemPrompt(card, contact, {
-        plotProgress,
-        lorebookText,
-        presetText,
+      const extras = computeReplyExtras({
+        card,
+        mainChat: state.chats.find((c) => c.id === chatId),
+        presets: state.presets,
+        lorebooks: state.lorebooks,
+        lorebookDefaults: settings.lorebook,
+        defaultPresetId: settings.defaultPresetId,
+        history,
       });
+      const systemPrompt = buildReplySystemPrompt(card, contact, extras);
       const llmMessages: LLMMessage[] = [
         { role: 'system', content: systemPrompt },
         ...historyEntries(recent),
@@ -859,7 +820,7 @@ export function WeChat({
   // ---------------- 聊天窗口 ----------------
   const contact = selected;
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-[#ededed] text-neutral-900">
+    <div className="relative flex min-h-0 flex-1 flex-col bg-[#ededed] text-neutral-900">
       <div className="flex shrink-0 items-center gap-1 border-b border-neutral-200 bg-white px-2 py-2">
         <button
           type="button"
@@ -875,6 +836,14 @@ export function WeChat({
             {displayRelation(contact)}
           </span>
         </h2>
+        <button
+          type="button"
+          aria-label="提示词构成"
+          onClick={() => setPromptOpen(true)}
+          className="flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-neutral-100"
+        >
+          <SlidersHorizontal className="size-5 text-neutral-600" />
+        </button>
         <button
           type="button"
           aria-label="小手机生图设置"
@@ -997,6 +966,17 @@ export function WeChat({
       </div>
 
       <PhoneImageConfig open={configOpen} onOpenChange={setConfigOpen} />
+      {promptOpen && (
+        <div className="absolute inset-0 z-20 flex flex-col bg-white">
+          <PhonePromptViewer
+            chatId={chatId}
+            card={card}
+            contact={contact}
+            history={messages}
+            onBack={() => setPromptOpen(false)}
+          />
+        </div>
+      )}
     </div>
   );
 }

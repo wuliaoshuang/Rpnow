@@ -334,11 +334,25 @@ export interface ReplyPromptExtras {
 /** 开场白当参考时最多引用多少字（只取说话方式，不用整段）。 */
 const FIRST_MES_CONTEXT_CHARS = 500;
 
-export function buildReplySystemPrompt(
+/** 提示词构成的一节：label 是给查看器看的名字，content 为空 = 这一节没写进提示词。 */
+export interface ReplyPromptSection {
+  key: string;
+  label: string;
+  content: string;
+}
+
+/**
+ * 回复 system prompt 的分节版：和 buildReplySystemPrompt 同一份拼装，
+ * 查看器和小手机的回复共用它，所以查看器里看到的就是真正发出去的东西。
+ * 顺序就是提示词里的顺序：角色扮演开场 → 身份 → 人设 → 设定 → 世界书 →
+ * 开场白 → 剧情进度 → 独立系统 → 先想一想 → 不跳出角色 → 短聊格式 →
+ * 工具说明 → 预设（最后 = 最高注入深度）。
+ */
+export function buildReplySystemPromptSections(
   card: RPCard,
   contact: PhoneContact,
   extras: ReplyPromptExtras = {},
-): string {
+): ReplyPromptSection[] {
   const d = card.data;
   // 联系人都是卡里提到的其他人物（卡的主角本人不是联系人），所以
   // framing 和身份一律按“扮演这个联系人”写；关系按 User 来写
@@ -355,7 +369,9 @@ export function buildReplySystemPrompt(
     `你是「${contact.name}」${clause ? `，${clause}` : ''}，正在微信上和用户聊天。`,
     relationNote,
     d.description ? `角色卡介绍：${d.description}` : '',
-  ];
+  ]
+    .filter(Boolean)
+    .join('\n');
   // 联系人自己的人设：性格、长相、关键特点——模型扮演的就是这个人，
   // 人设写在这里它才不会 OOC；老缓存里没有 profile 时不写这一节。
   const profileSection = contact.profile?.trim()
@@ -386,20 +402,29 @@ export function buildReplySystemPrompt(
       ].join('\n')
     : '';
   return [
-    framing,
-    ...identity,
-    profileSection,
-    settingsSection,
-    lorebookSection,
-    firstMesSection,
-    plotSection,
-    INDEPENDENCE,
-    THINK_FIRST,
-    NO_OOC,
-    SHORT_STYLE,
-    TOOLS,
-    presetSection,
-  ]
+    { key: 'framing', label: '角色扮演开场', content: framing },
+    { key: 'identity', label: '身份', content: identity },
+    { key: 'profile', label: '人设', content: profileSection },
+    { key: 'settings', label: '设定', content: settingsSection },
+    { key: 'lorebook', label: '世界书', content: lorebookSection },
+    { key: 'firstMes', label: '开场白', content: firstMesSection },
+    { key: 'plot', label: '剧情进度', content: plotSection },
+    { key: 'independence', label: '独立系统', content: INDEPENDENCE },
+    { key: 'thinkFirst', label: '先想一想', content: THINK_FIRST },
+    { key: 'noOoc', label: '不跳出角色', content: NO_OOC },
+    { key: 'shortStyle', label: '短聊格式', content: SHORT_STYLE },
+    { key: 'tools', label: '工具说明', content: TOOLS },
+    { key: 'preset', label: '预设', content: presetSection },
+  ];
+}
+
+export function buildReplySystemPrompt(
+  card: RPCard,
+  contact: PhoneContact,
+  extras: ReplyPromptExtras = {},
+): string {
+  return buildReplySystemPromptSections(card, contact, extras)
+    .map((s) => s.content)
     .filter(Boolean)
     .join('\n');
 }
