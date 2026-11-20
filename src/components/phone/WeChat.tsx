@@ -25,6 +25,8 @@ import type { RPCard } from '@/core/types/card.js';
 import type { LLMMessage, LLMResult } from '@/core/llm/types.js';
 import type { ImagePeople, PhoneContact, PhoneMessage, StickerEmotion } from '@/core/phone/types.js';
 import { fallbackContacts, initContacts, isStaleContacts } from '@/core/phone/contacts.js';
+import { lorebookTextForInit, selectLorebookText } from '@/core/phone/lorebook.js';
+import { extractPresetPrompts } from '@/core/phone/preset.js';
 import {
   buildImagePromptMessages,
   buildImageTagContext,
@@ -174,7 +176,21 @@ export function WeChat({
         if (llm && connection) {
           try {
             const model = phone.chatModel || connection.defaultModel || '';
-            const initialized = await initContacts(card, llm, connectionId, model);
+            // 初始化找人也要看世界书：只在世界书里出现的人物不能漏。
+            // 初始化时还没对话可匹配，key 匹配会漏人，所以直接把世界书
+            // 条目内容交给模型（lorebookTextForInit 按预算截断过）。
+            const state = useApp.getState();
+            const chatForInit = state.chats.find((c) => c.id === chatId);
+            const initLorebookText = chatForInit
+              ? lorebookTextForInit(card, chatForInit, state.lorebooks)
+              : '';
+            const initialized = await initContacts(
+              card,
+              llm,
+              connectionId,
+              model,
+              initLorebookText,
+            );
             if (cancelled) return;
             const list = initialized ?? fallbackContacts(card);
             // 先迁存过的第一条消息，再把新联系人摆出来：列表预览读的
@@ -538,7 +554,39 @@ export function WeChat({
       const plotProgress = mainChat
         ? formatPlotProgress(currentMessages(mainChat), card.data.name)
         : '';
-      const systemPrompt = buildReplySystemPrompt(card, contact, plotProgress);
+      // 小手机共享主聊天的素材，拼进回复提示词：
+      //   世界书——走主聊天同一套 activate()，按最近的微信对话 + 主线聊天
+      //     最近消息匹配，命中的条目才进提示词；
+      //   预设——按主聊天同一个办法取（chat.presetId，没有就用默认预设），
+      //     抽出来的提示词按最高注入深度放在 system prompt 最后。
+      // 都是读现成的数据，不多调模型。
+      const state = useApp.getState();
+      const preset = mainChat
+        ? state.presets.find(
+            (p) => p.id === (mainChat.presetId ?? settings.defaultPresetId),
+          )
+        : undefined;
+      const presetText = preset ? extractPresetPrompts(preset, card) : '';
+      const lorebookText = mainChat
+        ? selectLorebookText(
+            card,
+            mainChat,
+            state.lorebooks,
+            settings.lorebook,
+            [
+              ...currentMessages(mainChat)
+                .filter((m) => m.role !== 'system' && !m.hidden && m.content.trim())
+                .slice(-10)
+                .map((m) => ({ role: m.role, content: m.content })),
+              ...historyEntries(recent),
+            ],
+          )
+        : '';
+      const systemPrompt = buildReplySystemPrompt(card, contact, {
+        plotProgress,
+        lorebookText,
+        presetText,
+      });
       const llmMessages: LLMMessage[] = [
         { role: 'system', content: systemPrompt },
         ...historyEntries(recent),

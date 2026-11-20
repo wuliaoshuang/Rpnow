@@ -152,7 +152,7 @@ export function parseContactsJson(text: string, card: RPCard): PhoneContact[] | 
 }
 
 /** 初始化用的消息：把卡的全部内容交给模型去找人。 */
-export function buildInitMessages(card: RPCard): LLMMessage[] {
+export function buildInitMessages(card: RPCard, lorebookText = ''): LLMMessage[] {
   const d = card.data;
   const cardText = [
     `角色名：${d.name}`,
@@ -161,6 +161,7 @@ export function buildInitMessages(card: RPCard): LLMMessage[] {
     d.scenario ? `场景：${d.scenario}` : '',
     d.first_mes ? `开场白：${d.first_mes}` : '',
     d.mes_example ? `示例对话：${d.mes_example}` : '',
+    lorebookText.trim() ? `世界书内容：\n${lorebookText.trim()}` : '',
   ]
     .filter(Boolean)
     .join('\n');
@@ -177,6 +178,10 @@ export function buildInitMessages(card: RPCard): LLMMessage[] {
         '',
         '请从中找出出现的所有人物（包括主角本人），返回一个 JSON 数组。每个元素只有四个字段：',
         '{"name": "名字", "relation": "和主角的关系，如 本人/闺蜜/哥哥/同事", "openingMessage": "这个人第一次在微信上发来的消息", "gender": "这个人的性别，按卡的内容判断：female 女 / male 男 / unknown 不知道"}。',
+        '找人的时候，卡的介绍、性格、场景、开场白、示例对话都要看；',
+        ...(lorebookText.trim()
+          ? ['世界书内容也要看——只在世界书里出现的人物也要找出来，不要漏掉。']
+          : []),
         '写每条 openingMessage 之前，先想一想：这个人是谁、性格怎么样、和主角是什么关系、卡里的剧情是什么；想清楚了再写。',
         'openingMessage 的要求：要像真人发微信，口语化、简短（1–2 句，最多 40 字），结合卡里的剧情跟对方打招呼或找对方；写的时候要保持在角色里，绝不跳出角色（不要 OOC），绝不提自己是 AI 或模型；绝不能照抄卡的开场白原文，不能带 *动作描写*，不能写成一大段角色扮演描写。主角本人的开场白也一样，按剧情重新写一句短消息，不要照搬开场白原文。',
         '主角本人放在第一位，relation 写“本人”。如果卡里除了主角没有其他人，只返回主角一人。',
@@ -188,16 +193,21 @@ export function buildInitMessages(card: RPCard): LLMMessage[] {
 /**
  * 调一次模型，找出卡里的人物。解析失败返回 null（调用方走兜底）。
  * 30 秒超时，避免初始化一直转圈。
+ *
+ * lorebookText 是世界书内容（lorebook.ts 的 lorebookTextForInit 算出来
+ * 的）：初始化时还没对话可匹配，key 匹配会漏人，所以直接把世界书条目
+ * 内容交给模型，让它把只在世界书里出现的人物也找出来。
  */
 export async function initContacts(
   card: RPCard,
   llm: LLMService,
   connectionId: string,
   model: string,
+  lorebookText = '',
 ): Promise<PhoneContact[] | null> {
   const result = await llm.complete(connectionId, {
     model,
-    messages: buildInitMessages(card),
+    messages: buildInitMessages(card, lorebookText),
     temperature: 0.3,
     maxTokens: 800,
     signal: AbortSignal.timeout(30_000),

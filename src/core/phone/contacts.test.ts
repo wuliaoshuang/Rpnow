@@ -265,6 +265,21 @@ describe('buildInitMessages', () => {
     expect(userText).toContain('male');
     expect(userText).toContain('unknown');
   });
+
+  it('传了世界书内容：初始化输入里有世界书一节，模型找人时连世界书里的人也找', () => {
+    const lorebookText = '花店的房东叫王阿姨，每周三来收租。';
+    const messages = buildInitMessages(fakeCard(), lorebookText);
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('世界书内容');
+    expect(userText).toContain('花店的房东叫王阿姨');
+    expect(userText).toContain('只在世界书里出现的人物也要找出来');
+  });
+
+  it('没传世界书：初始化输入里没有世界书一节', () => {
+    const messages = buildInitMessages(fakeCard());
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).not.toContain('世界书内容');
+  });
 });
 
 describe('isStaleContacts', () => {
