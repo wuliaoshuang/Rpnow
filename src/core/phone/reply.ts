@@ -72,14 +72,25 @@ export function buildReplySystemPrompt(card: RPCard, contact: PhoneContact): str
 
 /**
  * 生图提示词用的消息：让模型先从卡里提炼角色的外貌特征，
- * 再结合用户想画的内容，写一条详细的生图提示词。
+ * 再结合最近的微信聊天记录和用户想画的内容，写一条详细的生图提示词。
  *
  * 只输出提示词本身（不要 JSON、不要解释），调用方直接拿去调生图工具。
+ *
+ * 场景一定要从聊天记录里来：模型要先读最近的对话，弄清楚角色现在在哪
+ * 里、在做什么、周围有什么、光线和气氛怎么样，再把这个角色放进这个场景
+ * 里画出来——要的是一张有场景的图，不是白底人像。聊天记录传进来之前，
+ * 图片和表情包已经换成了占位文字（`[对方发来一张图片]` / `[表情]`）。
  */
+export interface ChatHistoryEntry {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export function buildImagePromptMessages(
   card: RPCard,
   contact: PhoneContact,
   userRequest: string,
+  recentMessages: ChatHistoryEntry[],
 ): LLMMessage[] {
   const d = card.data;
   const appearance = [
@@ -90,6 +101,15 @@ export function buildImagePromptMessages(
   ]
     .filter(Boolean)
     .join('\n');
+  const conversation =
+    recentMessages.length > 0
+      ? [
+          '最近的微信聊天记录（按时间顺序，场景就从这里来）：',
+          ...recentMessages.map(
+            (m) => `${m.role === 'assistant' ? contact.name : '用户'}：${m.content}`,
+          ),
+        ].join('\n')
+      : '';
   return [
     {
       role: 'system',
@@ -102,10 +122,14 @@ export function buildImagePromptMessages(
         '请为下面这个角色写一条生图提示词：',
         appearance,
         '',
+        conversation,
+        '',
         `用户想画的内容：${userRequest}`,
         '',
-        '要求：先从角色介绍和性格里提炼出这个角色的外貌特征（头发、眼睛、穿着、标志性特点），让画出来的人一眼就能认出是这个角色；再结合用户想画的内容，写成一条详细的英文生图提示词（Danbooru 风格标签，逗号分隔，写在一行里）；只输出这条提示词本身，不要解释。',
-      ].join('\n'),
+        '要求：先读最近的微信聊天记录，弄清楚现在的场景：角色现在在哪里、在做什么、周围有什么、光线和气氛怎么样（比如老街、法桐树下、买凉皮、九月的阳光从树叶缝隙漏下来）；再从角色介绍和性格里提炼出这个角色的外貌特征（头发、眼睛、穿着、标志性特点），让画出来的人一眼就能认出是这个角色；最后把这个角色放进这个场景里、正在做这件事，写成一条详细的英文生图提示词（Danbooru 风格标签，逗号分隔，写在一行里）。要的是一张有场景的图，不是白底人像——场景从聊天记录里来，不要只按用户那句短话画，更不要只画一张人像。只输出这条提示词本身，不要解释。',
+      ]
+        .filter(Boolean)
+        .join('\n'),
     },
   ];
 }

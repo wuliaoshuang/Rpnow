@@ -42,6 +42,18 @@ describe('PHONE_TOOLS', () => {
     ]);
     expect(stickerParams.required).toEqual(['emotion']);
   });
+
+  it('send_image 的描述要带上现在的场景，不让模型只写“我的照片”', () => {
+    const imageTool = PHONE_TOOLS.find((t) => t.name === 'send_image');
+    expect(imageTool?.description).toContain('现在的场景');
+    expect(imageTool?.description).toContain('在哪里');
+    expect(imageTool?.description).toContain('在做什么');
+    const params = imageTool?.parameters as {
+      properties: { description: { type: string; description: string } };
+    };
+    expect(params.properties.description.description).toContain('现在在哪里');
+    expect(params.properties.description.description).toContain('在做什么');
+  });
 });
 
 describe('parseToolArguments', () => {
