@@ -17,6 +17,8 @@ import { uid } from '@/lib/utils.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { PhoneContact, PhoneMessage, WeChatChat } from './types.js';
 import { removeMoments } from './momentsStore.js';
+import { removeDiary } from './diaryStore.js';
+import { removeFortune } from './fortuneStore.js';
 
 function chatKey(contactId: string): string {
   return `rpnow:phone:wechat:${contactId}`;
@@ -55,7 +57,7 @@ export async function removeWeChatChat(
 
 /**
  * 清空一部聊天的全部小手机记录：联系人缓存 + 每个联系人的微信记录 +
- * 朋友圈动态。朋友圈属于这个聊天的手机，清掉之后从空开始。
+ * 朋友圈动态 + 日记 + 运势。日记和运势属于这个聊天的手机，清掉之后从空开始。
  * 相册、主聊天、其他聊天的记录一律不动。
  */
 export async function clearPhoneChat(
@@ -66,6 +68,8 @@ export async function clearPhoneChat(
   await removeContacts(chatId, store);
   await Promise.all(contacts.map((c) => removeWeChatChat(c.id, store)));
   await removeMoments(chatId, store);
+  await removeDiary(chatId, store);
+  await removeFortune(chatId, store);
 }
 
 /** 读出指定联系人的微信聊天记录；没存过返回 null。 */
