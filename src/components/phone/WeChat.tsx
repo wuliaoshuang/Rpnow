@@ -106,10 +106,12 @@ import {
   saveWeChatChat,
 } from '@/core/phone/wechatStore.js';
 import {
-  extractHiddenDataFromMessages,
+  buildKnownNames,
+  extractHiddenDataWithFallback,
   mergeHiddenCharacters,
   mergeHiddenData,
 } from '@/core/phone/phoneData.js';
+import { getPhoneBooks } from '@/core/phone/lorebook.js';
 import { ensurePhonePresetBook } from '@/core/phone/phonePresetStore.js';
 import { detectEmotion, pickSticker } from '@/core/phone/stickers.js';
 import { PressableImage } from '@/components/media/PressableImage.js';
@@ -203,8 +205,9 @@ export function WeChat({
   // 主角算的、没按 User 算过），也原样保留，绝不悄悄丢掉重算、绝不悄悄
   // 改动；想清掉就点“重置”。
   // 没有缓存（第一次打开）、缓存是空列表或读出来的不是列表时，给空列表，
-  // 不调模型：联系人只从主聊天回复里的隐藏数据块里来（见下面那个扫描
-  // effect），主聊天产出数据块后才慢慢填进来。读缓存失败也一样给空列表。
+  // 不调模型：联系人只从主聊天回复里的隐藏数据块、或回复正文（剧情）里来
+  // （见下面那个扫描 effect），主聊天产出数据块、或剧情里提到世界书里有
+  // 名字的人物后才慢慢填进来。读缓存失败也一样给空列表。
   React.useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -472,12 +475,18 @@ export function WeChat({
     lastId: null,
   });
 
-  // 隐藏数据合并：主聊天消息里的隐藏数据块是联系人和微信消息的唯一来源。
+  // 隐藏数据合并：主聊天消息里的隐藏数据块是联系人和微信消息的主要来源，
+  // 兜底是消息正文（剧情）本身——模型只写剧情、不输出隐藏块时，手机直接
+  // 从正文里认人、贴消息（extractHiddenDataWithFallback，纯解析，不调模型）。
   // 联系人加载好之后、以及主聊天有新消息时（手机开着的时候），扫水位线
-  // 之后的新消息，把块里的人合并进联系人列表（已经在的人原样保留 id、
-  // 好感度、微信记录，新人才加进来、好感度从 0 开始），把块里的新消息
-  // 贴进对应联系人的微信记录（user 角色的是 User 发给这个联系人的，
-  // character 角色的是这个联系人发来的；去重按记录里最后 20 条）。
+  // 之后的新消息：每条消息先试隐藏块，有块就只用块（块是权威的，不再对
+  // 同一条消息跑兜底，免得消息重复）；没块才对正文跑兜底。兜底认人的名字
+  // 表从这部聊天绑定的世界书条目名字 + 已有联系人里来（只读名字，不读内容）。
+  // 把认出来的人合并进联系人列表（已经在的人原样保留 id、好感度、微信记录，
+  // 新人才加进来、好感度从 0 开始；兜底建的联系人只有名字和默认问候，后来
+  // 隐藏块带来人设/关系/开场白时，把空着的字段补上），把新消息贴进对应联系
+  // 人的微信记录（user 角色的是 User 发给这个联系人的，character 角色的是
+  // 这个联系人发来的；去重按记录里最后 20 条）。
   // 贴进微信记录就是写进上下文：手机回复时读的就是微信记录。
   // 不调模型——数据就是主聊天自己的回复里已经写好的东西。没扫到新东西
   // 时不碰缓存、不碰记录。
@@ -492,7 +501,13 @@ export function WeChat({
     const fresh = all.slice(start);
     if (fresh.length === 0) return;
     hiddenScanRef.current = { chatId, lastId: fresh[fresh.length - 1].id };
-    const found = extractHiddenDataFromMessages(fresh, card.data.name);
+    const state = useApp.getState();
+    const knownNames = buildKnownNames(
+      getPhoneBooks(card, mainChat, state.lorebooks),
+      contactsRef.current ?? contacts,
+      card.data.name,
+    );
+    const found = extractHiddenDataWithFallback(fresh, knownNames, card.data.name);
     if (found.characters.length === 0 && found.messages.length === 0) return;
     void (async () => {
       const base = contactsRef.current ?? contacts;

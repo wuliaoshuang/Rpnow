@@ -136,7 +136,7 @@ export function cleanOpeningMessage(firstMes: string, name: string): string {
   const flat = noActions.replace(/\s+/g, ' ').trim();
   if (!flat) return fallback;
   // 取第一句：到第一个句末标点为止，标点后紧跟的右引号也一起收进来。
-  const m = flat.match(/^[^。！？!?]*[。！？!?][」』"'）】]?/);
+  const m = flat.match(/^[^。！？!?]*[。！？!?][」』”’"'）】]?/);
   let first = (m ? m[0] : flat).trim();
   if (!first) return fallback;
   if (first.length > 60) first = `${first.slice(0, 60)}…`;

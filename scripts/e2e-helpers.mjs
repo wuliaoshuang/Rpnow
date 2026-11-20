@@ -4,7 +4,13 @@ import { chromium } from 'playwright';
 export const BASE = process.env.RPNOW_E2E_BASE ?? 'http://127.0.0.1:5173/';
 
 export async function launch() {
-  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  // 这台机器上可能没装 Chrome：先试 channel，失败就用 Playwright 自带的 chromium。
+  let browser;
+  try {
+    browser = await chromium.launch({ channel: 'chrome', headless: true });
+  } catch {
+    browser = await chromium.launch({ headless: true });
+  }
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   page.on('dialog', (d) => void d.accept());
   return { browser, page };
