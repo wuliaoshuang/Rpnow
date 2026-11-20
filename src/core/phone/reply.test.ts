@@ -7,6 +7,7 @@ import type { RPCard } from '@/core/types/card.js';
 import type { PhoneContact } from './types.js';
 import {
   buildImagePromptMessages,
+  buildImageTagContext,
   buildReplySystemPrompt,
   enforceComposition,
   enforceSoloPrompt,
@@ -398,5 +399,70 @@ describe('buildImagePromptMessages', () => {
     });
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).not.toContain('图里可能出现的其他人');
+  });
+});
+
+describe('buildImageTagContext', () => {
+  it('上下文里有场景、外貌、人数和用户想画的内容，是给转写用的自然语言描述', () => {
+    const history = [
+      { role: 'assistant' as const, content: '我在老街这边买凉皮呢，就在那家法桐树底下等位置。' },
+      { role: 'user' as const, content: '在哪呢？你给我发张图片，我去找你' },
+    ];
+    const context = buildImageTagContext(fakeCard(), mainContact, '在老街法桐树下买凉皮', history);
+    // 场景从聊天记录里来。
+    expect(context).toContain('老街');
+    expect(context).toContain('法桐树');
+    expect(context).toContain('凉皮');
+    // 角色外貌从卡里来。
+    expect(context).toContain('蓝发蓝眼');
+    expect(context).toContain('碎花围裙');
+    // 人数默认 solo。
+    expect(context).toContain('人数：solo');
+    // 用户想画的内容。
+    expect(context).toContain('在老街法桐树下买凉皮');
+  });
+
+  it('不带“写一条生图提示词”的开头和“要求”那段指令——它就是正文，不是给模型写提示词的指令', () => {
+    const context = buildImageTagContext(fakeCard(), mainContact, '李淑纯在花店里包花', []);
+    expect(context).not.toContain('请为下面这个角色写一条生图提示词');
+    expect(context).not.toContain('要求：先读最近的微信聊天记录');
+    expect(context).not.toContain('只输出这条提示词本身');
+  });
+
+  it('和 buildImagePromptMessages 共用同一份上下文：去掉开头和要求，剩下的就是它', () => {
+    const history = [
+      { role: 'assistant' as const, content: '我在老街这边买凉皮呢' },
+      { role: 'user' as const, content: '发张图片我看看' },
+    ];
+    const context = buildImageTagContext(fakeCard(), mainContact, '在老街法桐树下买凉皮', history);
+    const messages = buildImagePromptMessages(fakeCard(), mainContact, '在老街法桐树下买凉皮', history);
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain(context);
+  });
+
+  it('duo/multi 时人数和写法跟 buildImagePromptMessages 一致', () => {
+    const duo = buildImageTagContext(fakeCard(), mainContact, '咱俩在宿舍楼下合影', [], {
+      people: 'duo',
+      others: [otherContact],
+    });
+    expect(duo).toContain('人数：duo');
+    expect(duo).toContain('这个角色和用户两个人');
+    expect(duo).toContain('不要凭空编一个精致长相');
+    expect(duo).not.toContain('图里可能出现的其他人');
+
+    const multi = buildImageTagContext(fakeCard(), mainContact, '我们几个在花店门口合影', [], {
+      people: 'multi',
+      others: [otherContact],
+    });
+    expect(multi).toContain('人数：multi');
+    expect(multi).toContain('小雨（闺蜜）');
+    expect(multi).toContain('不要编场景里没有的人');
+  });
+
+  it('没有聊天记录时也能用：只有外貌、人数和想画的内容', () => {
+    const context = buildImageTagContext(fakeCard(), mainContact, '李淑纯在花店里包花', []);
+    expect(context).toContain('蓝发蓝眼');
+    expect(context).toContain('李淑纯在花店里包花');
+    expect(context).not.toContain('最近的微信聊天记录（按时间顺序');
   });
 });

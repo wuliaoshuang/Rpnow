@@ -29,7 +29,8 @@ import { DEFAULT_TAG_PROMPT, extractSceneText } from '@/core/image/nai.js';
 import { loadStudioDraft, saveStudioDraft } from '@/core/image/studioDraft.js';
 import { estimateAnlasCost, maxNSamplesForArea, NAI_NOISE_SCHEDULES, NAI_SAMPLER_LABELS, NAI_SAMPLERS, NAI_SIZE_TIER_LABELS, NAI_UC_PRESETS, naiSizeFor, opusFreeStatus, SIZE_MAP, type NAIImageSizeTier } from '@/core/image/types.js';
 import { buildTagInjection } from '@/core/image/tagContext.js';
-import { describeEmptyTagResult, TAG_CONVERT_MAX_TOKENS } from '@/core/image/tagFailure.js';
+import { describeEmptyTagResult } from '@/core/image/tagFailure.js';
+import { cleanRewrittenTags, rewriteTags } from '@/core/image/tagRewrite.js';
 import { BUILTIN_PRESETS } from '@/core/defaults/presets.js';
 import { dataUrlToBlob, deleteMediaImage, getMediaImage, listMediaImages, mediaIdFromRef, mediaRef, saveMediaImage, type GeneratedImageMeta } from '@/core/media/store.js';
 import { PressableImage } from '@/components/media/PressableImage.js';
@@ -437,18 +438,18 @@ export function ImageStudio({ open, onOpenChange, card, chat, onAttach, onUseAsA
       : basePrompt;
     setBusy(true);
     try {
-      const res = await llm.complete(conn.id, {
+      // 转写走共用的 rewriteTags（和小手机生图前那次是同一套：同一个转写
+      // 提示词、同一个字数上限、同一个 temperature）。
+      const res = await rewriteTags(llm, {
+        connectionId: conn.id,
         model,
-        maxTokens: TAG_CONVERT_MAX_TOKENS,
-        temperature: 0.7,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: prompt },
-        ],
+        systemPrompt,
+        description: prompt,
       });
-      if (res.text.trim()) {
+      const tags = cleanRewrittenTags(res.text);
+      if (tags) {
         // 转写完的 Tag 必须填进正面提示词（画面描述不动，继续留着正文）。
-        setPositive(res.text.trim().replace(/^["']|["']$/g, ''));
+        setPositive(tags);
         toast.success('Tag 已填进正面提示词');
       } else {
         // 模型空手而回：把真正的原因说出来，别只说“没有返回内容”。
