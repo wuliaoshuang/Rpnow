@@ -36,7 +36,7 @@ export interface PhoneMessage {
 
 /**
  * 生图的人数：solo 角色一个人 / duo 角色和用户两个人 / multi 三人以上。
- * 回复模型按场景在 send_image 工具调用里给；模型不给时代码按 solo 算。
+ * 调用方按发图的描述判断；判断不出时代码按 solo 算。
  */
 export type ImagePeople = 'solo' | 'duo' | 'multi';
 

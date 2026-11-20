@@ -53,10 +53,12 @@ export interface GeneratedPhoneImage {
 /**
  * 按一段描述给一个联系人生一张图。
  *
- * description 是用户想画的内容（微信里是输入框的文字或工具的
- * description，朋友圈里是帖子的 imageDesc）；history 是写提示词的模型
+ * description 是用户想画的内容（微信里是输入框的文字或回复里
+ * `{image:…}` 标记的描述，朋友圈里是帖子的 imageDesc）；history 是写提示词的模型
  * 要读的最近对话（场景从这里来）；people 是这张图里有几个人；others
- * 是图里可能出现的其他联系人（只在 multi 时列出来当参考）。
+ * 是图里可能出现的其他联系人（只在 multi 时列出来当参考）；tagsHint
+ * 是回复标记里 `|||` 后面的英文标签：Tag 转写没写出东西时，直接拿它
+ * 当正面提示词，不再多调一次模型现写——没给时走老路子。
  */
 export async function generatePhoneImage(
   deps: PhoneImageDeps,
@@ -65,6 +67,7 @@ export async function generatePhoneImage(
   history: PhoneMessage[],
   people: ImagePeople = 'solo',
   others: PhoneContact[] = [],
+  tagsHint?: string,
 ): Promise<GeneratedPhoneImage> {
   const { llm, image, card, chatId } = deps;
   const rawPrompt = description.trim() || `${contact.name}，精美插画`;
@@ -99,6 +102,10 @@ export async function generatePhoneImage(
     }
     if (rewritten) {
       positivePrompt = rewritten;
+    } else if (tagsHint?.trim()) {
+      // 回复标记里自带了英文标签：直接拿它当正面提示词，不再多调
+      // 一次模型现写提示词。
+      positivePrompt = tagsHint.trim();
     } else {
       try {
         const model = deps.phone.chatModel || llmConnection.defaultModel || '';
