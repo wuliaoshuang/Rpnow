@@ -189,6 +189,50 @@ export interface MomentPost {
   imageUrl: string;
 }
 
+/**
+ * 一篇日记：用户手写的（characterName 为 null），或某个联系人第一人称
+ * 写的一篇（characterName 是那个联系人的名字）。
+ * 按聊天存（`rpnow:phone:diary:<chatId>`），最新在前；老聊天第一次打开
+ * 是空的，不触发重新初始化（PR #46 的规矩）。“重置”会连日记一起清掉。
+ */
+export interface DiaryEntry {
+  id: string;
+  content: string;
+  /** 显示用的时间，如“2026年11月20日 星期五 21:30”（真实时间）。 */
+  displayTime: string;
+  timestamp: number;
+  /** 手写日记为 null；AI 代写时是代写那个联系人的名字。 */
+  characterName: string | null;
+}
+
+/** 运势占卜的类别：事业 / 爱情 / 财运 / 健康。 */
+export type FortuneCategoryId = 'career' | 'love' | 'wealth' | 'health';
+
+/** 一次运势占卜的结果（只存最新的一次，新的来了就覆盖旧的）。 */
+export interface HoroscopeResult {
+  category: FortuneCategoryId;
+  title: string;
+  reading: string;
+  luckyColor: string;
+  luckyNumber: number;
+  mantra: string;
+  timestamp: number;
+}
+
+/** 一次塔罗抽牌的结果（只存最新的一次）。 */
+export interface TarotDraw {
+  cardName: string;
+  reversed: boolean;
+  reading: string;
+  timestamp: number;
+}
+
+/** 一个聊天的运势数据：最新一次运势 + 最新一次塔罗。 */
+export interface FortuneState {
+  horoscope: HoroscopeResult | null;
+  tarot: TarotDraw | null;
+}
+
 /** The phone's own settings (lives under `settings.phone`). */
 export interface PhoneSettings {
   /** Chat model connection id (empty = main chat default). */

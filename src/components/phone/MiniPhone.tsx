@@ -2,7 +2,7 @@
  * MiniPhone — “小手机”：悬浮在聊天上的一部模拟手机。
  *
  * 不是全屏页，是带手机壳的悬浮窗：深色外壳边框、灵动岛、底部 home 条，
- * 屏幕嵌在壳里。桌面上有三个应用：微信、朋友圈、相册（注册表在
+ * 屏幕嵌在壳里。桌面上有五个应用：微信、朋友圈、相册、日记、运势（注册表在
  * `@/core/phone/apps.js`，插件 panel.html 里 `registerApp` 的 Rpnow 版）。
  *
  * 主屏幕按注册表画一排图标（4 列网格，点图标进应用）；应用打开时只用
@@ -14,17 +14,21 @@
  */
 import * as React from 'react';
 import { createPortal } from 'react-dom';
-import { BatteryMedium, Camera, Images, MessageCircle, Signal, Wifi, X } from 'lucide-react';
+import { BatteryMedium, BookOpenText, Camera, Images, MessageCircle, Signal, Sparkles, Wifi, X } from 'lucide-react';
 import type { RPCard } from '@/core/types/card.js';
 import { PHONE_APPS, type PhoneAppId, type PhoneAppIcon } from '@/core/phone/apps.js';
 import { WeChat } from './WeChat.js';
 import { Moments } from './Moments.js';
 import { Album } from './Album.js';
+import { Diary } from './Diary.js';
+import { Fortune } from './Fortune.js';
 
 const APP_ICONS: Record<PhoneAppIcon, React.ComponentType<{ className?: string; color?: string }>> = {
   wechat: MessageCircle,
   moments: Camera,
   album: Images,
+  diary: BookOpenText,
+  fortune: Sparkles,
 };
 
 function useClock(): string {
@@ -95,7 +99,7 @@ export function MiniPhone({
             </div>
           </div>
 
-          {/* 屏幕内容：主屏幕和三个应用一直挂着，当前这个显示、别的藏起
+          {/* 屏幕内容：主屏幕和五个应用一直挂着，当前这个显示、别的藏起
               （display:none，不卸载），切应用状态不丢。 */}
           <div className="flex min-h-0 flex-1 flex-col">
             <div className={screen === 'home' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
@@ -134,6 +138,12 @@ export function MiniPhone({
             </div>
             <div className={screen === 'album' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
               <Album onBack={goHome} active={screen === 'album'} />
+            </div>
+            <div className={screen === 'diary' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+              <Diary chatId={chatId} card={card} onBack={goHome} active={screen === 'diary'} />
+            </div>
+            <div className={screen === 'fortune' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+              <Fortune chatId={chatId} onBack={goHome} active={screen === 'fortune'} />
             </div>
           </div>
 
