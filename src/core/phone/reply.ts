@@ -14,7 +14,31 @@
 import type { RPCard } from '@/core/types/card.js';
 import type { RPChatMessage } from '@/core/types/chat.js';
 import type { LLMMessage } from '@/core/llm/types.js';
+import { displayRelation } from './contacts.js';
 import type { ImagePeople, PhoneContact, PhoneContactGender } from './types.js';
+
+/**
+ * 联系人和 User、主角的关系怎么写进提示词：relation 是和 User 的关系，
+ * relationToMain 是和主角的关系。返回“是……”那半句，直接接在
+ * “你要扮演「X」”后面：
+ *
+ *   - 和 User 的关系写了：是用户的闺蜜；和主角的关系也写了、还不一样，
+ *     再补一句“也是「李淑纯」的闺蜜”，模型两头的关系都清楚；
+ *   - 只写了和 User 的关系：是用户的闺蜜；
+ *   - 只写了和主角的关系：是「李淑纯」的闺蜜（和 User 的关系卡里没写，
+ *     提示词里另有一句“不要自己编”，见 buildReplySystemPrompt）；
+ *   - 两边都没写：空字符串，提示词里不写关系这一句。
+ */
+export function relationClause(contact: PhoneContact, charName: string): string {
+  const toUser = contact.relation.trim();
+  const toMain = contact.relationToMain?.trim() ?? '';
+  if (toUser) {
+    if (toMain && toMain !== toUser) return `是用户的${toUser}，也是「${charName}」的${toMain}`;
+    return `是用户的${toUser}`;
+  }
+  if (toMain) return `是「${charName}」的${toMain}`;
+  return '';
+}
 
 /**
  * 人数标签：生图提示词里的人数全靠这些标签定。
@@ -276,6 +300,12 @@ const TOOLS =
  * 特点）写在【人设】一节，模型按这个身份回，不 OOC；卡的设定、世界书、
  * 开场白和主聊天的预设都按这个顺序排在后面。
  *
+ * 关系按 User 来写：framing 和身份里写的是联系人和 User 的关系
+ * （relation，比如“是用户的闺蜜”），和主角的关系（relationToMain）
+ * 在后面当补充信息；和 User 的关系卡里没写时，只写和主角的关系、
+ * 并写明不要自己编一个和 User 的关系——模型才不会把“主角的闺蜜”
+ * 当成“用户的闺蜜”来对 User。
+ *
  * 和主聊天共享的素材（按这个顺序排，越往后离聊天记录越近、越显眼）：
  *   【人设】联系人自己的人设——性格、长相、关键特点（初始化时按卡里 /
  *     世界书里写到的提炼的，没提到的不写这一节）；
@@ -311,10 +341,19 @@ export function buildReplySystemPrompt(
 ): string {
   const d = card.data;
   // 联系人都是卡里提到的其他人物（卡的主角本人不是联系人），所以
-  // framing 和身份一律按“扮演这个联系人，是主角的某某”写。
-  const framing = `我们现在在进行 role play（角色扮演）。你要扮演「${contact.name}」，是「${d.name}」的${contact.relation}，正在一个叫微信的地方，和用户聊天。`;
+  // framing 和身份一律按“扮演这个联系人”写；关系按 User 来写
+  // （relation），和主角的关系（relationToMain）只当补充信息。
+  const clause = relationClause(contact, d.name);
+  const framing = `我们现在在进行 role play（角色扮演）。你要扮演「${contact.name}」${clause ? `，${clause}` : ''}，正在一个叫微信的地方，和用户聊天。`;
+  // 和 User 的关系卡里没写时：只写了和主角的关系，提示词里明说不要
+  // 自己编一个和 User 的关系——不然模型会把主角的关系套到 User 头上。
+  const relationNote =
+    !contact.relation.trim() && contact.relationToMain?.trim()
+      ? `卡里没写${contact.name}和你是什么关系，不要自己编一个和你的关系。`
+      : '';
   const identity = [
-    `你是「${contact.name}」，是「${d.name}」的${contact.relation}，正在微信上和用户聊天。`,
+    `你是「${contact.name}」${clause ? `，${clause}` : ''}，正在微信上和用户聊天。`,
+    relationNote,
     d.description ? `角色卡介绍：${d.description}` : '',
   ];
   // 联系人自己的人设：性格、长相、关键特点——模型扮演的就是这个人，
@@ -454,7 +493,10 @@ export function buildImageTagContext(
   const people = options.people ?? 'solo';
   const appearance = [
     `角色名：${contact.name}`,
-    `和主角「${d.name}」的关系：${contact.relation}`,
+    contact.relation.trim() ? `和用户的关系：${contact.relation.trim()}` : '',
+    contact.relationToMain?.trim()
+      ? `和主角「${d.name}」的关系：${contact.relationToMain.trim()}`
+      : '',
     contact.profile?.trim() ? `人设：${contact.profile.trim()}` : '',
     d.description ? `角色卡介绍（主角「${d.name}」）：${d.description}` : '',
     d.personality ? `主角性格：${d.personality}` : '',
@@ -468,7 +510,7 @@ export function buildImageTagContext(
     people === 'multi' && others.length > 0
       ? [
           '图里可能出现的其他人（只画聊天记录里提到的）：',
-          ...others.map((o) => `- ${o.name}（${o.relation}）`),
+          ...others.map((o) => `- ${o.name}（${displayRelation(o)}）`),
         ].join('\n')
       : '',
   ]

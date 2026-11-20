@@ -26,7 +26,13 @@ import { uid } from '@/lib/utils.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { LLMMessage, LLMResult } from '@/core/llm/types.js';
 import type { ImagePeople, PhoneContact, PhoneMessage, StickerEmotion } from '@/core/phone/types.js';
-import { fallbackContacts, initContacts, isStaleContacts } from '@/core/phone/contacts.js';
+import {
+  displayRelation,
+  fallbackContacts,
+  initContacts,
+  isStaleContacts,
+  resolvePhoneUser,
+} from '@/core/phone/contacts.js';
 import { lorebookTextForInit, selectLorebookText } from '@/core/phone/lorebook.js';
 import { extractPresetPrompts } from '@/core/phone/preset.js';
 import {
@@ -159,9 +165,10 @@ export function WeChat({
   const phone = settings.phone ?? {};
 
   // 联系人：先读缓存；没缓存、或缓存是旧逻辑存的（里面还留着卡的主角
-  // 本人），才调一次模型初始化。初始化成功就存下来——哪怕一个人都没
-  // 提到（空列表也存，下次打开直接用，不用每次都再调一次模型）；
-  // 初始化失败才用兜底（空列表，不存，下次打开再试一次）。
+  // 本人，或 relation 还是按主角算的、没按 User 算过），才调一次模型
+  // 初始化。初始化成功就存下来——哪怕一个人都没提到（空列表也存，下次
+  // 打开直接用，不用每次都再调一次模型）；初始化失败才用兜底（空列表，
+  // 不存，下次打开再试一次）。
   React.useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -186,6 +193,12 @@ export function WeChat({
             const initLorebookText = chatForInit
               ? lorebookTextForInit(card, chatForInit, state.lorebooks)
               : '';
+            // User 的身份：主聊天里 {{user}} 就是这么定的（聊天的 persona，
+            // 没有就第一个人设）。初始化要告诉模型 User 是谁，联系人的
+            // relation 才能按 User 来算，而不是只按主角来算、搞不清关系。
+            const initUser = chatForInit
+              ? resolvePhoneUser(chatForInit, state.personas)
+              : undefined;
             const initialized = await initContacts(
               card,
               llm,
@@ -195,6 +208,7 @@ export function WeChat({
               // 旧缓存判定为过期要重算时，把旧列表传进去：名字对得上的
               // 联系人沿用以前的 id，微信记录不断档。
               cached ?? undefined,
+              initUser,
             );
             if (cancelled) return;
             if (initialized !== null) {
@@ -800,7 +814,7 @@ export function WeChat({
                   <span className="flex items-baseline gap-1.5">
                     <span className="truncate text-[15px] font-medium">{contact.name}</span>
                     <span className="shrink-0 text-xs text-neutral-400">
-                      {contact.relation}
+                      {displayRelation(contact)}
                     </span>
                   </span>
                   <span className="block truncate text-[13px] text-neutral-500">
@@ -858,7 +872,7 @@ export function WeChat({
         <h2 className="min-w-0 flex-1 truncate text-base font-semibold">
           {contact.name}
           <span className="ml-1.5 text-xs font-normal text-neutral-400">
-            {contact.relation}
+            {displayRelation(contact)}
           </span>
         </h2>
         <button
