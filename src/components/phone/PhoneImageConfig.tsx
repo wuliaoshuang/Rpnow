@@ -37,7 +37,7 @@ export function PhoneImageConfig({
         onClick={() => onOpenChange(false)}
         className="absolute inset-0 cursor-pointer bg-black/50"
       />
-      <div className="relative w-full max-w-[390px] rounded-t-3xl bg-[var(--rp-bg-elevated)] px-4 pt-3 pb-[calc(env(safe-area-inset-bottom,0px)+0.75rem)] text-[var(--rp-fg)] shadow-2xl">
+      <div className="relative w-full max-w-[390px] rounded-t-3xl bg-[var(--rp-bg-elevated)] px-4 pt-3 pb-3 text-[var(--rp-fg)] shadow-2xl">
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-base font-semibold">小手机生图设置</h2>
           <button

@@ -556,7 +556,7 @@ export function WeChat({
       )}
 
       {/* 输入栏 */}
-      <div className="flex shrink-0 items-center gap-2 border-t border-neutral-200 bg-white px-3 py-2 pb-[calc(env(safe-area-inset-bottom,0px)+0.5rem)]">
+      <div className="flex shrink-0 items-center gap-2 border-t border-neutral-200 bg-white px-3 py-2 pb-2">
         <button
           type="button"
           aria-label="更多"
