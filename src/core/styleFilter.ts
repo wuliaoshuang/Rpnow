@@ -81,6 +81,13 @@ export function getStyleFilterHitSegments(fragment: string): Array<{ text: strin
 /**
  * Remove blocked style fragments from `text`.
  * `enabled === false` returns the text untouched (M07 switch off).
+ *
+ * HTML 注释（`<!-- ... -->`）原样保留、不过滤：注释是机器读的隐藏数据，
+ * 不是给人看的正文——比如小手机的 `[小手机数据]` 块、剧情选项块，里面
+ * 的引号和逗号是 JSON 语法。过滤是按引号切分“对话内 / 对话外”再清理
+ * 行首标点的，注释里的 `","` 会落在“对话外”片段里被当成行首标点删掉，
+ * 块的 JSON 就坏了（字段间的逗号全没了）；注释里引号个数是奇数时，还会
+ * 把后面正文的对话内外判反。所以先按注释切段，只过滤注释之外的正文。
  */
 export function filterBlockedStyleText(
   text: string,
@@ -90,12 +97,33 @@ export function filterBlockedStyleText(
   if (opts?.enabled === false) return source;
   if (isStandaloneRenderedContent(source)) return source;
   const removedFragments: string[] = [];
+  // 没闭合的注释匹配不上这段切分，会留在正文片段里正常过滤——解析时
+  // 本来就会把它当作没有这个块，不影响。
   const filtered = source
+    .split(/(<!--[\s\S]*?-->)/g)
+    .map((segment) =>
+      segment.startsWith('<!--') && segment.endsWith('-->')
+        ? segment
+        : filterProseFragment(segment, removedFragments),
+    )
+    .join('');
+  if (opts?.collect) {
+    opts.collect.push(...removedFragments.map(normalizeStyleFilterHit).filter(Boolean));
+  }
+  return filtered;
+}
+
+/**
+ * 过滤一段正文（不含 HTML 注释）：引号里的对话原样保留，引号外的部分
+ * 按文风规则删。`removedFragments` 由调用方传进来收被删的片段。
+ */
+function filterProseFragment(fragment: string, removedFragments: string[]): string {
+  return fragment
     .split(quotedDialoguePattern)
-    .map((fragment, index) =>
+    .map((part, index) =>
       index % 2
-        ? fragment
-        : fragment
+        ? part
+        : part
             .replace(standaloneWordCountSentencePattern, (match, prefix = '') => {
               removedFragments.push(match.slice(prefix.length).trim());
               return prefix;
@@ -123,10 +151,6 @@ export function filterBlockedStyleText(
             .replace(/\n{3,}/g, '\n\n'),
     )
     .join('');
-  if (opts?.collect) {
-    opts.collect.push(...removedFragments.map(normalizeStyleFilterHit).filter(Boolean));
-  }
-  return filtered;
 }
 
 /** Filter + collect hits in one call. */

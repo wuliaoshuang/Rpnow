@@ -35,6 +35,32 @@ describe('styleFilter (B11/M07, RP-Hub parity)', () => {
     expect(text).toContain('“这声音很平，像在下雨。”');
   });
 
+  it('HTML 注释里的隐藏数据原样保留：里面的引号和逗号是 JSON 语法，不能当正文清理', () => {
+    const block =
+      '<!-- [小手机数据] {"characters":[{"name":"阿杰","profile":"常来酒馆，总爱带东西","relation":"朋友","relationToMain":"同事","openingMessage":"下周带一批新茶叶过来","gender":"male"}]} -->';
+    const src = `阿杰今天也来了，还带了一批新茶叶。${block}`;
+    const { text, hits } = filterStyleText(src);
+    expect(text).toBe(src);
+    expect(hits).toEqual([]);
+  });
+
+  it('注释外的正文照常过滤，注释里的内容不动', () => {
+    const src =
+      '他站在雨里，语气很平，像在等一个人。<!-- [小手机数据] {"characters":[{"name":"阿杰","relation":"朋友"}]} -->后来他走了。';
+    const { text } = filterStyleText(src);
+    expect(text).not.toContain('语气很平');
+    expect(text).toContain('后来他走了');
+    expect(text).toContain('{"name":"阿杰","relation":"朋友"}');
+  });
+
+  it('注释里引号个数是奇数时，不会把后面正文的对话内外判反', () => {
+    const src = '他说：“今天很开心。”<!-- [小手机数据] {"characters":[{"name":"阿杰"}]} -->语气很平的一句。';
+    const { text } = filterStyleText(src);
+    expect(text).toContain('“今天很开心。”');
+    expect(text).toContain('{"name":"阿杰"}');
+    expect(text).not.toContain('语气很平');
+  });
+
   it('passes standalone rendered content through untouched', () => {
     const src = '<div>语气很平</div>';
     expect(isStandaloneRenderedContent(src)).toBe(true);

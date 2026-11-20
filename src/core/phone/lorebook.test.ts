@@ -128,6 +128,22 @@ describe('getPhoneBooks', () => {
       [],
     );
   });
+
+  it('小手机预设书（phone-preset:）不算进来：它是给主聊天读的指令，不是世界知识', () => {
+    const presetBook: RPLorebook = {
+      id: 'phone-preset:chat-1',
+      name: '小手机·预设',
+      entries: [],
+      createdAt: 0,
+      updatedAt: 0,
+    };
+    const books = getPhoneBooks(
+      fakeCard(),
+      { ...chat, lorebookIds: ['phone-preset:chat-1', 'book-user'] },
+      [userBook(), presetBook],
+    );
+    expect(books.map((b) => b.id)).toEqual(['cardbook:card-1', 'book-user']);
+  });
 });
 
 describe('selectLorebookText', () => {
