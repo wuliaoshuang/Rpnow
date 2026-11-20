@@ -12,6 +12,7 @@ import {
   enforceComposition,
   enforceSoloPrompt,
   inferPeopleFromRequest,
+  looksLikeImageRequest,
 } from './reply.js';
 
 const SCENARIO_MARKER = 'SCENARIO_花店里的一天，主人推门进来';
@@ -107,6 +108,17 @@ describe('buildReplySystemPrompt', () => {
     }
   });
 
+  it('只在用户明确要图时发图：不主动发图，表情包可以主动发', () => {
+    for (const contact of [mainContact, otherContact]) {
+      const prompt = buildReplySystemPrompt(fakeCard(), contact);
+      expect(prompt).toContain('用户没让你发图时，不要发图');
+      expect(prompt).toContain('不要自己主动发图');
+      expect(prompt).toContain('表情包可以主动发');
+      expect(prompt).not.toContain('你自己提到拍了照片');
+      expect(prompt).not.toContain('想分享一张图');
+    }
+  });
+
   it('写明这是独立的微信聊天，不是主线剧情的延续', () => {
     for (const contact of [mainContact, otherContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
@@ -134,7 +146,7 @@ describe('buildReplySystemPrompt', () => {
       expect(prompt).toContain('send_image');
       expect(prompt).toContain('send_sticker');
       expect(prompt).toContain('调用发图工具发一张真的图');
-      expect(prompt).toContain('不要只在文字里说“我拍了照片”却不发图');
+      expect(prompt).toContain('只有用户明确让你发图的时候');
       expect(prompt).toContain('发表情包');
       expect(prompt).toContain('先回一句文字，再发图或表情包');
     }
@@ -281,6 +293,36 @@ describe('inferPeopleFromRequest', () => {
   it('提到一群人就是多人', () => {
     expect(inferPeopleFromRequest('我们仨在花店门口合影')).toBe('multi');
     expect(inferPeopleFromRequest('我们几个在宿舍楼下')).toBe('multi');
+  });
+});
+
+describe('looksLikeImageRequest', () => {
+  it('明确要图的说法都认', () => {
+    expect(looksLikeImageRequest('发张图')).toBe(true);
+    expect(looksLikeImageRequest('发个照片')).toBe(true);
+    expect(looksLikeImageRequest('看看你')).toBe(true);
+    expect(looksLikeImageRequest('咱俩合张影')).toBe(true);
+    expect(looksLikeImageRequest('拍一张')).toBe(true);
+    expect(looksLikeImageRequest('发个自拍')).toBe(true);
+    expect(looksLikeImageRequest('你在哪发张照片')).toBe(true);
+    expect(looksLikeImageRequest('给我发张图看看')).toBe(true);
+    expect(looksLikeImageRequest('在宿舍楼下拍一张')).toBe(true);
+    expect(looksLikeImageRequest('在花店门口发张照片')).toBe(true);
+  });
+
+  it('普通聊天不算要图', () => {
+    expect(looksLikeImageRequest('今天好累')).toBe(false);
+    expect(looksLikeImageRequest('你在哪个宿舍楼？')).toBe(false);
+    expect(looksLikeImageRequest('哈哈')).toBe(false);
+    expect(looksLikeImageRequest('报到总算弄完了')).toBe(false);
+    expect(looksLikeImageRequest('')).toBe(false);
+    expect(looksLikeImageRequest('   ')).toBe(false);
+  });
+
+  it('只是提到“图”字不算要图', () => {
+    expect(looksLikeImageRequest('这张图真好看')).toBe(false);
+    expect(looksLikeImageRequest('花店门口的照片')).toBe(false);
+    expect(looksLikeImageRequest('我把图发你微信了')).toBe(false);
   });
 });
 
