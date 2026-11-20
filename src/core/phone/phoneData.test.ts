@@ -13,16 +13,21 @@ import {
   DEFAULT_LOREBOOK_SETTINGS,
   newEntry,
 } from '@/core/types/lorebook.js';
-import type { PhoneContact } from './types.js';
+import type { PhoneContact, PhoneMessage } from './types.js';
 import {
   PHONE_PRESET_ENTRY_NAME,
   phonePresetLorebookId,
 } from './phonePresetStore.js';
 import {
+  PHONE_DATA_MESSAGE_DEDUP_WINDOW,
   buildPhonePresetText,
   extractHiddenCharacters,
   extractHiddenCharactersFromMessages,
+  extractHiddenData,
+  extractHiddenDataFromMessages,
+  extractHiddenMessages,
   mergeHiddenCharacters,
+  mergeHiddenData,
 } from './phoneData.js';
 
 const MAIN = '阿尔德里克';
@@ -270,15 +275,36 @@ describe('buildPhonePresetText', () => {
     expect(text).toContain('不要把主角');
   });
 
-  it('写明没人出现时整段省略', () => {
+  it('写明没新人物、没新消息时整段省略', () => {
     const text = buildPhonePresetText(MAIN);
-    expect(text).toContain('没有出现任何人物时，整段省略');
+    expect(text).toContain('既没有新人物、也没有新消息时，整段省略');
   });
 
   it('写明 profile 不超过 200 字、relation 是和 User 的关系', () => {
     const text = buildPhonePresetText(MAIN);
     expect(text).toContain('200 字');
     expect(text).toContain('和 User 的关系');
+  });
+
+  it('写明 messages 的结构：character / role / content', () => {
+    const text = buildPhonePresetText(MAIN);
+    expect(text).toContain('"messages"');
+    expect(text).toContain('"character"');
+    expect(text).toContain('"role"');
+    expect(text).toContain('"content"');
+    expect(text).toContain('user 是 User 发给这个联系人的');
+    expect(text).toContain('character 是这个联系人发给 User 的');
+  });
+
+  it('写明只写实际出现过的人物和实际发生过的消息，不要编', () => {
+    const text = buildPhonePresetText(MAIN);
+    expect(text).toContain('不要编造对话里没出现的人');
+    expect(text).toContain('不要编造没说过的话');
+  });
+
+  it('写明 messages 里 character 也不要写主角的名字', () => {
+    const text = buildPhonePresetText(MAIN);
+    expect(text).toContain('messages 里 character 也不要写主角的名字');
   });
 });
 
@@ -373,5 +399,338 @@ describe('phone preset — activate + buildPrompt', () => {
     const newestUserIdx = res.messages.findIndex((m) => m.content === '今天阿杰也来了');
     expect(newestUserIdx).toBeGreaterThan(-1);
     expect(idx).toBe(newestUserIdx - 1);
+  });
+});
+
+function dataBlock(json: string): string {
+  return `<!-- [小手机数据] ${json} -->`;
+}
+
+describe('extractHiddenData', () => {
+  it('一个块里同时有联系人和消息，两边都读出来', () => {
+    const text = `阿杰今天也来了。${dataBlock(
+      '{"characters":[{"name":"阿杰","profile":"常来酒馆","relation":"朋友","gender":"male"}],"messages":[{"character":"阿杰","role":"character","content":"下周带一批新茶叶过来"},{"character":"阿杰","role":"user","content":"好呀，留一包给我"}]}',
+    )}`;
+    const out = extractHiddenData(text, MAIN);
+    expect(out.characters).toHaveLength(1);
+    expect(out.characters[0].name).toBe('阿杰');
+    expect(out.messages).toEqual([
+      { character: '阿杰', role: 'character', content: '下周带一批新茶叶过来' },
+      { character: '阿杰', role: 'user', content: '好呀，留一包给我' },
+    ]);
+  });
+
+  it('只有消息、没有联系人：messages 照常读出来，characters 是空的', () => {
+    const text = dataBlock(
+      '{"characters":[],"messages":[{"character":"小雨","role":"character","content":"在吗在吗，明天一早我就去开门"}]}',
+    );
+    const out = extractHiddenData(text, MAIN);
+    expect(out.characters).toEqual([]);
+    expect(out.messages).toEqual([
+      { character: '小雨', role: 'character', content: '在吗在吗，明天一早我就去开门' },
+    ]);
+  });
+
+  it('只有联系人、没有 messages 字段：messages 是空的', () => {
+    const text = dataBlock('{"characters":[{"name":"阿杰","relation":"朋友"}]}');
+    const out = extractHiddenData(text, MAIN);
+    expect(out.characters.map((c) => c.name)).toEqual(['阿杰']);
+    expect(out.messages).toEqual([]);
+  });
+
+  it('messages 里缺 character、role 写错、content 是空的，那条直接跳过，其他条照常', () => {
+    const text = dataBlock(
+      '{"characters":[],"messages":[' +
+        '{"role":"character","content":"没写是谁"},' +
+        '{"character":"阿杰","role":"weird","content":"角色写错了"},' +
+        '{"character":"阿杰","role":"character","content":"   "},' +
+        '{"character":"阿杰","role":"character","content":"这条是对的"}' +
+        ']}',
+    );
+    const out = extractHiddenData(text, MAIN);
+    expect(out.messages).toEqual([
+      { character: '阿杰', role: 'character', content: '这条是对的' },
+    ]);
+  });
+
+  it('messages 里 character 是主角名，那条排除；characters 里主角也排除', () => {
+    const text = dataBlock(
+      `{"characters":[{"name":"${MAIN}","relation":"朋友"},{"name":"阿杰","relation":"朋友"}],` +
+        `"messages":[{"character":"${MAIN}","role":"character","content":"主角说的话"},` +
+        '{"character":"阿杰","role":"character","content":"阿杰说的话"}]}',
+    );
+    const out = extractHiddenData(text, MAIN);
+    expect(out.characters.map((c) => c.name)).toEqual(['阿杰']);
+    expect(out.messages).toEqual([
+      { character: '阿杰', role: 'character', content: '阿杰说的话' },
+    ]);
+  });
+
+  it('JSON 坏了、注释没闭合、没有块：两边都是空数组，不抛错', () => {
+    expect(extractHiddenData('<!-- [小手机数据] {"characters":[{"name":"坏人",} -->', MAIN)).toEqual({
+      characters: [],
+      messages: [],
+    });
+    expect(extractHiddenData('今天聊得很开心。<!-- [小手机数据] {"characters":[{"name":"坏人"', MAIN)).toEqual({
+      characters: [],
+      messages: [],
+    });
+    expect(extractHiddenData('今天天气很好。', MAIN)).toEqual({ characters: [], messages: [] });
+    expect(extractHiddenData('', MAIN)).toEqual({ characters: [], messages: [] });
+    expect(extractHiddenData('<!-- [小手机数据] {"characters":[],"messages":[]} -->', MAIN)).toEqual({
+      characters: [],
+      messages: [],
+    });
+  });
+
+  it('一条消息里的多个块：人物和消息都合起来', () => {
+    const text = [
+      dataBlock('{"characters":[{"name":"小雨","relation":"朋友"}],"messages":[{"character":"小雨","role":"character","content":"在吗"}]}'),
+      dataBlock('{"characters":[{"name":"阿杰","relation":"朋友"}],"messages":[{"character":"阿杰","role":"user","content":"好呀"}]}'),
+    ].join('\n');
+    const out = extractHiddenData(text, MAIN);
+    expect(out.characters.map((c) => c.name)).toEqual(['小雨', '阿杰']);
+    expect(out.messages).toEqual([
+      { character: '小雨', role: 'character', content: '在吗' },
+      { character: '阿杰', role: 'user', content: '好呀' },
+    ]);
+  });
+});
+
+describe('extractHiddenMessages', () => {
+  it('只返回 messages 那一半', () => {
+    const text = dataBlock(
+      '{"characters":[{"name":"阿杰","relation":"朋友"}],"messages":[{"character":"阿杰","role":"user","content":"好呀"}]}',
+    );
+    expect(extractHiddenMessages(text, MAIN)).toEqual([
+      { character: '阿杰', role: 'user', content: '好呀' },
+    ]);
+  });
+});
+
+describe('extractHiddenDataFromMessages', () => {
+  it('按时间顺序扫多条消息：人物去重，消息按顺序全留着', () => {
+    const out = extractHiddenDataFromMessages(
+      [
+        { content: dataBlock('{"characters":[{"name":"小雨","relation":"朋友"}],"messages":[{"character":"小雨","role":"character","content":"在吗"}]}') },
+        { content: '今天天气很好。' },
+        { content: dataBlock('{"characters":[{"name":"小雨","profile":"新的"}],"messages":[{"character":"小雨","role":"user","content":"好呀"}]}') },
+      ],
+      MAIN,
+    );
+    expect(out.characters.map((c) => c.name)).toEqual(['小雨']);
+    expect(out.messages).toEqual([
+      { character: '小雨', role: 'character', content: '在吗' },
+      { character: '小雨', role: 'user', content: '好呀' },
+    ]);
+  });
+});
+
+function storedChat(contents: Array<{ role: 'user' | 'assistant'; content: string }>): PhoneMessage[] {
+  return contents.map((m, i) => ({
+    id: `m_${i}`,
+    role: m.role,
+    type: 'text' as const,
+    content: m.content,
+    createdAt: i,
+  }));
+}
+
+describe('mergeHiddenData', () => {
+  it('新人 + 他的两条消息：联系人加上，消息按顺序贴进他的微信记录，说话人对得上', () => {
+    const res = mergeHiddenData(
+      [],
+      {
+        characters: [
+          { name: '阿杰', profile: '常来酒馆', relation: '朋友', openingMessage: '下周带一批新茶叶过来', gender: 'male' },
+        ],
+        messages: [
+          { character: '阿杰', role: 'user', content: '好呀，留一包给我' },
+          { character: '阿杰', role: 'character', content: '没问题，明天带过去' },
+        ],
+      },
+      new Map(),
+      MAIN,
+    );
+    expect(res.contactsChanged).toBe(true);
+    expect(res.messagesChanged).toBe(true);
+    expect(res.contacts).toHaveLength(1);
+    const contact = res.contacts[0];
+    expect(contact.name).toBe('阿杰');
+    expect(contact.affection).toBe(0);
+    const chat = res.chats.get(contact.id);
+    expect(chat).toBeDefined();
+    // 记录以开场白起头，再接两条新消息。
+    expect(chat!.map((m) => m.content)).toEqual([
+      '下周带一批新茶叶过来',
+      '好呀，留一包给我',
+      '没问题，明天带过去',
+    ]);
+    expect(chat![0].role).toBe('assistant');
+    expect(chat![1].role).toBe('user');
+    expect(chat![2].role).toBe('assistant');
+    expect(res.appended.get(contact.id)?.map((m) => m.content)).toEqual([
+      '好呀，留一包给我',
+      '没问题，明天带过去',
+    ]);
+  });
+
+  it('已经在列表里的人：id、好感度、人设、旧记录都不动，只追加新消息', () => {
+    const existing = [existingContact()];
+    const oldChat = storedChat([
+      { role: 'assistant', content: '在吗在吗，明天一早我就去开门' },
+      { role: 'user', content: '好呀' },
+    ]);
+    const res = mergeHiddenData(
+      existing,
+      {
+        characters: [{ name: ' 小雨 ', profile: '全新的人设', relation: '闺蜜', gender: 'female' }],
+        messages: [{ character: '小雨', role: 'character', content: '我带早餐过去' }],
+      },
+      new Map([['c_xiaoyu', oldChat]]),
+      MAIN,
+    );
+    expect(res.contactsChanged).toBe(false);
+    expect(res.contacts).toBe(existing);
+    expect(res.contacts[0].id).toBe('c_xiaoyu');
+    expect(res.contacts[0].affection).toBe(12);
+    expect(res.contacts[0].profile).toBe('在酒馆帮忙，手很稳');
+    expect(res.messagesChanged).toBe(true);
+    const chat = res.chats.get('c_xiaoyu');
+    expect(chat!.map((m) => m.content)).toEqual([
+      '在吗在吗，明天一早我就去开门',
+      '好呀',
+      '我带早餐过去',
+    ]);
+    // 传入的旧记录数组本身不动。
+    expect(oldChat).toHaveLength(2);
+  });
+
+  it('同一个块扫两遍不重复：第二次合并时消息一条也不追加', () => {
+    const found = {
+      characters: [{ name: '阿杰', relation: '朋友', openingMessage: '下周带一批新茶叶过来', gender: 'male' as const }],
+      messages: [
+        { character: '阿杰', role: 'user' as const, content: '好呀，留一包给我' },
+        { character: '阿杰', role: 'character' as const, content: '没问题，明天带过去' },
+      ],
+    };
+    const first = mergeHiddenData([], found, new Map(), MAIN);
+    const contact = first.contacts[0];
+    const chatAfterFirst = first.chats.get(contact.id)!;
+    // 第二次扫到同样的块：拿第一次合并后的记录当已有记录。
+    const second = mergeHiddenData(
+      first.contacts,
+      found,
+      new Map([[contact.id, chatAfterFirst]]),
+      MAIN,
+    );
+    expect(second.contactsChanged).toBe(false);
+    expect(second.messagesChanged).toBe(false);
+    expect(second.appended.size).toBe(0);
+    expect(second.chats.size).toBe(0);
+  });
+
+  it('user 角色和 character 角色的说话人分得清：user 是 User 发的，character 是联系人发的', () => {
+    const res = mergeHiddenData(
+      [],
+      {
+        characters: [{ name: '小雨', relation: '朋友', openingMessage: '在吗' }],
+        messages: [
+          { character: '小雨', role: 'user', content: '明天一早就去开门' },
+          { character: '小雨', role: 'character', content: '好呀，我带早餐过去' },
+        ],
+      },
+      new Map(),
+      MAIN,
+    );
+    const contact = res.contacts[0];
+    const chat = res.chats.get(contact.id)!;
+    const userMsg = chat.find((m) => m.content === '明天一早就去开门');
+    const charMsg = chat.find((m) => m.content === '好呀，我带早餐过去');
+    expect(userMsg?.role).toBe('user');
+    expect(charMsg?.role).toBe('assistant');
+  });
+
+  it('块里只带了消息、没带人：先建一个最小联系人（默认问候、好感度 0），再贴消息', () => {
+    const res = mergeHiddenData(
+      [],
+      {
+        characters: [],
+        messages: [{ character: '阿杰', role: 'character', content: '下周带一批新茶叶过来' }],
+      },
+      new Map(),
+      MAIN,
+    );
+    expect(res.contactsChanged).toBe(true);
+    expect(res.contacts).toHaveLength(1);
+    const contact = res.contacts[0];
+    expect(contact.name).toBe('阿杰');
+    expect(contact.relation).toBe('');
+    expect(contact.openingMessage).toBe('你好，我是阿杰。');
+    expect(contact.gender).toBe('unknown');
+    expect(contact.affection).toBe(0);
+    const chat = res.chats.get(contact.id)!;
+    expect(chat.map((m) => m.content)).toEqual(['你好，我是阿杰。', '下周带一批新茶叶过来']);
+  });
+
+  it('消息里 character 是主角名：不建联系人、不贴消息', () => {
+    const res = mergeHiddenData(
+      [],
+      {
+        characters: [],
+        messages: [{ character: MAIN, role: 'character', content: '主角说的话' }],
+      },
+      new Map(),
+      MAIN,
+    );
+    expect(res.contactsChanged).toBe(false);
+    expect(res.messagesChanged).toBe(false);
+    expect(res.contacts).toEqual([]);
+  });
+
+  it('什么都没有：两边都不变，不返回新数组、不返回新记录', () => {
+    const existing = [existingContact()];
+    const res = mergeHiddenData(existing, { characters: [], messages: [] }, new Map(), MAIN);
+    expect(res.contactsChanged).toBe(false);
+    expect(res.messagesChanged).toBe(false);
+    expect(res.contacts).toBe(existing);
+    expect(res.chats.size).toBe(0);
+  });
+
+  it('列表满 8 人时，只带消息的新人建不出来，消息也贴不进去', () => {
+    const existing = Array.from({ length: 8 }, (_, i) =>
+      existingContact({ id: `c_${i}`, name: `路人${i}` }),
+    );
+    const res = mergeHiddenData(
+      existing,
+      {
+        characters: [],
+        messages: [{ character: '阿杰', role: 'character', content: '新来的' }],
+      },
+      new Map(),
+      MAIN,
+    );
+    expect(res.contactsChanged).toBe(false);
+    expect(res.messagesChanged).toBe(false);
+    expect(res.contacts).toHaveLength(8);
+  });
+
+  it('去重窗口是 20 条', () => {
+    expect(PHONE_DATA_MESSAGE_DEDUP_WINDOW).toBe(20);
+  });
+
+  it('调用方传进来的联系人数组不动：只带消息的新人不会 push 进原数组', () => {
+    const existing: PhoneContact[] = [];
+    const res = mergeHiddenData(
+      existing,
+      {
+        characters: [],
+        messages: [{ character: '阿杰', role: 'character', content: '新来的' }],
+      },
+      new Map(),
+      MAIN,
+    );
+    expect(existing).toEqual([]);
+    expect(res.contacts).toHaveLength(1);
   });
 });

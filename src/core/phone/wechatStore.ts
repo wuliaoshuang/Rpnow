@@ -1,10 +1,11 @@
 /**
  * 微信聊天记录与联系人的存取（IndexedDB，idbStorage）。
  *
- *   - 联系人：按聊天存，`rpnow:phone:contacts:<chatId>`，AI 初始化一次后缓存。
- *     联系人是卡里提到的其他人物（卡的主角本人不是联系人）。
+ *   - 联系人：按聊天存，`rpnow:phone:contacts:<chatId>`，从主聊天回复里
+ *     的隐藏数据块认出来后缓存（见 phoneData.ts）。
+ *     联系人是主聊天里出现过的其他人物（卡的主角本人不是联系人）。
  *     缓存是权威的：一旦存下来就原样保留，打开时只读不改；只有用户点
- *     “重置”（clearPhoneChat）才会删掉它、重新初始化。
+ *     “重置”（clearPhoneChat）才会删掉它，等主聊天后续产出新的数据块再填回来。
  *   - 聊天记录：按联系人存，`rpnow:phone:wechat:<contactId>`。
  *   - 朋友圈动态：按聊天存，`rpnow:phone:moments:<chatId>`（见 momentsStore）。
  *   - 群聊：群列表和群聊记录见 groupStore（`rpnow:phone:groups:<chatId>` /
@@ -28,13 +29,13 @@ function contactsKey(chatId: string): string {
   return `rpnow:phone:contacts:${chatId}`;
 }
 
-/** 读出指定聊天的联系人列表；没初始化过返回 null。 */
+/** 读出指定聊天的联系人列表；没存过返回 null。 */
 export async function loadContacts(chatId: string): Promise<PhoneContact[] | null> {
   const contacts = await idbStorage.get<PhoneContact[]>(contactsKey(chatId));
   return contacts ?? null;
 }
 
-/** 保存指定聊天的联系人列表（AI 初始化的结果）。 */
+/** 保存指定聊天的联系人列表（从隐藏数据块认出来的结果）。 */
 export async function saveContacts(chatId: string, contacts: PhoneContact[]): Promise<void> {
   await idbStorage.set(contactsKey(chatId), contacts);
 }
@@ -83,7 +84,7 @@ export async function saveWeChatChat(chat: WeChatChat): Promise<void> {
   await idbStorage.set(chatKey(chat.contactId), chat);
 }
 
-/** 某个联系人的开场消息：就是初始化时定好的那句开场白。 */
+/** 某个联系人的开场消息：就是隐藏数据块里定好的那句开场白。 */
 export function greetingMessage(contact: PhoneContact): PhoneMessage {
   return {
     id: uid('m'),

@@ -10,13 +10,15 @@
  *     都出现；挑“健康”占卜（假模型回空）→ 静态兜底解读出现，不再调模型；
  *     抽塔罗 → 牌名 + 正位/逆位 + 解读出现；
  *   - 关掉重开 → 日记和运势结果还在，初始化一次都没重跑；
- *   - 回归：重置清掉日记和运势（联系人重新初始化）；一对一没要图不发图
+ *   - 回归：重置清掉日记和运势（联系人回到空的，主聊天再产出隐藏
+ *     数据块后才回来，初始化模型调用全程是 0 次）；一对一没要图不发图
  *     守门；提示词查看器 14 节；状态栏；相册；朋友圈；好感度；微信记录还在。
  *
- * 假模型：按提示词里的标记认出是哪种调用——初始化（“角色卡解析助手”）
- * 回联系人 JSON；日记（“第一人称写一篇日记”）回一段日记；占星师回带标签
+ * 假模型：按提示词里的标记认出是哪种调用——旧的初始化（“角色卡解析助手”）
+ * 留着当绊线，新逻辑下不应该被调；日记（“第一人称写一篇日记”）回一段日记；占星师回带标签
  * 的运势（健康那次故意回空，验静态兜底）；塔罗占卜师回一段解读；微信回复
- * 按“你要扮演「X」”认人，永远带一个 send_image 工具调用（验守门）。
+ * 按“你要扮演「X」”认人，永远带一个 send_image 工具调用（验守门）；
+ * 主聊天回复按最新一条用户消息，提到小雨/阿杰就带一个隐藏数据块。
  */
 import { createServer } from 'node:http';
 import { chromium } from 'playwright';
@@ -55,6 +57,9 @@ function sseReply(res, deltas, finishReason = 'stop') {
   res.end();
 }
 
+const RESET_BLOCK =
+  '<!-- [小手机数据] {"characters":[{"name":"小雨","profile":"活泼开朗，黑长直，爱吃凉皮","relation":"室友","relationToMain":"闺蜜","openingMessage":"在吗在吗","gender":"female"},{"name":"阿杰","profile":"稳重可靠，花店打工","relation":"学长","relationToMain":"哥哥","openingMessage":"今天花店忙不忙","gender":"male"}],"messages":[]} -->';
+
 const mock = createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type, accept');
@@ -85,7 +90,8 @@ const mock = createServer((req, res) => {
       const body = JSON.parse(raw || '{}');
       llmBodies.push(body);
       const allText = (body.messages ?? []).map((m) => m.content ?? '').join('\n');
-      // 初始化：返回联系人 JSON（重置后重新初始化走这里）。
+      // 旧的初始化：新逻辑下不应该被调，留着当绊线（调了就会被
+      // “初始化一次没跑”的检查抓住）。万一被调，回一份联系人 JSON。
       if (allText.includes('角色卡解析助手')) {
         sseReply(res, [
           {
@@ -155,7 +161,16 @@ const mock = createServer((req, res) => {
         );
         return;
       }
-      // 主聊天：普通文字回复。
+      // 主聊天：普通文字回复；提到小雨/阿杰就带一个隐藏数据块
+      // （两个联系人都在里面），让重置后的手机能靠它把联系人认回来。
+      const mainLastUser = [...(body.messages ?? [])]
+        .reverse()
+        .find((m) => m.role === 'user');
+      const mainUserText = mainLastUser?.content ?? '';
+      if (mainUserText.includes('小雨') || mainUserText.includes('阿杰')) {
+        sseReply(res, [{ content: `小雨和阿杰都说好呀，周末一起去吃凉皮。${RESET_BLOCK}` }]);
+        return;
+      }
       sseReply(res, [{ content: '收到，今天军训辛苦了。' }]);
     });
     return;
@@ -428,26 +443,38 @@ check('回归：朋友圈能打开', await phone.locator('text=发朋友圈').co
 await phone.getByRole('button', { name: '返回主屏幕' }).click();
 await page.waitForTimeout(300);
 
-// ---- 回归：重置清掉日记和运势，联系人重新初始化 ----
+// ---- 回归：重置清掉日记和运势；联系人回到空的，靠隐藏数据块回来 ----
+// 新逻辑：重置后联系人不调模型初始化，直接是空的；主聊天再产出一个带
+// 隐藏数据块的回复，手机重开后靠这个块把人认回来，全程初始化调用是 0 次。
+// 日记和运势清掉之后不会自己回来。
 await phone.getByRole('button', { name: '微信' }).first().click();
 await page.waitForTimeout(600);
 const initBeforeReset = initCallCount();
 await phone.getByRole('button', { name: '清空并重置' }).click();
 await phone.getByRole('button', { name: '确定重置' }).click();
-let initAfterReset = initBeforeReset;
-{
-  const start = Date.now();
-  while (Date.now() - start < 15000) {
-    initAfterReset = initCallCount();
-    if (initAfterReset > initBeforeReset) break;
-    await page.waitForTimeout(300);
-  }
-}
-check('重置后初始化重跑了一次', initAfterReset > initBeforeReset, `初始化调用 ${initBeforeReset} → ${initAfterReset}`);
-await phone.locator('button:has-text("小雨")').first().waitFor({ timeout: 15000 });
-check('重置后联系人回来了', await phone.locator('button:has-text("小雨")').count() >= 1);
+await page.waitForTimeout(1500);
+check('重置后联系人列表是空的', await phone.locator('text=暂时没有联系人').count() >= 1);
+check('重置后初始化还是没跑', initCallCount() === initBeforeReset, `初始化调用 ${initBeforeReset} → ${initCallCount()}`);
 check('重置后日记清掉了', (await readDiary()).length === 0);
 check('重置后运势清掉了', (await readFortune()) === null);
+await phone.getByRole('button', { name: '关闭小手机' }).click();
+await page.waitForTimeout(500);
+// 主聊天里发一句提到小雨和阿杰的话，假模型回一个带隐藏数据块的回复。
+const mainBox = page.locator('textarea[aria-label="消息输入框"]').first();
+await mainBox.fill('刚才小雨和阿杰都来了，说想一起去吃凉皮。');
+await mainBox.press('Enter');
+await page.waitForTimeout(4000);
+check('主聊天回复里有隐藏块那句', await page.locator('text=小雨和阿杰都说好呀').count() >= 1);
+await page.getByRole('button', { name: '打开操作面板' }).click();
+await page.getByRole('button', { name: '小手机' }).click();
+await page.waitForTimeout(500);
+await phone.getByRole('button', { name: '微信' }).first().click();
+await page.waitForTimeout(800);
+await phone.locator('button:has-text("小雨")').first().waitFor({ timeout: 15000 });
+check('靠隐藏数据块，重置后联系人回来了', await phone.locator('button:has-text("小雨")').count() >= 1);
+check('整个过程初始化一次没跑', initCallCount() === initBeforeReset, `初始化调用 ${initBeforeReset} → ${initCallCount()}`);
+check('联系人回来后，日记还是空的', (await readDiary()).length === 0);
+check('联系人回来后，运势还是空的', (await readFortune()) === null);
 
 check('页面无报错', errors.length === 0, errors.join(' | ').slice(0, 300));
 
