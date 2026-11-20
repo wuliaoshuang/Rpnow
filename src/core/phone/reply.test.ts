@@ -10,6 +10,7 @@ import type { RPCard} from '@/core/types/card.js';
 import type { RPChatMessage} from '@/core/types/chat.js';
 import type { PhoneContact} from './types.js';
 import {
+  affectionSectionContent,
   buildImagePromptMessages,
   buildImageTagContext,
   buildReplySystemPrompt,
@@ -827,6 +828,7 @@ describe('buildReplySystemPromptSections', () => {
   const SECTION_LABELS = [
     '角色扮演开场',
     '身份',
+    '好感度',
     '人设',
     '设定',
     '世界书',
@@ -840,7 +842,7 @@ describe('buildReplySystemPromptSections', () => {
     '预设',
   ];
 
-  it('小雨（全量）：13 节按顺序出现，拼起来和 buildReplySystemPrompt 一字不差', () => {
+  it('小雨（全量）：14 节按顺序出现，拼起来和 buildReplySystemPrompt 一字不差', () => {
     const extras = {
       plotProgress: 'PLOT_军训集合',
       lorebookText: 'LORE_王阿姨收租',
@@ -858,13 +860,15 @@ describe('buildReplySystemPromptSections', () => {
     // 每节的内容就是提示词里那一节。
     expect(sections[0].content).toContain('你要扮演「小雨」');
     expect(sections[1].content).toContain('是用户的闺蜜');
-    expect(sections[2].content).toContain('活泼开朗');
-    expect(sections[3].content).toContain(SCENARIO_MARKER);
-    expect(sections[4].content).toContain('LORE_王阿姨收租');
-    expect(sections[5].content).toContain(FIRST_MES_MARKER);
-    expect(sections[6].content).toContain('PLOT_军训集合');
-    expect(sections[7].content).toContain('独立的微信聊天');
-    expect(sections[12].content).toContain('PRESET_写短句');
+    // 好感度节总有：这个联系人没写好感度（老缓存），按 0 算。
+    expect(sections[2].content).toContain('当前好感度：0/100');
+    expect(sections[3].content).toContain('活泼开朗');
+    expect(sections[4].content).toContain(SCENARIO_MARKER);
+    expect(sections[5].content).toContain('LORE_王阿姨收租');
+    expect(sections[6].content).toContain(FIRST_MES_MARKER);
+    expect(sections[7].content).toContain('PLOT_军训集合');
+    expect(sections[8].content).toContain('独立的微信聊天');
+    expect(sections[13].content).toContain('PRESET_写短句');
   });
 
   it('可选内容全缺时，对应节是空的（查看器里标“未包含”），拼出来的字符串里没有这些节', () => {
@@ -882,15 +886,43 @@ describe('buildReplySystemPromptSections', () => {
     expect(joined).not.toContain(FIRST_MES_MARKER);
     // 两边关系都没写：不写关系这一句，也不写“不要自己编”。
     expect(joined).not.toContain('卡里没写');
-    // 固定节一节不少。
+    // 固定节一节不少（好感度总有，没写按 0 算）。
     expect(sections.filter((s) => s.content).map((s) => s.label)).toEqual([
       '角色扮演开场',
       '身份',
+      '好感度',
       '独立系统',
       '先想一想',
       '不跳出角色',
       '短聊格式',
       '工具说明',
     ]);
+  });
+});
+
+describe('好感度进提示词', () => {
+  it('提示词里有当前好感度一行，数是联系人自己的', () => {
+    const prompt = buildReplySystemPrompt(fakeCard(), { ...xiaoyuContact, affection: 75 });
+    expect(prompt).toContain('当前好感度：75/100');
+    const other = buildReplySystemPrompt(fakeCard(), { ...ajieContact, affection: 20 });
+    expect(other).toContain('当前好感度：20/100');
+  });
+
+  it('没写好感度的老缓存按 0 写', () => {
+    const prompt = buildReplySystemPrompt(fakeCard(), xiaoyuContact);
+    expect(prompt).toContain('当前好感度：0/100');
+  });
+
+  it('档位提示：低时客气克制，50 以上亲近主动，80 以上非常亲密', () => {
+    expect(affectionSectionContent({ ...xiaoyuContact, affection: 10 })).toContain('保持一点距离');
+    expect(affectionSectionContent({ ...xiaoyuContact, affection: 50 })).toContain('更亲近');
+    expect(affectionSectionContent({ ...xiaoyuContact, affection: 80 })).toContain('非常亲密');
+  });
+
+  it('好感度节在身份之后、人设之前', () => {
+    const sections = buildReplySystemPromptSections(fakeCard(), { ...xiaoyuContact, affection: 60 });
+    const labels = sections.map((s) => s.label);
+    expect(labels.indexOf('好感度')).toBe(labels.indexOf('身份') + 1);
+    expect(labels.indexOf('好感度')).toBe(labels.indexOf('人设') - 1);
   });
 });

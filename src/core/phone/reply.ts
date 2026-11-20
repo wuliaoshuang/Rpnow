@@ -15,6 +15,12 @@ import type { RPCard } from '@/core/types/card.js';
 import type { RPChatMessage } from '@/core/types/chat.js';
 import type { LLMMessage } from '@/core/llm/types.js';
 import { displayRelation } from './contacts.js';
+import {
+  AFFECTION_DATE_UNLOCK,
+  AFFECTION_MAX,
+  AFFECTION_PRIVATE_PHOTO_UNLOCK,
+  affectionOf,
+} from './contacts.js';
 import type { ImagePeople, PhoneContact, PhoneContactGender } from './types.js';
 
 /**
@@ -38,6 +44,26 @@ export function relationClause(contact: PhoneContact, charName: string): string 
   }
   if (toMain) return `是「${charName}」的${toMain}`;
   return '';
+}
+
+/**
+ * 好感度这一节：把当前好感度写进提示词，模型按亲密度回。
+ *
+ * 数字是“当前好感度：75/100”这样一行；后面跟一句按档位写的提示，
+ * 让模型知道这个数是什么意思：还没到约会线（50）时客气克制一点，
+ * 到了 50 关系不错、可以亲近主动，到了 80（私密照线）关系非常亲密、
+ * 可以很亲昵、愿意分享私事。模型不改这个数——数是聊天里一条一条
+ * 消息涨上去的（用户发消息 +1，角色回一次 +1），提示词里只告诉它。
+ */
+export function affectionSectionContent(contact: PhoneContact): string {
+  const value = affectionOf(contact);
+  const cue =
+    value >= AFFECTION_PRIVATE_PHOTO_UNLOCK
+      ? '你们关系非常亲密，可以很亲昵、很主动，愿意分享自己的私事。'
+      : value >= AFFECTION_DATE_UNLOCK
+        ? '你们关系不错，可以更亲近、更主动一点。'
+        : '你们还不太熟，说话客气一点、保持一点距离。';
+  return `当前好感度：${value}/${AFFECTION_MAX}。好感度越高，你们的关系越亲密。${cue}`;
 }
 
 /**
@@ -307,6 +333,8 @@ const TOOLS =
  * 当成“用户的闺蜜”来对 User。
  *
  * 和主聊天共享的素材（按这个顺序排，越往后离聊天记录越近、越显眼）：
+ *   【好感度】当前好感度（0–100）：模型按这个数决定亲密度——低时客气
+ *     克制，高时亲近主动；数是聊天里涨上去的，不由模型改；
  *   【人设】联系人自己的人设——性格、长相、关键特点（初始化时按卡里 /
  *     世界书里写到的提炼的，没提到的不写这一节）；
  *   【设定】卡的 scenario——世界/场景设定（介绍和性格已经在身份那一段，
@@ -344,9 +372,9 @@ export interface ReplyPromptSection {
 /**
  * 回复 system prompt 的分节版：和 buildReplySystemPrompt 同一份拼装，
  * 查看器和小手机的回复共用它，所以查看器里看到的就是真正发出去的东西。
- * 顺序就是提示词里的顺序：角色扮演开场 → 身份 → 人设 → 设定 → 世界书 →
- * 开场白 → 剧情进度 → 独立系统 → 先想一想 → 不跳出角色 → 短聊格式 →
- * 工具说明 → 预设（最后 = 最高注入深度）。
+ * 顺序就是提示词里的顺序：角色扮演开场 → 身份 → 好感度 → 人设 → 设定 →
+ * 世界书 → 开场白 → 剧情进度 → 独立系统 → 先想一想 → 不跳出角色 →
+ * 短聊格式 → 工具说明 → 预设（最后 = 最高注入深度）。
  */
 export function buildReplySystemPromptSections(
   card: RPCard,
@@ -372,6 +400,9 @@ export function buildReplySystemPromptSections(
   ]
     .filter(Boolean)
     .join('\n');
+  // 好感度：总有（老缓存里没有这个字段按 0 算）——模型按这个数决定
+  // 亲密度：低时客气克制，高时亲近主动；数本身由聊天涨，不由模型改。
+  const affectionSection = affectionSectionContent(contact);
   // 联系人自己的人设：性格、长相、关键特点——模型扮演的就是这个人，
   // 人设写在这里它才不会 OOC；老缓存里没有 profile 时不写这一节。
   const profileSection = contact.profile?.trim()
@@ -404,6 +435,7 @@ export function buildReplySystemPromptSections(
   return [
     { key: 'framing', label: '角色扮演开场', content: framing },
     { key: 'identity', label: '身份', content: identity },
+    { key: 'affection', label: '好感度', content: affectionSection },
     { key: 'profile', label: '人设', content: profileSection },
     { key: 'settings', label: '设定', content: settingsSection },
     { key: 'lorebook', label: '世界书', content: lorebookSection },

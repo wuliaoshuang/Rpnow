@@ -11,11 +11,18 @@ import { describe, expect, it } from 'vitest';
 import type { RPCard } from '@/core/types/card.js';
 import type { RPPersona } from '@/core/types/chat.js';
 import {
+  AFFECTION_DATE_UNLOCK,
+  AFFECTION_MAX,
+  AFFECTION_PRIVATE_PHOTO_UNLOCK,
+  addAffection,
+  affectionOf,
   buildInitMessages,
   cleanOpeningMessage,
   displayRelation,
   fallbackContacts,
   hasUsableCache,
+  isDateUnlocked,
+  isPrivatePhotoUnlocked,
   parseContactsJson,
   resolvePhoneUser,
 } from './contacts.js';
@@ -475,5 +482,89 @@ describe('hasUsableCache', () => {
     expect(hasUsableCache('小雨')).toBe(false);
     expect(hasUsableCache({ name: '小雨' })).toBe(false);
     expect(hasUsableCache(42)).toBe(false);
+  });
+});
+
+describe('affectionOf', () => {
+  const base: PhoneContact = { id: 'c_1', name: '小雨', relation: '闺蜜', openingMessage: '嗨' };
+
+  it('没写好感度的老缓存按 0 算', () => {
+    expect(affectionOf(base)).toBe(0);
+  });
+
+  it('写了多少就是多少', () => {
+    expect(affectionOf({ ...base, affection: 75 })).toBe(75);
+  });
+
+  it('超出 0–100 的压回来', () => {
+    expect(affectionOf({ ...base, affection: 150 })).toBe(100);
+    expect(affectionOf({ ...base, affection: -5 })).toBe(0);
+  });
+
+  it('不是数字的按 0 算', () => {
+    expect(affectionOf({ ...base, affection: NaN })).toBe(0);
+  });
+});
+
+describe('addAffection', () => {
+  const base: PhoneContact = { id: 'c_1', name: '小雨', relation: '闺蜜', openingMessage: '嗨' };
+
+  it('用户发消息 +1、角色回一次 +1', () => {
+    expect(addAffection(base, 1).affection).toBe(1);
+    expect(addAffection({ ...base, affection: 48 }, 1).affection).toBe(49);
+    expect(addAffection({ ...base, affection: 49 }, 1).affection).toBe(50);
+  });
+
+  it('封顶 100，再加也不超', () => {
+    expect(addAffection({ ...base, affection: 99 }, 1).affection).toBe(100);
+    expect(addAffection({ ...base, affection: 100 }, 1).affection).toBe(100);
+  });
+
+  it('原对象不动，返回新对象', () => {
+    const out = addAffection({ ...base, affection: 10 }, 1);
+    expect(base.affection).toBeUndefined();
+    expect(out.affection).toBe(11);
+  });
+});
+
+describe('解锁阈值', () => {
+  const at = (n: number): PhoneContact => ({
+    id: 'c_1',
+    name: '小雨',
+    relation: '闺蜜',
+    openingMessage: '嗨',
+    affection: n,
+  });
+
+  it('约会 50 解锁：49 不行，50 可以', () => {
+    expect(AFFECTION_DATE_UNLOCK).toBe(50);
+    expect(isDateUnlocked(at(49))).toBe(false);
+    expect(isDateUnlocked(at(50))).toBe(true);
+  });
+
+  it('私密照 80 解锁：79 不行，80 可以', () => {
+    expect(AFFECTION_PRIVATE_PHOTO_UNLOCK).toBe(80);
+    expect(isPrivatePhotoUnlocked(at(79))).toBe(false);
+    expect(isPrivatePhotoUnlocked(at(80))).toBe(true);
+  });
+
+  it('好感度上限是 100', () => {
+    expect(AFFECTION_MAX).toBe(100);
+  });
+
+  it('没写好感度的老缓存两个都锁着', () => {
+    const old: PhoneContact = { id: 'c_1', name: '小雨', relation: '闺蜜', openingMessage: '嗨' };
+    expect(isDateUnlocked(old)).toBe(false);
+    expect(isPrivatePhotoUnlocked(old)).toBe(false);
+  });
+});
+
+describe('parseContactsJson 好感度', () => {
+  it('新解析的联系人好感度从 0 开始', () => {
+    const text = JSON.stringify([
+      { name: '小雨', relation: '闺蜜', openingMessage: '嗨' },
+    ]);
+    const list = parseContactsJson(text, fakeCard());
+    expect(list![0].affection).toBe(0);
   });
 });
