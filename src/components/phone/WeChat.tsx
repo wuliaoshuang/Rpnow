@@ -26,6 +26,7 @@ import type { ImagePeople, PhoneContact, PhoneMessage, StickerEmotion } from '@/
 import { fallbackContacts, initContacts, isStaleContacts } from '@/core/phone/contacts.js';
 import {
   buildImagePromptMessages,
+  buildImageTagContext,
   buildReplySystemPrompt,
   enforceComposition,
   inferPeopleFromRequest,
@@ -48,7 +49,8 @@ import {
   saveWeChatChat,
 } from '@/core/phone/wechatStore.js';
 import { detectEmotion, pickSticker } from '@/core/phone/stickers.js';
-import { normalizeTags } from '@/core/image/nai.js';
+import { DEFAULT_TAG_PROMPT, normalizeTags } from '@/core/image/nai.js';
+import { cleanRewrittenTags, rewriteTags } from '@/core/image/tagRewrite.js';
 import { dataUrlToBlob, mediaRef, saveMediaImage } from '@/core/media/store.js';
 import { PressableImage } from '@/components/media/PressableImage.js';
 import { PhoneImageConfig } from './PhoneImageConfig.js';
@@ -362,8 +364,14 @@ export function WeChat({
         return;
       }
       setGenerating(true);
-      // Agent 流程：先让模型按角色形象写正面提示词，再调生图工具。
-      // 画师串和负面提示词是用户在设置里配好的，模型不管，只拼进去。
+      // 生图前先转写 Tag：把场景＋人物外貌的上下文（对话里的场景、人数、
+      // 角色和他人的样子）交给 Tag 转写（设置 → 生图里配的转写模型，留空
+      // 跟随当前对话），拿回 Danbooru 标签再出图——直接让模型写 Tag 的图
+      // 全都不能看，转写这一步就是用来修这个的。
+      // 转写失败、空手而回时，退回原来的做法：让模型直接写提示词，不挡生图。
+      // 转写这一步替换了原来那次“模型写提示词”的调用，所以每次生图还是只
+      // 调一次模型（转写），没有额外增加；画师串和负面提示词是用户在设置里
+      // 配好的，模型不管，只拼进去。
       const llmConnectionId = phone.chatConnectionId || settings.defaultConnectionId || '';
       const llmConnection = llmConnections.find((c) => c.id === llmConnectionId);
       const useAgent = Boolean(llm && llmConnection);
@@ -375,21 +383,45 @@ export function WeChat({
       appendMessages(contact, [note]);
       let positivePrompt = rawPrompt;
       if (useAgent && llm && llmConnection) {
+        const contextText = buildImageTagContext(card, contact, rawPrompt, historyEntries(history), {
+          people,
+          others,
+        });
+        const tagConnectionId = settings.imageGen.tagConnectionId || llmConnectionId;
+        const tagConnection = llmConnections.find((c) => c.id === tagConnectionId) ?? llmConnection;
+        const tagModel =
+          settings.imageGen.tagModel || phone.chatModel || tagConnection.defaultModel || '';
+        let rewritten = '';
         try {
-          const model = phone.chatModel || llmConnection.defaultModel || '';
-          const result = await llm.complete(llmConnectionId, {
-            model,
-            messages: buildImagePromptMessages(card, contact, rawPrompt, historyEntries(history), {
-              people,
-              others,
-            }),
-            temperature: 0.7,
-            maxTokens: 300,
+          const res = await rewriteTags(llm, {
+            connectionId: tagConnection.id,
+            model: tagModel,
+            systemPrompt: settings.imageGen.tagPrompt || DEFAULT_TAG_PROMPT,
+            description: contextText,
           });
-          const agentPrompt = result.text.trim();
-          if (agentPrompt) positivePrompt = agentPrompt;
+          rewritten = cleanRewrittenTags(res.text);
         } catch {
-          // 模型写不出来就用用户原话，不挡生图。
+          rewritten = '';
+        }
+        if (rewritten) {
+          positivePrompt = rewritten;
+        } else {
+          try {
+            const model = phone.chatModel || llmConnection.defaultModel || '';
+            const result = await llm.complete(llmConnectionId, {
+              model,
+              messages: buildImagePromptMessages(card, contact, rawPrompt, historyEntries(history), {
+                people,
+                others,
+              }),
+              temperature: 0.7,
+              maxTokens: 300,
+            });
+            const agentPrompt = result.text.trim();
+            if (agentPrompt) positivePrompt = agentPrompt;
+          } catch {
+            // 模型写不出来就用用户原话，不挡生图。
+          }
         }
       }
       // 按人数强制：不管模型写了什么提示词（哪怕写了 2girls、写了 group，
@@ -459,6 +491,9 @@ export function WeChat({
       phone.imageNegativePrompt,
       phone.imageSize,
       settings.defaultConnectionId,
+      settings.imageGen.tagConnectionId,
+      settings.imageGen.tagModel,
+      settings.imageGen.tagPrompt,
       updateNote,
     ],
   );

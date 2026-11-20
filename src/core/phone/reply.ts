@@ -255,6 +255,41 @@ export function buildImagePromptMessages(
   recentMessages: ChatHistoryEntry[],
   options: ImagePromptOptions = {},
 ): LLMMessage[] {
+  return [
+    {
+      role: 'system',
+      content:
+        '你是一个生图提示词助手。只返回提示词本身，不要解释、不要加多余文字、不要用 JSON、不要加代码块。',
+    },
+    {
+      role: 'user',
+      content: [
+        '请为下面这个角色写一条生图提示词：',
+        buildImageTagContext(card, contact, userRequest, recentMessages, options),
+        '要求：先读最近的微信聊天记录，弄清楚现在的场景：角色现在在哪里、在做什么、周围有什么、光线和气氛怎么样（比如老街、法桐树下、买凉皮、九月的阳光从树叶缝隙漏下来）；再从角色介绍和性格里提炼出这个角色的外貌特征（头发、眼睛、穿着、标志性特点），让画出来的人一眼就能认出是这个角色；用户和其他人按上面“人数”里说的办法写，不要编场景里没有的人；最后按上面定的人数，把这些人放进这个场景里、正在做这件事，写成一条详细的英文生图提示词（Danbooru 风格标签，逗号分隔，写在一行里）。要的是一张有场景的图，不是白底人像——场景从聊天记录里来，不要只按用户那句短话画，更不要只画一张人像。只输出这条提示词本身，不要解释。',
+      ].join('\n'),
+    },
+  ];
+}
+
+/**
+ * 生图要转写 Tag 用的上下文（正文）：场景＋人物外貌的自然语言描述。
+ *
+ * 和 buildImagePromptMessages 共用同一份内容：角色的外貌（卡里的介绍和
+ * 性格）、人数（回复模型按场景定的 solo / duo / multi，画面里每个人怎
+ * 么写）、最近的微信聊天记录（场景从这里来）、用户想画的内容。
+ * 区别是这里不带“写一条生图提示词”的开头和“要求”那段指令——它就是要
+ * 拿去转写的画面描述，交给 Tag 转写（设置 → 生图 → Tag 转写）转成
+ * Danbooru Tag，再填进正面提示词。转写失败时调用方退回
+ * buildImagePromptMessages，让模型直接写提示词。
+ */
+export function buildImageTagContext(
+  card: RPCard,
+  contact: PhoneContact,
+  userRequest: string,
+  recentMessages: ChatHistoryEntry[],
+  options: ImagePromptOptions = {},
+): string {
   const d = card.data;
   const people = options.people ?? 'solo';
   const appearance = [
@@ -288,27 +323,11 @@ export function buildImagePromptMessages(
         ].join('\n')
       : '';
   return [
-    {
-      role: 'system',
-      content:
-        '你是一个生图提示词助手。只返回提示词本身，不要解释、不要加多余文字、不要用 JSON、不要加代码块。',
-    },
-    {
-      role: 'user',
-      content: [
-        '请为下面这个角色写一条生图提示词：',
-        appearance,
-        '',
-        composition,
-        '',
-        conversation,
-        '',
-        `用户想画的内容：${userRequest}`,
-        '',
-        '要求：先读最近的微信聊天记录，弄清楚现在的场景：角色现在在哪里、在做什么、周围有什么、光线和气氛怎么样（比如老街、法桐树下、买凉皮、九月的阳光从树叶缝隙漏下来）；再从角色介绍和性格里提炼出这个角色的外貌特征（头发、眼睛、穿着、标志性特点），让画出来的人一眼就能认出是这个角色；用户和其他人按上面“人数”里说的办法写，不要编场景里没有的人；最后按上面定的人数，把这些人放进这个场景里、正在做这件事，写成一条详细的英文生图提示词（Danbooru 风格标签，逗号分隔，写在一行里）。要的是一张有场景的图，不是白底人像——场景从聊天记录里来，不要只按用户那句短话画，更不要只画一张人像。只输出这条提示词本身，不要解释。',
-      ]
-        .filter(Boolean)
-        .join('\n'),
-    },
-  ];
+    appearance,
+    composition,
+    conversation,
+    `用户想画的内容：${userRequest}`,
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
