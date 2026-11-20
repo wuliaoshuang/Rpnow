@@ -56,20 +56,44 @@ const otherContact: PhoneContact = {
 };
 
 describe('buildReplySystemPrompt', () => {
-  it('主角：不含场景和开场白原文', () => {
+  it('主角：设定（scenario）和开场白都进了提示词，但都标明了身份', () => {
     const prompt = buildReplySystemPrompt(fakeCard(), mainContact);
-    expect(prompt).not.toContain(SCENARIO_MARKER);
-    expect(prompt).not.toContain(FIRST_MES_MARKER);
-    expect(prompt).not.toContain('场景：');
-    expect(prompt).not.toContain('开场白：');
+    // 设定：卡的 scenario 进了【设定】一节（介绍和性格已经在身份那一段，这里不重复）。
+    expect(prompt).toContain('【设定】');
+    expect(prompt).toContain(SCENARIO_MARKER);
+    // 开场白：进了【开场白】一节，只当说话方式的参考——写明了不要当成
+    // 微信第一条消息、不要照抄；微信第一条还是模型按剧情写的短消息。
+    expect(prompt).toContain('【开场白】');
+    expect(prompt).toContain(FIRST_MES_MARKER);
+    expect(prompt).toContain('不要把它当成微信的第一条消息');
+    expect(prompt).toContain('不要照抄');
   });
 
-  it('非主角：同样不含场景和开场白原文', () => {
+  it('非主角：同样有设定和开场白', () => {
     const prompt = buildReplySystemPrompt(fakeCard(), otherContact);
+    expect(prompt).toContain('【设定】');
+    expect(prompt).toContain(SCENARIO_MARKER);
+    expect(prompt).toContain('【开场白】');
+    expect(prompt).toContain(FIRST_MES_MARKER);
+  });
+
+  it('卡没有 scenario / first_mes 时，这两节整个不写', () => {
+    const prompt = buildReplySystemPrompt(
+      fakeCard({ scenario: '', first_mes: '' }),
+      mainContact,
+    );
+    expect(prompt).not.toContain('【设定】');
+    expect(prompt).not.toContain('【开场白】');
     expect(prompt).not.toContain(SCENARIO_MARKER);
     expect(prompt).not.toContain(FIRST_MES_MARKER);
-    expect(prompt).not.toContain('场景：');
-    expect(prompt).not.toContain('开场白：');
+  });
+
+  it('开场白太长时只引用前 500 字', () => {
+    const long = `FIRSTMES_${'很长很长的开场白'.repeat(100)}`;
+    const prompt = buildReplySystemPrompt(fakeCard({ first_mes: long }), mainContact);
+    expect(prompt).toContain('【开场白】');
+    expect(prompt).toContain('…');
+    expect(prompt).not.toContain(long);
   });
 
   it('主角：留着名字、介绍和性格', () => {
@@ -152,7 +176,7 @@ describe('buildReplySystemPrompt', () => {
       '李淑纯',
     );
     for (const contact of [mainContact, otherContact]) {
-      const prompt = buildReplySystemPrompt(fakeCard(), contact, plot);
+      const prompt = buildReplySystemPrompt(fakeCard(), contact, { plotProgress: plot });
       expect(prompt).toContain('主线聊天的最近进展');
       expect(prompt).toContain('仅供你了解当前剧情到了哪一步');
       expect(prompt).toContain('军训集合');
@@ -172,6 +196,49 @@ describe('buildReplySystemPrompt', () => {
       expect(prompt).not.toContain('主线聊天的最近进展');
       expect(prompt).not.toContain('不要直接续写主线剧情');
     }
+  });
+
+  it('传了世界书：提示词里有【世界书】一节；没传就没有', () => {
+    const lorebookText = '花店二楼住着一只叫年糕的猫，店里的人都认识它。';
+    for (const contact of [mainContact, otherContact]) {
+      const prompt = buildReplySystemPrompt(fakeCard(), contact, { lorebookText });
+      expect(prompt).toContain('【世界书】');
+      expect(prompt).toContain('花店二楼住着一只叫年糕的猫');
+      expect(buildReplySystemPrompt(fakeCard(), contact)).not.toContain('【世界书】');
+    }
+  });
+
+  it('传了预设：提示词里有【预设】一节，放在最后（最高注入深度）', () => {
+    const presetText = 'PRESET_写回复前先想一想角色此刻的心情。';
+    for (const contact of [mainContact, otherContact]) {
+      const prompt = buildReplySystemPrompt(fakeCard(), contact, {
+        plotProgress: '剧情进度_报到日',
+        lorebookText: '世界书_花店二楼有猫',
+        presetText,
+      });
+      expect(prompt).toContain('【预设】');
+      expect(prompt).toContain('PRESET_写回复前先想一想角色此刻的心情');
+      expect(prompt).toContain('最高优先级');
+      // 顺序：预设在最后——在剧情进度、世界书、设定、开场白、工具说明
+      // 之后，紧贴聊天记录（离生成最近、最显眼）。
+      const idx = (s: string) => prompt.indexOf(s);
+      expect(idx('【预设】')).toBeGreaterThan(idx('主线聊天的最近进展'));
+      expect(idx('【预设】')).toBeGreaterThan(idx('【世界书】'));
+      expect(idx('【预设】')).toBeGreaterThan(idx('【设定】'));
+      expect(idx('【预设】')).toBeGreaterThan(idx('【开场白】'));
+      // 预设是最后一段：它在工具说明之后，后面什么都没有。
+      expect(prompt.indexOf('【预设】')).toBeGreaterThan(prompt.indexOf('发图工具'));
+    }
+    // 没传预设：这一节整个不写。
+    expect(buildReplySystemPrompt(fakeCard(), mainContact)).not.toContain('【预设】');
+  });
+
+  it('预设那一段写明：回复格式仍是微信短消息，不套主聊天的正文包裹格式', () => {
+    const prompt = buildReplySystemPrompt(fakeCard(), mainContact, {
+      presetText: 'PRESET_随便写点什么。',
+    });
+    expect(prompt).toContain('回复的格式仍是微信短消息');
+    expect(prompt).toContain('不要套用预设里主聊天的正文包裹格式');
   });
 
   it('讲清楚发图和发表情包两个工具怎么用', () => {

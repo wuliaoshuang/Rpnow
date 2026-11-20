@@ -3,10 +3,13 @@
  *
  * 小手机是一套独立系统：微信里的聊天和主线角色扮演是两回事。
  * 回复只认角色本身是谁（名字、性格、介绍）和微信自己的聊天记录，
- * 不跟主线剧情走——场景、开场白一律不进提示词。
- * 只有一样例外：主线聊天的最近进展会以“剧情进度”进回复提示词，
- * 只是让角色知道剧情到了哪一步，别说出和主线矛盾的话——微信还是
- * 独立的聊天，不续写主线，也不把主线里正在发生的事当成微信里的事。
+ * 不跟主线剧情走——微信是单独的聊天，不续写主线。
+ * 但它共享主聊天的素材：卡的设定（scenario）、世界书（按主聊天同一套
+ * activate() 选出来的条目）、卡的开场白（只当说话方式的参考，不当
+ * 微信第一条消息）、主线聊天的最近进展（剧情进度，只做了解），以及
+ * 主聊天所用预设里的提示词（按最高注入深度放在最后、紧贴聊天记录）。
+ * 只有一样例外：微信的第一条消息还是模型按剧情写的短消息，不用卡的
+ * first_mes 原文（PR #32/#33 的规矩还在）。
  */
 import type { RPCard } from '@/core/types/card.js';
 import type { RPChatMessage } from '@/core/types/chat.js';
@@ -270,16 +273,36 @@ const TOOLS =
  * 第一句就把 role play 的架子定死：我们现在在进行角色扮演，你要扮演
  * 这个角色，正在一个叫微信的地方和用户聊天——角色的设定（名字、性格、
  * 介绍）和联系人的关系都留在这里，模型按这个身份回。
- * 场景、开场白一律不进——那是主线剧情的东西，微信里不认。
- * 联系人的第一条消息也不写进这里：它本来就在微信聊天记录里。
  *
- * plotProgress 是主线聊天的最近进展（formatPlotProgress 压出来的）：
- * 只用来让角色知道剧情到了哪一步，不续写主线；空的时候这一节整个不写。
+ * 和主聊天共享的素材（按这个顺序排，越往后离聊天记录越近、越显眼）：
+ *   【设定】卡的 scenario——世界/场景设定（介绍和性格已经在身份那一段，
+ *     这里不重复）；【世界书】按主聊天同一套 activate() 选出来的条目；
+ *   【开场白】卡的 first_mes——只当说话方式和开场语气的参考，绝不当
+ *     微信第一条消息（微信第一条还是模型按剧情写的短消息）；
+ *   剧情进度（主线聊天的最近进展，只做了解、不续写主线）。
+ * 最后是【预设】：主聊天所用预设里抽出来的提示词，按最高注入深度放
+ * 在最后、紧贴聊天记录——模型下笔前最后看到的就是它。预设定的是角色
+ * 扮演的规则与写法；回复的格式仍是微信短消息，不套用预设里主聊天的
+ * 正文包裹格式（比如 <game> / <summary> / <options> 这类标签）。
+ *
+ * extras 全是可选的：没传的那一节整个不写，提示词不会出现空章节。
  */
+export interface ReplyPromptExtras {
+  /** 主线聊天的最近进展（formatPlotProgress 压出来的），只做了解。 */
+  plotProgress?: string;
+  /** 世界书文本（lorebook.ts 的 selectLorebookText 选出来的条目）。 */
+  lorebookText?: string;
+  /** 预设提示词文本（preset.ts 的 extractPresetPrompts 抽出来的）。 */
+  presetText?: string;
+}
+
+/** 开场白当参考时最多引用多少字（只取说话方式，不用整段）。 */
+const FIRST_MES_CONTEXT_CHARS = 500;
+
 export function buildReplySystemPrompt(
   card: RPCard,
   contact: PhoneContact,
-  plotProgress = '',
+  extras: ReplyPromptExtras = {},
 ): string {
   const d = card.data;
   const framing = contact.isMain
@@ -295,10 +318,44 @@ export function buildReplySystemPrompt(
         `你是「${contact.name}」，是「${d.name}」的${contact.relation}，正在微信上和用户聊天。`,
         d.description ? `角色卡介绍：${d.description}` : '',
       ];
-  const plotSection = plotProgress
-    ? [PLOT_PROGRESS_HEADER, plotProgress, PLOT_PROGRESS_FOOTER].join('\n')
+  const settingsSection = d.scenario?.trim() ? `【设定】\n${d.scenario.trim()}` : '';
+  const lorebookSection = extras.lorebookText?.trim()
+    ? `【世界书】\n${extras.lorebookText.trim()}`
     : '';
-  return [framing, ...identity, INDEPENDENCE, plotSection, THINK_FIRST, NO_OOC, SHORT_STYLE, TOOLS]
+  const firstMes = d.first_mes?.trim() ?? '';
+  const firstMesSection = firstMes
+    ? [
+        '【开场白】',
+        '角色卡的开场白，只供参考这个角色的说话方式和开场语气——不要把它当成微信的第一条消息，也不要照抄：',
+        [...firstMes].length > FIRST_MES_CONTEXT_CHARS
+          ? `${[...firstMes].slice(0, FIRST_MES_CONTEXT_CHARS).join('')}…`
+          : firstMes,
+      ].join('\n')
+    : '';
+  const plotSection = extras.plotProgress
+    ? [PLOT_PROGRESS_HEADER, extras.plotProgress, PLOT_PROGRESS_FOOTER].join('\n')
+    : '';
+  const presetSection = extras.presetText?.trim()
+    ? [
+        '【预设】',
+        '以下是主聊天所用预设里的提示词，角色扮演的规则与写法按这里来（最高优先级）；但回复的格式仍是微信短消息（1–3 句短句），不要套用预设里主聊天的正文包裹格式、不要输出那类标签（比如 <game>、<summary>、<options>）。',
+        extras.presetText.trim(),
+      ].join('\n')
+    : '';
+  return [
+    framing,
+    ...identity,
+    settingsSection,
+    lorebookSection,
+    firstMesSection,
+    plotSection,
+    INDEPENDENCE,
+    THINK_FIRST,
+    NO_OOC,
+    SHORT_STYLE,
+    TOOLS,
+    presetSection,
+  ]
     .filter(Boolean)
     .join('\n');
 }
