@@ -12,7 +12,7 @@
  *   - 日记按聊天存 IndexedDB（`rpnow:phone:diary:<chatId>`），最新在前，
  *     关掉重开还在；老聊天第一次打开是空的，不触发重新初始化；“重置”
  *     会连日记一起清掉。联系人和微信共用同一份缓存：只读，不初始化——
- *     还没初始化过就提示先去微信认识卡里的人。
+ *     联系人是空的（主聊天还没产出隐藏数据块）就提示主聊天里聊出新人物后再来。
  *   - 不写世界书、不花钱、不动好感度；输入用真实输入框，不用插件的
  *     prompt() 弹窗。
  */
@@ -242,7 +242,7 @@ export function Diary({
             </p>
             {contacts !== null && contacts.length === 0 && (
               <p className="mt-2 text-[13px] text-neutral-400">
-                还没有联系人：先去微信里认识卡里的人，回来再让 TA 写。
+                还没有联系人：主聊天里聊出新人物后，回来再让 TA 写。
               </p>
             )}
           </div>
@@ -311,7 +311,7 @@ export function Diary({
               ))}
               {(contacts ?? []).length === 0 && (
                 <p className="py-4 text-center text-sm text-neutral-500">
-                  还没有联系人：先去微信里认识卡里的人，回来再让 TA 写。
+                  还没有联系人：主聊天里聊出新人物后，回来再让 TA 写。
                 </p>
               )}
             </div>

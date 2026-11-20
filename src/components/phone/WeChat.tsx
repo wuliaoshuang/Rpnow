@@ -1296,7 +1296,7 @@ export function WeChat({
             </p>
           ) : (listItems?.length ?? 0) === 0 ? (
             <p className="px-4 py-8 text-center text-sm text-neutral-500">
-              卡里没有提到其他人，微信里暂时没有联系人。
+              微信里暂时没有联系人。主聊天里聊出新人物后，这里就会出现。
             </p>
           ) : (
             (listItems ?? []).map((item) =>
@@ -1420,7 +1420,7 @@ export function WeChat({
               </div>
               {(contacts ?? []).length === 0 && (
                 <p className="py-4 text-center text-sm text-neutral-500">
-                  卡里没有提到其他人，建不了群。
+                  暂时没有联系人，建不了群。
                 </p>
               )}
             </div>
