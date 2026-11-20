@@ -8,7 +8,10 @@
  * 小手机是独立系统：回复只认角色本身是谁和微信自己的聊天记录，不跟主线
  * 剧情走（见 `@/core/phone/reply.js`）。旧逻辑存的缓存（主角开场白就是卡
  * 的 first_mes 原文）会在打开时丢掉、重新初始化，并把主角存过的微信记录
- * 第一条也换成新开场白。
+ * 第一条也换成新开场白。角色还是个 Agent：回复时模型能自己调发图和发表
+ * 情包两个工具（见 `@/core/phone/tools.js`），用户要看图就真发一张图，
+ * 想表达情绪就发表情包，不只靠文字；不支持工具调用的提供商改走文字里的
+ * `[发图：…]` / `[表情：…]` 标记兜底。
  */
 import * as React from 'react';
 import { ChevronLeft, Image as ImageIcon, Plus, Send, Settings } from 'lucide-react';
@@ -16,10 +19,16 @@ import { useApp } from '@/state/store.js';
 import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { uid } from '@/lib/utils.js';
 import type { RPCard } from '@/core/types/card.js';
-import type { LLMMessage } from '@/core/llm/types.js';
-import type { PhoneContact, PhoneMessage } from '@/core/phone/types.js';
+import type { LLMMessage, LLMResult } from '@/core/llm/types.js';
+import type { PhoneContact, PhoneMessage, StickerEmotion } from '@/core/phone/types.js';
 import { fallbackContacts, initContacts, isStaleContacts } from '@/core/phone/contacts.js';
 import { buildImagePromptMessages, buildReplySystemPrompt } from '@/core/phone/reply.js';
+import {
+  PHONE_TOOLS,
+  parseReplyMarkers,
+  parseSendImageArgs,
+  parseSendStickerArgs,
+} from '@/core/phone/tools.js';
 import {
   ensureChat,
   greetingMessage,
@@ -258,6 +267,131 @@ export function WeChat({
     [card, persist],
   );
 
+  /**
+   * 按一段描述生成一张图发给用户：先让模型按角色形象写正面提示词，
+   * 再调生图工具（正面提示词＋画师串、负面提示词按配置来），存进相册。
+   *
+   * “＋”按钮（用输入框的文字）和 Agent 的 send_image 工具调用
+   * （用工具的 description）都走这里。生成中的状态提示同一条，就地更新。
+   */
+  const generateImageFromDescription = React.useCallback(
+    async (contact: PhoneContact, description: string) => {
+      if (generating) return;
+      const rawPrompt = description.trim() || `${contact.name}，精美插画`;
+      const connectionId = phone.imageConnectionId || imageConnections[0]?.id || '';
+      if (!image || !connectionId) {
+        appendMessages(contact, [
+          makeMessage({
+            role: 'system',
+            type: 'text',
+            content: '还没配置生图连接，先到「设置 → 生图」里添加一个',
+          }),
+        ]);
+        return;
+      }
+      setGenerating(true);
+      // Agent 流程：先让模型按角色形象写正面提示词，再调生图工具。
+      // 画师串和负面提示词是用户在设置里配好的，模型不管，只拼进去。
+      const llmConnectionId = phone.chatConnectionId || settings.defaultConnectionId || '';
+      const llmConnection = llmConnections.find((c) => c.id === llmConnectionId);
+      const useAgent = Boolean(llm && llmConnection);
+      const note = makeMessage({
+        role: 'system',
+        type: 'text',
+        content: useAgent ? '正在想要画什么…' : '正在生成图片…',
+      });
+      appendMessages(contact, [note]);
+      let positivePrompt = rawPrompt;
+      if (useAgent && llm && llmConnection) {
+        try {
+          const model = phone.chatModel || llmConnection.defaultModel || '';
+          const result = await llm.complete(llmConnectionId, {
+            model,
+            messages: buildImagePromptMessages(card, contact, rawPrompt),
+            temperature: 0.7,
+            maxTokens: 300,
+          });
+          const agentPrompt = result.text.trim();
+          if (agentPrompt) positivePrompt = agentPrompt;
+        } catch {
+          // 模型写不出来就用用户原话，不挡生图。
+        }
+      }
+      const artistTags = normalizeTags(phone.imageArtistTags ?? '');
+      const prompt = artistTags ? `${positivePrompt}, ${artistTags}` : positivePrompt;
+      const negativePrompt = phone.imageNegativePrompt?.trim() || undefined;
+      updateNote(contact, note.id, '正在生成图片…');
+      try {
+        const results = await image.generate(connectionId, {
+          prompt,
+          ...(negativePrompt ? { negativePrompt } : {}),
+          size: phone.imageSize ?? 'square',
+          model: phone.imageModel || undefined,
+        });
+        const first = results[0];
+        if (!first) throw new Error('没有生成出图片');
+        const blob = await dataUrlToBlob(first.dataUrl);
+        const saved = await saveMediaImage(blob, {
+          chatId,
+          cardId: card.id,
+          prompt,
+          provider: first.provider,
+          model: first.model,
+          // 手机里生的图进相册留存。
+          source: 'phone',
+        });
+        appendMessages(contact, [
+          makeMessage({
+            role: 'assistant',
+            type: 'image',
+            content: prompt,
+            imageSrc: mediaRef(saved.id),
+          }),
+        ]);
+      } catch (err) {
+        appendMessages(contact, [
+          makeMessage({
+            role: 'system',
+            type: 'text',
+            content: `生成图片失败：${err instanceof Error ? err.message : String(err)}`,
+          }),
+        ]);
+      } finally {
+        setGenerating(false);
+      }
+    },
+    [
+      appendMessages,
+      card,
+      chatId,
+      generating,
+      image,
+      imageConnections,
+      llm,
+      llmConnections,
+      phone.chatConnectionId,
+      phone.chatModel,
+      phone.imageArtistTags,
+      phone.imageConnectionId,
+      phone.imageModel,
+      phone.imageNegativePrompt,
+      phone.imageSize,
+      settings.defaultConnectionId,
+      updateNote,
+    ],
+  );
+
+  /**
+   * Agent 回复：把发图和发表情包两个工具交给模型，让它自己决定用不用。
+   *
+   * 流程：带 tools 调一次模型 → 文字照常发；工具调用按顺序执行
+   * （发图先走 PR #33 的 Agent 生图流程，表情包挑一张现成的贴纸）；
+   * 有的提供商不支持工具调用会直接拒绝请求，那就去掉 tools 再试一次，
+   * 模型改用文字里的 `[发图：…]` / `[表情：…]` 标记也能达到同样效果
+   * （标记从显示的文字里去掉）。工具调用优先：有工具调用时，同类标记
+   * 只当没写过。最后，没有通过工具或标记发过表情包、且文字情绪明显
+   * 时，照旧按情绪补一张。发送顺序：文字 → 图片 → 表情包。
+   */
   const requestReply = React.useCallback(
     async (contact: PhoneContact, history: PhoneMessage[]) => {
       const connectionId = phone.chatConnectionId || settings.defaultConnectionId || '';
@@ -289,21 +423,58 @@ export function WeChat({
                 : '[表情]',
         })),
       ];
+      const baseRequest = {
+        model,
+        messages: llmMessages,
+        temperature: 0.8,
+        maxTokens: 300,
+      };
       setBusy(true);
       try {
-        const result = await llm.complete(connectionId, {
-          model,
-          messages: llmMessages,
-          temperature: 0.8,
-          maxTokens: 300,
-        });
-        const replyText = result.text.trim();
-        if (!replyText) return;
-        const reply = makeMessage({ role: 'assistant', type: 'text', content: replyText });
-        appendMessages(contact, [reply]);
-        // 情绪贴纸：中性不贴。
-        const emotion = detectEmotion(replyText);
-        if (emotion !== 'neutral') {
+        let result: LLMResult;
+        try {
+          result = await llm.complete(connectionId, {
+            ...baseRequest,
+            tools: PHONE_TOOLS,
+            toolChoice: 'auto',
+          });
+        } catch {
+          // 提供商可能不支持工具调用：去掉 tools 再试一次，纯文字
+          // 回复一定能回来；模型改用标记也能发图/发表情包。
+          result = await llm.complete(connectionId, baseRequest);
+        }
+        const toolCalls = result.toolCalls ?? [];
+        const markers = parseReplyMarkers(result.text ?? '');
+        const hasImageTool = toolCalls.some((tc) => tc.name === 'send_image');
+        const hasStickerTool = toolCalls.some((tc) => tc.name === 'send_sticker');
+        const imageDescriptions: string[] = [];
+        for (const tc of toolCalls) {
+          if (tc.name === 'send_image') {
+            const description = parseSendImageArgs(tc.arguments);
+            if (description) imageDescriptions.push(description);
+          }
+        }
+        if (!hasImageTool) imageDescriptions.push(...markers.imageDescriptions);
+        const stickerEmotions: StickerEmotion[] = [];
+        for (const tc of toolCalls) {
+          if (tc.name === 'send_sticker') {
+            const emotion = parseSendStickerArgs(tc.arguments);
+            if (emotion) stickerEmotions.push(emotion);
+          }
+        }
+        if (!hasStickerTool) stickerEmotions.push(...markers.stickerEmotions);
+
+        const text = markers.cleanText;
+        let sentSticker = false;
+        if (text) {
+          appendMessages(contact, [
+            makeMessage({ role: 'assistant', type: 'text', content: text }),
+          ]);
+        }
+        for (const description of imageDescriptions) {
+          await generateImageFromDescription(contact, description);
+        }
+        for (const emotion of stickerEmotions) {
           const stickerUrl = pickSticker(emotion);
           if (stickerUrl) {
             appendMessages(contact, [
@@ -314,6 +485,24 @@ export function WeChat({
                 stickerUrl,
               }),
             ]);
+            sentSticker = true;
+          }
+        }
+        // 情绪贴纸兜底：没有通过工具或标记发过表情包、且文字情绪明显时照旧发一张。
+        if (!sentSticker && text) {
+          const emotion = detectEmotion(text);
+          if (emotion !== 'neutral') {
+            const stickerUrl = pickSticker(emotion);
+            if (stickerUrl) {
+              appendMessages(contact, [
+                makeMessage({
+                  role: 'assistant',
+                  type: 'sticker',
+                  content: '',
+                  stickerUrl,
+                }),
+              ]);
+            }
           }
         }
       } catch (err) {
@@ -331,6 +520,7 @@ export function WeChat({
     [
       appendMessages,
       card,
+      generateImageFromDescription,
       llm,
       llmConnections,
       phone.chatConnectionId,
@@ -351,91 +541,11 @@ export function WeChat({
     void requestReply(contact, next);
   };
 
-  const generateImage = async () => {
+  /** “＋”里的生图按钮：用输入框的文字调同一条 Agent 生图流程。 */
+  const generateImage = () => {
     const contact = selected;
-    if (!contact || generating) return;
-    const rawPrompt = imagePrompt.trim() || `${contact.name}，精美插画`;
-    const connectionId = phone.imageConnectionId || imageConnections[0]?.id || '';
-    if (!image || !connectionId) {
-      appendMessages(contact, [
-        makeMessage({
-          role: 'system',
-          type: 'text',
-          content: '还没配置生图连接，先到「设置 → 生图」里添加一个',
-        }),
-      ]);
-      return;
-    }
-    setGenerating(true);
-    // Agent 流程：先让模型按角色形象写正面提示词，再调生图工具。
-    // 画师串和负面提示词是用户在设置里配好的，模型不管，只拼进去。
-    const llmConnectionId = phone.chatConnectionId || settings.defaultConnectionId || '';
-    const llmConnection = llmConnections.find((c) => c.id === llmConnectionId);
-    const useAgent = Boolean(llm && llmConnection);
-    const note = makeMessage({
-      role: 'system',
-      type: 'text',
-      content: useAgent ? '正在想要画什么…' : '正在生成图片…',
-    });
-    appendMessages(contact, [note]);
-    let positivePrompt = rawPrompt;
-    if (useAgent && llm && llmConnection) {
-      try {
-        const model = phone.chatModel || llmConnection.defaultModel || '';
-        const result = await llm.complete(llmConnectionId, {
-          model,
-          messages: buildImagePromptMessages(card, contact, rawPrompt),
-          temperature: 0.7,
-          maxTokens: 300,
-        });
-        const agentPrompt = result.text.trim();
-        if (agentPrompt) positivePrompt = agentPrompt;
-      } catch {
-        // 模型写不出来就用用户原话，不挡生图。
-      }
-    }
-    const artistTags = normalizeTags(phone.imageArtistTags ?? '');
-    const prompt = artistTags ? `${positivePrompt}, ${artistTags}` : positivePrompt;
-    const negativePrompt = phone.imageNegativePrompt?.trim() || undefined;
-    updateNote(contact, note.id, '正在生成图片…');
-    try {
-      const results = await image.generate(connectionId, {
-        prompt,
-        ...(negativePrompt ? { negativePrompt } : {}),
-        size: phone.imageSize ?? 'square',
-        model: phone.imageModel || undefined,
-      });
-      const first = results[0];
-      if (!first) throw new Error('没有生成出图片');
-      const blob = await dataUrlToBlob(first.dataUrl);
-      const saved = await saveMediaImage(blob, {
-        chatId,
-        cardId: card.id,
-        prompt,
-        provider: first.provider,
-        model: first.model,
-        // 手机里生的图进相册留存。
-        source: 'phone',
-      });
-      appendMessages(contact, [
-        makeMessage({
-          role: 'assistant',
-          type: 'image',
-          content: prompt,
-          imageSrc: mediaRef(saved.id),
-        }),
-      ]);
-    } catch (err) {
-      appendMessages(contact, [
-        makeMessage({
-          role: 'system',
-          type: 'text',
-          content: `生成图片失败：${err instanceof Error ? err.message : String(err)}`,
-        }),
-      ]);
-    } finally {
-      setGenerating(false);
-    }
+    if (!contact) return;
+    void generateImageFromDescription(contact, imagePrompt);
   };
 
   // ---------------- 联系人列表 ----------------

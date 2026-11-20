@@ -96,6 +96,26 @@ describe('buildReplySystemPrompt', () => {
       expect(prompt).toContain('1–3 句');
     }
   });
+
+  it('讲清楚发图和发表情包两个工具怎么用', () => {
+    for (const contact of [mainContact, otherContact]) {
+      const prompt = buildReplySystemPrompt(fakeCard(), contact);
+      expect(prompt).toContain('send_image');
+      expect(prompt).toContain('send_sticker');
+      expect(prompt).toContain('调用发图工具发一张真的图');
+      expect(prompt).toContain('不要只在文字里说“我拍了照片”却不发图');
+      expect(prompt).toContain('发表情包');
+      expect(prompt).toContain('先回一句文字，再发图或表情包');
+    }
+  });
+
+  it('调用不了工具时，教模型用 [发图：…] / [表情：…] 标记', () => {
+    for (const contact of [mainContact, otherContact]) {
+      const prompt = buildReplySystemPrompt(fakeCard(), contact);
+      expect(prompt).toContain('[发图：这张图的内容]');
+      expect(prompt).toContain('[表情：开心/难过/害羞/惊讶/亲昵/生气]');
+    }
+  });
 });
 
 describe('buildImagePromptMessages', () => {
