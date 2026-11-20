@@ -2337,7 +2337,7 @@ export function ChatView({
           toast.success('已设为角色头像');
         }}
       />
-      <MiniPhone open={phoneOpen} onOpenChange={setPhoneOpen} />
+      <MiniPhone open={phoneOpen} onOpenChange={setPhoneOpen} chatId={chat.id} card={card} />
       </div>
     </div>
   );

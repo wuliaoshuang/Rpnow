@@ -1,9 +1,11 @@
 /**
  * Phone types — the "小手机" (Mini Phone) simulation.
  *
- * The phone is a fake phone inside the app: a home screen with app icons,
- * currently only 微信 (WeChat). A WeChat contact is one of the user's
- * character cards; each contact keeps its own chat history, persisted in
+ * The phone is a fake phone inside the app: a home screen with app icons
+ * （微信、相册）. A WeChat contact is a person who appears in the current
+ * chat's card — the main character plus anyone the card mentions — found
+ * once by the model when the phone is first opened for that chat, then
+ * cached per chat. Each contact keeps its own chat history, persisted in
  * IndexedDB so closing the phone (or the app) keeps it.
  */
 
@@ -24,9 +26,27 @@ export interface PhoneMessage {
   createdAt: number;
 }
 
-/** One WeChat conversation — one per character card. */
+/** One WeChat contact — a person who appears in the current chat's card. */
+export interface PhoneContact {
+  /**
+   * Stable id. The main character uses the card id (so the chat history
+   * saved before this change keeps working); other people use `c_<uid>`.
+   */
+  id: string;
+  name: string;
+  /** 和主角的关系，如“本人”“闺蜜”“哥哥”。 */
+  relation: string;
+  /** 它发来的第一条消息（微信口吻）。主角用卡的 first_mes。 */
+  openingMessage: string;
+  /** 是否主角（卡本身）。 */
+  isMain: boolean;
+}
+
+/** One WeChat conversation — one per contact. */
 export interface WeChatChat {
   cardId: string;
+  /** 哪个联系人的会话：主角就是 cardId，其他人是联系人 id。 */
+  contactId: string;
   messages: PhoneMessage[];
   updatedAt: number;
 }

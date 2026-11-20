@@ -36,6 +36,8 @@ export interface GeneratedImageMeta {
   mime: string;
   /** Blob size in bytes. */
   size: number;
+  /** 哪来的图：'phone' = 小手机里生成的，进相册留存。 */
+  source?: 'phone';
 }
 
 const mediaStore: UseStore = createStore('rpnow-media', 'media');
@@ -70,7 +72,7 @@ export async function dataUrlToBlob(dataUrl: string): Promise<Blob> {
  */
 export async function saveMediaImage(
   blob: Blob,
-  meta: Partial<Pick<GeneratedImageMeta, 'chatId' | 'cardId' | 'prompt' | 'provider' | 'model'>> = {},
+  meta: Partial<Pick<GeneratedImageMeta, 'chatId' | 'cardId' | 'prompt' | 'provider' | 'model' | 'source'>> = {},
 ): Promise<GeneratedImageMeta> {
   const id = `img_${uid()}`;
   const record: GeneratedImageMeta = {
