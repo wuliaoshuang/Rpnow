@@ -24,7 +24,7 @@
  * 插件那套 Rpnow 故意没搬：插件是整个群一次模型调用、让模型按
  * `{groupchat:角色名:...}` 标记语言自己决定谁说话，没有工具调用、
  * 没有防自动生图守门。Rpnow 里每个回的成员各调一次已有的回复流程
- * （自己的 system prompt + send_image / send_sticker 工具 + PR #40
+ * （自己的 system prompt + `{chat}/{image}/{sticker}` 标记解析 + PR #40
  * 守门 + Tag 转写 + 人数强制），不在提示词里求模型“只回一个人”。
  */
 import { uid } from '@/lib/utils.js';

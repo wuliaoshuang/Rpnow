@@ -16,7 +16,7 @@
  * 假模型：按提示词里的标记认出是哪种调用——初始化（“角色卡解析助手”）
  * 回联系人 JSON；日记（“第一人称写一篇日记”）回一段日记；占星师回带标签
  * 的运势（健康那次故意回空，验静态兜底）；塔罗占卜师回一段解读；微信回复
- * 按“你要扮演「X」”认人，永远带一个 send_image 工具调用（验守门）。
+ * 按“你要扮演「X」”认人，永远带一个 {image:…} 标记（验守门）。
  */
 import { createServer } from 'node:http';
 import { chromium } from 'playwright';
@@ -123,36 +123,25 @@ const mock = createServer((req, res) => {
         sseReply(res, [{ content: '星星指引着你，今天适合抬头看看夜空，好运正在路上。' }]);
         return;
       }
+      // 微信回复：按 system prompt 里的“你要扮演「X」”认人。
+      // 注意：回复的 system prompt 里“回复格式”那一节也提到了 Danbooru
+      // 标签，所以回复判断要在 Tag 转写之前，不然回复会被当成转写调用。
+      if (allText.includes('你要扮演')) {
+        const who = allText.match(/你要扮演「([^」]+)」/)?.[1] ?? '成员';
+        // 永远带一个 {image:…} 标记：用户要图时才该真发出来，
+        // 没要图时守门必须拦住（标记版）。
+        sseReply(res, [
+          {
+            content: `{chat:我是${who}，收到啦。}{image:在宿舍楼下拍的照片 ||| 1girl, solo, dorm building}`,
+          },
+        ]);
+        return;
+      }
       // Tag 转写：回一串 Danbooru 标签。
       if (allText.includes('Danbooru')) {
         sseReply(res, [
           { content: '1girl, solo, long black hair, school uniform, dorm building exterior, masterpiece, very aesthetic, no text' },
         ]);
-        return;
-      }
-      // 微信回复：按 system prompt 里的“你要扮演「X」”认人。
-      if (allText.includes('你要扮演')) {
-        const who = allText.match(/你要扮演「([^」]+)」/)?.[1] ?? '成员';
-        const lastUser = [...(body.messages ?? [])].reverse().find((m) => m.role === 'user');
-        const userText = lastUser?.content ?? '';
-        const wantsImage = /发张图|发照片|发个图|自拍|看看你/.test(userText);
-        const toolDelta = {
-          tool_calls: [
-            {
-              index: 0,
-              id: 'call_1',
-              function: {
-                name: 'send_image',
-                arguments: JSON.stringify({ description: '在宿舍楼下拍的照片', people: 'solo' }),
-              },
-            },
-          ],
-        };
-        sseReply(
-          res,
-          [{ content: `我是${who}，收到啦。` }, toolDelta],
-          wantsImage ? 'tool_calls' : 'stop',
-        );
         return;
       }
       // 主聊天：普通文字回复。
