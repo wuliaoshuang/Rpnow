@@ -11,17 +11,20 @@
  * 再从显示的文字里去掉——用户看不到标记。
  */
 import type { LLMToolDef } from '@/core/llm/types.js';
-import type { StickerEmotion } from './types.js';
+import type { ImagePeople, StickerEmotion } from './types.js';
 
 /** 模型可调的工具名。 */
 export type PhoneToolName = 'send_image' | 'send_sticker';
+
+/** 生图的人数取值：solo 角色一个人 / duo 角色和用户两个人 / multi 三人以上。 */
+export const IMAGE_PEOPLE_VALUES: ImagePeople[] = ['solo', 'duo', 'multi'];
 
 /** 发图和发表情包两个工具的定义（标准 JSON Schema，供 LLMRequest.tools 用）。 */
 export const PHONE_TOOLS: LLMToolDef[] = [
   {
     name: 'send_image',
     description:
-      '给用户发一张图片。当用户让你发图、发照片、看看你，或者你提到自己拍了照片、想分享一张图的时候调用它；调用后图片会作为消息发给用户，你不需要在文字里再描述图片内容。description 里要写清楚现在的场景：角色现在在哪里、在做什么、周围有什么（比如“在老街法桐树下买凉皮，九月的阳光从树叶缝隙漏下来”），不要只写“我的照片”“自拍”这种没场景的话——这张图的画面就按 description 来画。',
+      '给用户发一张图片。当用户让你发图、发照片、看看你，或者你提到自己拍了照片、想分享一张图的时候调用它；调用后图片会作为消息发给用户，你不需要在文字里再描述图片内容。description 里要写清楚现在的场景：角色现在在哪里、在做什么、周围有什么（比如“在老街法桐树下买凉皮，九月的阳光从树叶缝隙漏下来”），不要只写“我的照片”“自拍”这种没场景的话——这张图的画面就按 description 来画。另外要判断这张图里有几个人（people）：角色一个人就是 solo；角色和用户两个人一起就是 duo；三人以上（角色、用户和其他人）就是 multi——按现在的场景和对话来定，不要默认只画一个人。',
     parameters: {
       type: 'object',
       properties: {
@@ -29,8 +32,14 @@ export const PHONE_TOOLS: LLMToolDef[] = [
           type: 'string',
           description: '这张图的内容：写清楚角色现在在哪里、在做什么、周围的环境，比如“在老街法桐树下买凉皮”。不要只写“我的照片”“自拍”。',
         },
+        people: {
+          type: 'string',
+          description:
+            '这张图里有几个人：solo 是角色一个人；duo 是角色和用户两个人；multi 是三人以上（角色、用户和其他人）。根据现在的场景和对话判断——角色一个人在宿舍就是 solo，和用户一起自拍就是 duo，一群人在一起就是 multi。',
+          enum: IMAGE_PEOPLE_VALUES,
+        },
       },
-      required: ['description'],
+      required: ['description', 'people'],
     },
   },
   {
@@ -60,11 +69,25 @@ export function parseToolArguments<T>(args: string): T | null {
   }
 }
 
-/** 解析 send_image 的 arguments，取到图的描述；取不到返回 null。 */
-export function parseSendImageArgs(args: string): string | null {
-  const parsed = parseToolArguments<{ description?: unknown }>(args);
+/** send_image 的 arguments：图的描述 + 图里有几个人。 */
+export interface SendImageArgs {
+  description: string;
+  people: ImagePeople;
+}
+
+/**
+ * 解析 send_image 的 arguments，取到图的描述和人数；描述取不到返回 null。
+ * 人数不在 solo / duo / multi 里、或者模型没给时按 solo 算（老行为安全）。
+ */
+export function parseSendImageArgs(args: string): SendImageArgs | null {
+  const parsed = parseToolArguments<{ description?: unknown; people?: unknown }>(args);
   const description = typeof parsed?.description === 'string' ? parsed.description.trim() : '';
-  return description || null;
+  if (!description) return null;
+  const people =
+    typeof parsed?.people === 'string' && (IMAGE_PEOPLE_VALUES as string[]).includes(parsed.people)
+      ? (parsed.people as ImagePeople)
+      : 'solo';
+  return { description, people };
 }
 
 const TOOL_EMOTIONS: StickerEmotion[] = [

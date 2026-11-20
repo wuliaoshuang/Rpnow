@@ -5,7 +5,13 @@
 import { describe, expect, it } from 'vitest';
 import type { RPCard } from '@/core/types/card.js';
 import type { PhoneContact } from './types.js';
-import { buildImagePromptMessages, buildReplySystemPrompt, enforceSoloPrompt } from './reply.js';
+import {
+  buildImagePromptMessages,
+  buildReplySystemPrompt,
+  enforceComposition,
+  enforceSoloPrompt,
+  inferPeopleFromRequest,
+} from './reply.js';
 
 const SCENARIO_MARKER = 'SCENARIO_花店里的一天，主人推门进来';
 const FIRST_MES_MARKER = 'FIRSTMES_她回头看过来，蓝色的眼睛里带着明显的水光';
@@ -74,6 +80,30 @@ describe('buildReplySystemPrompt', () => {
     expect(prompt).toContain('小雨');
     expect(prompt).toContain('闺蜜');
     expect(prompt).toContain('和闺蜜小雨一起开花店');
+  });
+
+  it('第一句就写明这是 role play：扮演角色，在叫微信的地方和用户聊天', () => {
+    for (const contact of [mainContact, otherContact]) {
+      const prompt = buildReplySystemPrompt(fakeCard(), contact);
+      expect(prompt).toContain('role play');
+      expect(prompt).toContain('角色扮演');
+      expect(prompt).toContain('你要扮演');
+      expect(prompt).toContain('一个叫微信的地方');
+      expect(prompt).toContain('和用户聊天');
+    }
+    expect(buildReplySystemPrompt(fakeCard(), mainContact)).toContain('你要扮演「李淑纯」');
+    expect(buildReplySystemPrompt(fakeCard(), otherContact)).toContain('你要扮演「小雨」');
+    expect(buildReplySystemPrompt(fakeCard(), otherContact)).toContain('「李淑纯」的闺蜜');
+  });
+
+  it('发图时要按场景判断图里有几个人，填 people 参数', () => {
+    for (const contact of [mainContact, otherContact]) {
+      const prompt = buildReplySystemPrompt(fakeCard(), contact);
+      expect(prompt).toContain('people');
+      expect(prompt).toContain('solo / duo / multi');
+      expect(prompt).toContain('你一个人');
+      expect(prompt).toContain('你和用户两个人');
+    }
   });
 
   it('写明这是独立的微信聊天，不是主线剧情的延续', () => {
@@ -175,6 +205,84 @@ describe('enforceSoloPrompt', () => {
   });
 });
 
+describe('enforceComposition', () => {
+  it('solo：和以前一样，删多人标签、开头是单人标记', () => {
+    expect(
+      enforceComposition(
+        '2girls, long blue hair, group, dorm building, multiple girls',
+        'solo',
+        'female',
+      ),
+    ).toBe('1girl, solo, long blue hair, dorm building');
+  });
+
+  it('duo：删掉 solo 和多人标签，换成双人标记，没有 solo', () => {
+    const out = enforceComposition(
+      '1girl, solo, long blue hair, school uniform, group, dorm building, multiple girls, masterpiece',
+      'duo',
+      'female',
+    );
+    expect(out.startsWith('2girls')).toBe(true);
+    expect(out).not.toContain('solo');
+    expect(out).not.toContain('1girl');
+    expect(out).not.toContain('group');
+    expect(out).not.toContain('multiple girls');
+    expect(out).toContain('long blue hair');
+    expect(out).toContain('dorm building');
+  });
+
+  it('duo：男角色用 2boys，未知性别按 2girls', () => {
+    expect(enforceComposition('school uniform, dorm building', 'duo', 'male')).toBe(
+      '2boys, school uniform, dorm building',
+    );
+    expect(enforceComposition('school uniform, dorm building', 'duo', 'unknown')).toBe(
+      '2girls, school uniform, dorm building',
+    );
+  });
+
+  it('multi：删掉 solo 和双人标签，换成多人标记', () => {
+    const out = enforceComposition(
+      '1girl, solo, 2girls, long blue hair, flower shop, group, masterpiece',
+      'multi',
+      'female',
+    );
+    expect(out.startsWith('multiple girls')).toBe(true);
+    expect(out).not.toContain('solo');
+    expect(out).not.toContain('1girl');
+    expect(out).not.toContain('2girls');
+    expect(out).not.toContain('group');
+    expect(out).toContain('long blue hair');
+    expect(out).toContain('flower shop');
+  });
+
+  it('multi：男角色用 multiple boys，未知性别用 group', () => {
+    expect(enforceComposition('school uniform, dorm building', 'multi', 'male')).toBe(
+      'multiple boys, school uniform, dorm building',
+    );
+    expect(enforceComposition('school uniform, dorm building', 'multi', 'unknown')).toBe(
+      'group, school uniform, dorm building',
+    );
+  });
+});
+
+describe('inferPeopleFromRequest', () => {
+  it('默认单人', () => {
+    expect(inferPeopleFromRequest('在宿舍楼下拍一张')).toBe('solo');
+    expect(inferPeopleFromRequest('花店门口的照片')).toBe('solo');
+  });
+
+  it('提到用户在画面里就是双人', () => {
+    expect(inferPeopleFromRequest('咱俩合张影')).toBe('duo');
+    expect(inferPeopleFromRequest('和我一起在宿舍楼下自拍')).toBe('duo');
+    expect(inferPeopleFromRequest('咱俩的合照')).toBe('duo');
+  });
+
+  it('提到一群人就是多人', () => {
+    expect(inferPeopleFromRequest('我们仨在花店门口合影')).toBe('multi');
+    expect(inferPeopleFromRequest('我们几个在宿舍楼下')).toBe('multi');
+  });
+});
+
 describe('buildImagePromptMessages', () => {
   it('带着角色的介绍和性格，让模型提炼外貌特征', () => {
     const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', []);
@@ -248,5 +356,47 @@ describe('buildImagePromptMessages', () => {
     // （要求里那句“先读最近的微信聊天记录”是写提示词的指令，不算对话段）。
     expect(userText).not.toContain('最近的微信聊天记录（按时间顺序');
     expect(userText).not.toContain('用户：');
+  });
+
+  it('不给人数默认 solo：只有角色一个人，不画其他人', () => {
+    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', []);
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('人数：solo');
+    expect(userText).toContain('只有这个角色一个人');
+    expect(userText).toContain('不要画用户');
+  });
+
+  it('duo：写清楚是角色和用户两个人，用户长相不要凭空编；其他联系人不在画面里不列', () => {
+    const messages = buildImagePromptMessages(fakeCard(), mainContact, '咱俩在宿舍楼下合影', [], {
+      people: 'duo',
+      others: [otherContact],
+    });
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('人数：duo');
+    expect(userText).toContain('这个角色和用户两个人');
+    expect(userText).toContain('不要凭空编一个精致长相');
+    expect(userText).toContain('和角色在一起的那个人');
+    expect(userText).not.toContain('图里可能出现的其他人');
+  });
+
+  it('multi：写清楚是三人以上，列出其他人，只画聊天记录里提到的', () => {
+    const messages = buildImagePromptMessages(fakeCard(), mainContact, '我们几个在花店门口合影', [], {
+      people: 'multi',
+      others: [otherContact],
+    });
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('人数：multi');
+    expect(userText).toContain('三人以上');
+    expect(userText).toContain('小雨（闺蜜）');
+    expect(userText).toContain('不要编场景里没有的人');
+  });
+
+  it('solo 时不列其他人', () => {
+    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', [], {
+      people: 'solo',
+      others: [otherContact],
+    });
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).not.toContain('图里可能出现的其他人');
   });
 });

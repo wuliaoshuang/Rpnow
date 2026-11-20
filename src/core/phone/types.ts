@@ -27,8 +27,15 @@ export interface PhoneMessage {
 }
 
 /**
+ * 生图的人数：solo 角色一个人 / duo 角色和用户两个人 / multi 三人以上。
+ * 回复模型按场景在 send_image 工具调用里给；模型不给时代码按 solo 算。
+ */
+export type ImagePeople = 'solo' | 'duo' | 'multi';
+
+/**
  * 联系人的性别：初始化时由模型按卡的内容判断一次，存下来备用。
- * 生图时用它决定单人强制标签（1girl / 1boy / solo）；
+ * 生图时用它决定人数标记（单人 1girl / 1boy / solo，双人 2girls / 2boys，
+ * 多人 multiple girls / multiple boys / group）；
  * 老缓存里没有这个字段时按 'unknown' 算。
  */
 export type PhoneContactGender = 'female' | 'male' | 'unknown';
