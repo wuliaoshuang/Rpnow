@@ -1,27 +1,39 @@
 /**
- * 联系人初始化 — 小手机的联系人是卡里提到的人物，不是卡的主角本人。
+ * 联系人初始化 — 小手机的联系人是从主聊天里产生的人物，不是卡的主角本人。
  *
- * 第一次打开一部聊天的小手机时，调一次模型，让它从卡的内容（介绍、性格、
- * 场景、开场白、示例对话）和世界书里找出提到的人物（世界书里的人物也
- * 不能漏）。卡的主角本人不是联系人——微信是主角的手机，联系人是主角
- * 世界里的其他人。结果按聊天缓存进 IndexedDB，之后直接读缓存，不再
- * 重复调模型。
+ * 第一次打开一部聊天的小手机时，调一次模型，让它从主聊天的消息记录里
+ * 找出在对话里出现过的人物：主聊天产生了这些信息，小手机再把它们填成
+ * 联系人。初始化只读主聊天的消息，不再主动去读世界书、预设和卡的字段
+ * 来找人——只在世界书里出现、还没在主聊天里露过面的人，不会进联系人
+ * 列表。结果按聊天缓存进 IndexedDB，之后直接读缓存，不再重复调模型。
+ *
+ * 初始化只从主聊天之外借两样东西，都是为了把关系算对、把主角排除，
+ * 不是用来找人的：
+ *   - 卡的主角名（card.data.name）：只用来排除主角本人；
+ *   - User 的身份（resolvePhoneUser，聊天的 persona）：只用来把每个
+ *     联系人的 relation 按 User 来算。
+ * 卡的介绍、性格、场景、开场白、示例对话一律不读；世界书一律不读。
  *
  * 每个联系人的 relation 是和 User（在微信里和他/她聊天的那个人）的关系，
  * 不是和主角的关系：初始化要先告诉模型 User 在这个故事里是谁（聊天的
- * persona），模型才能按 User 把关系算对；卡里没写这个人和 User 的关系
+ * persona），模型才能按 User 把关系算对；聊天里没写这个人和 User 的关系
  * 时不要编，relation 留空，和主角的关系写进 relationToMain。回复提示词
  * 里按 relation 写（“是用户的闺蜜”），模型才知道该怎么对 User。
  *
  * 每个联系人除了名字、关系、开场白，还带一条自己的人设（profile：性格、
- * 长相、关键特点，一两句，按卡里 / 世界书里写到的来，没写的不要编），
- * 回复时写进这个联系人自己的 system prompt，模型扮演他/她才不会 OOC。
+ * 长相、关键特点，一两句，按聊天里写到的来，没写的不要编），回复时写进
+ * 这个联系人自己的 system prompt，模型扮演他/她才不会 OOC。开场白也是
+ * 按聊天里这个人的说话口吻写的短消息，不照抄卡的 first_mes。
+ *
+ * 主聊天里消息很少、还没出现过其他人物时，联系人列表就是空的或很短——
+ * 这是正常的：联系人随着主聊天的推进长出来；想重新认一遍人，点“重置”
+ * 再初始化一次。不要为了凑数去读世界书补人。
  *
  * 解析失败、超时或模型没配好时，一律退回空列表（不编联系人）；调用方
  * 下次打开会再试一次。
  */
 import type { RPCard } from '@/core/types/card.js';
-import type { RPPersona } from '@/core/types/chat.js';
+import type { RPChatMessage, RPPersona } from '@/core/types/chat.js';
 import type { LLMMessage, LLMService } from '@/core/llm/types.js';
 import { uid } from '@/lib/utils.js';
 import type { PhoneContact, PhoneContactGender } from './types.js';
@@ -267,8 +279,48 @@ export function parseContactsJson(
   return contacts;
 }
 
+/** 初始化读主聊天的多少条消息：最近 30 条，够认出对话里出现过的人。 */
+export const INIT_CHAT_WINDOW = 30;
+/** 聊天记录里单条消息最多留多少字（和剧情进度一个压法，免得提示词被撑爆）。 */
+const INIT_CHAT_MESSAGE_MAX_CHARS = 200;
+
 /**
- * 初始化用的消息：把卡的全部内容和 User 的身份交给模型去找人。
+ * 把主聊天的消息压成一段对话记录，交给初始化的模型认人。
+ *
+ * 只留最近 INIT_CHAT_WINDOW 条：系统消息、隐藏消息、开场白（问候）和
+ * 空消息都不要；每条超过 200 字就截断；谁说的写清楚：用户还是主角。
+ * 主线还没聊起来（空的、或者只有开场白）就返回空字符串，调用方在
+ * 提示词里明说没有对话、不要编人。
+ */
+export function formatChatTranscript(messages: RPChatMessage[], characterName: string): string {
+  const usable = messages.filter(
+    (m) => m.role !== 'system' && !m.hidden && !m.isGreeting && m.content.trim().length > 0,
+  );
+  const recent = usable.slice(-INIT_CHAT_WINDOW);
+  if (recent.length === 0) return '';
+  return recent
+    .map((m) => {
+      const who = m.role === 'assistant' ? characterName : '用户';
+      const chars = [...m.content.trim()];
+      const content =
+        chars.length > INIT_CHAT_MESSAGE_MAX_CHARS
+          ? `${chars.slice(0, INIT_CHAT_MESSAGE_MAX_CHARS).join('')}…`
+          : chars.join('');
+      return `${who}：${content}`;
+    })
+    .join('\n');
+}
+
+/**
+ * 初始化用的消息：把主聊天的对话记录交给模型去找人。
+ *
+ * 联系人从主聊天里来：模型只看下面这段对话记录，找出在对话里出现过的
+ * 其他人物——人设、关系、开场白都按聊天里写到的来，聊天里没写到的不要
+ * 编。卡的介绍、性格、场景、开场白、示例对话一律不交给模型；世界书也
+ * 一律不读（只在世界书里出现、还没在主聊天里露过面的人，不进联系人）。
+ *
+ * 卡只借一个名字：主角名（card.data.name），只用来排除主角本人——
+ * 提示词里写明不要把主角算进去，解析时（parseContactsJson）也拦一道。
  *
  * User 的身份（user 参数）就是主聊天里 {{user}} 的那个人——聊天的
  * persona。模型得先知道 User 是谁，才能把每个联系人的关系按 User
@@ -277,25 +329,30 @@ export function parseContactsJson(
  */
 export function buildInitMessages(
   card: RPCard,
-  lorebookText = '',
+  chatMessages: RPChatMessage[] = [],
   user?: PhoneUserIdentity,
 ): LLMMessage[] {
-  const d = card.data;
-  const cardText = [
-    `角色名：${d.name}`,
-    d.description ? `介绍：${d.description}` : '',
-    d.personality ? `性格：${d.personality}` : '',
-    d.scenario ? `场景：${d.scenario}` : '',
-    d.first_mes ? `开场白：${d.first_mes}` : '',
-    d.mes_example ? `示例对话：${d.mes_example}` : '',
-    lorebookText.trim() ? `世界书内容：\n${lorebookText.trim()}` : '',
+  const transcript = formatChatTranscript(chatMessages, card.data.name);
+  const userText = [
+    '以下是主聊天的对话记录（按时间顺序，最近 30 条）：',
+    transcript.trim() ? transcript.trim() : '（主聊天里还没有对话，除了开场白之外没有可以找的人。）',
+    '',
+    `主角的名字是「${card.data.name}」——主角本人不是联系人，不要把主角算进去。`,
     // User 是谁：关系要按 User 来算，模型得先知道 User 在这个故事里是谁。
     user
       ? `User（在微信里和联系人聊天的那个人）在这个故事里的身份：名字是「${user.name}」${user.description.trim() ? `，介绍：${user.description.trim()}` : ''}。`
       : '本聊天没有单独定义 User 的身份（User 就是和主角聊天的人，没有另外的名字/人设）。',
-  ]
-    .filter(Boolean)
-    .join('\n');
+    '',
+    '请从上面的对话记录里找出在对话中出现过的其他人物（不要把卡的主角本人算进去），返回一个 JSON 数组。每个元素有六个字段：',
+    '{"name": "名字", "relation": "和 User 的关系，从 User 的角度写，比如 闺蜜/哥哥/室友/同事", "relationToMain": "和主角的关系，比如 闺蜜/哥哥", "openingMessage": "这个人第一次在微信上发来的消息", "gender": "这个人的性别，按对话里的表现判断：female 女 / male 男 / unknown 不知道", "profile": "这个人的人设（一两句）：性格、长相、关键特点，按对话里写到的来，没写到的不要编，没提到的写空字符串"}。',
+    'relation 是和 User 的关系，不是和主角的关系——不要把和主角的关系写进 relation 里；和主角的关系写进 relationToMain。',
+    '对话里写了这个人和 User 是什么关系，relation 就写什么；没写不要编，relation 写空字符串，relationToMain 写他/她和主角的关系。',
+    '找人的时候，只看上面的对话记录：对话里提到的人才算，只在别处（比如世界书、角色卡）出现、对话里没露过面的人不要放进来；',
+    '主角本人不是联系人，不要把主角的名字、不要把 relation 写成“本人”的条目放进来；如果对话里除了主角没有出现过其他人，只返回空数组 []。',
+    '写每条 openingMessage 之前，先想一想：这个人是谁、性格怎么样、和 User 是什么关系、和主角是什么关系、对话里发生了什么；想清楚了再写。',
+    'openingMessage 的要求：要像真人发微信，口语化、简短（1–2 句，最多 40 字），结合对话里的剧情跟对方打招呼或找对方；写的时候要保持在角色里，绝不跳出角色（不要 OOC），绝不提自己是 AI 或模型；绝不能照抄卡的开场白原文，不能带 *动作描写*，不能写成一大段角色扮演描写。',
+    '每个人的 profile 也要写：性格、长相、关键特点，一两句就够，按对话里写到的来，没写到的不要编、不要脑补；对话里对这个人只字没提的，profile 写空字符串。',
+  ].join('\n');
   return [
     {
       role: 'system',
@@ -303,34 +360,18 @@ export function buildInitMessages(
     },
     {
       role: 'user',
-      content: [
-        '以下是角色卡内容：',
-        cardText,
-        '',
-        '请从中找出提到的其他人物（不要把卡的主角本人算进去），返回一个 JSON 数组。每个元素有六个字段：',
-        '{"name": "名字", "relation": "和 User 的关系，从 User 的角度写，比如 闺蜜/哥哥/室友/同事", "relationToMain": "和主角的关系，比如 闺蜜/哥哥", "openingMessage": "这个人第一次在微信上发来的消息", "gender": "这个人的性别，按卡的内容判断：female 女 / male 男 / unknown 不知道", "profile": "这个人的人设（一两句）：性格、长相、关键特点，按卡里/世界书里写到的来，没写到的不要编，没提到的写空字符串"}。',
-        'relation 是和 User 的关系，不是和主角的关系——不要把和主角的关系写进 relation 里；和主角的关系写进 relationToMain。',
-        '卡里、世界书里、设定里写了这个人和 User 是什么关系，relation 就写什么；没写不要编，relation 写空字符串，relationToMain 写他/她和主角的关系。',
-        '找人的时候，卡的介绍、性格、场景、开场白、示例对话都要看；',
-        ...(lorebookText.trim()
-          ? ['世界书内容也要看——只在世界书里出现的人物也要找出来，不要漏掉。']
-          : []),
-        '主角本人不是联系人，不要把主角的名字、不要把 relation 写成“本人”的条目放进来；如果卡里除了主角没有提到其他人，只返回空数组 []。',
-        '写每条 openingMessage 之前，先想一想：这个人是谁、性格怎么样、和 User 是什么关系、和主角是什么关系、卡里的剧情是什么；想清楚了再写。',
-        'openingMessage 的要求：要像真人发微信，口语化、简短（1–2 句，最多 40 字），结合卡里的剧情跟对方打招呼或找对方；写的时候要保持在角色里，绝不跳出角色（不要 OOC），绝不提自己是 AI 或模型；绝不能照抄卡的开场白原文，不能带 *动作描写*，不能写成一大段角色扮演描写。',
-        '每个人的 profile 也要写：性格、长相、关键特点，一两句就够，按卡里、世界书里、设定里写到的来，没写到的不要编、不要脑补；卡里对这个人只字没提的，profile 写空字符串。',
-      ].join('\n'),
+      content: userText,
     },
   ];
 }
 
 /**
- * 调一次模型，找出卡里提到的人物。解析失败返回 null（调用方走兜底）。
- * 30 秒超时，避免初始化一直转圈。
+ * 调一次模型，从主聊天的对话记录里找出出现过的人物。解析失败返回
+ * null（调用方走兜底）。30 秒超时，避免初始化一直转圈。
  *
- * lorebookText 是世界书内容（lorebook.ts 的 lorebookTextForInit 算出来
- * 的）：初始化时还没对话可匹配，key 匹配会漏人，所以直接把世界书条目
- * 内容交给模型，让它把只在世界书里出现的人物也找出来。
+ * chatMessages 是主聊天的消息（调用方用 currentMessages 从 store 现取，
+ * 最近 30 条）：初始化只读这些消息，不读世界书、不读卡的字段——只在
+ * 世界书里出现、还没在主聊天里露过面的人，不会进联系人列表。
  *
  * user 是这个聊天的 User 身份（resolvePhoneUser 从聊天的 persona
  * 算出来）：初始化要告诉模型 User 是谁，联系人的 relation 才能按
@@ -341,12 +382,12 @@ export async function initContacts(
   llm: LLMService,
   connectionId: string,
   model: string,
-  lorebookText = '',
+  chatMessages: RPChatMessage[] = [],
   user?: PhoneUserIdentity,
 ): Promise<PhoneContact[] | null> {
   const result = await llm.complete(connectionId, {
     model,
-    messages: buildInitMessages(card, lorebookText, user),
+    messages: buildInitMessages(card, chatMessages, user),
     temperature: 0.3,
     maxTokens: 800,
     signal: AbortSignal.timeout(30_000),

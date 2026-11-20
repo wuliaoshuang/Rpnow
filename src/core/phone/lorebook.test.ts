@@ -12,7 +12,6 @@ import {
 import {
   cardBookToLorebook,
   getPhoneBooks,
-  lorebookTextForInit,
   selectLorebookText,
   type PhoneLorebookChat,
 } from './lorebook.js';
@@ -181,32 +180,6 @@ describe('selectLorebookText', () => {
     const text = selectLorebookText(fakeCard(), chat, [userBook()], DEFAULTS, [
       { role: 'user', content: '今天天气真好' },
     ], 10);
-    expect(text.endsWith('…')).toBe(true);
-    expect([...text].length).toBeLessThanOrEqual(11);
-  });
-});
-
-describe('lorebookTextForInit', () => {
-  it('卡的角色书 + 选中的用户世界书内容都在，初始化找人时能看到', () => {
-    const text = lorebookTextForInit(fakeCard(), chat, [userBook()]);
-    expect(text).toContain('花店的房东叫王阿姨');
-    expect(text).toContain('花店二楼住着一只叫年糕的猫');
-    expect(text).toContain('老街口有一家凉皮摊');
-  });
-
-  it('禁用的条目和空内容不进初始化输入', () => {
-    const text = lorebookTextForInit(fakeCard(), chat, [userBook()]);
-    expect(text).not.toContain('这条不应该出现');
-  });
-
-  it('没有世界书时返回空字符串', () => {
-    const card = fakeCard();
-    delete card.data.character_book;
-    expect(lorebookTextForInit(card, { ...chat, lorebookIds: [] }, [])).toBe('');
-  });
-
-  it('超预算截断', () => {
-    const text = lorebookTextForInit(fakeCard(), chat, [userBook()], 10);
     expect(text.endsWith('…')).toBe(true);
     expect([...text].length).toBeLessThanOrEqual(11);
   });

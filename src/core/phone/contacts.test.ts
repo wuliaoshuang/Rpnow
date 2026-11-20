@@ -9,7 +9,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { RPCard } from '@/core/types/card.js';
-import type { RPPersona } from '@/core/types/chat.js';
+import type { RPChatMessage, RPPersona } from '@/core/types/chat.js';
+import type { LLMService } from '@/core/llm/types.js';
 import {
   AFFECTION_DATE_UNLOCK,
   AFFECTION_MAX,
@@ -20,7 +21,10 @@ import {
   cleanOpeningMessage,
   displayRelation,
   fallbackContacts,
+  formatChatTranscript,
   hasUsableCache,
+  initContacts,
+  INIT_CHAT_WINDOW,
   isDateUnlocked,
   isPrivatePhotoUnlocked,
   parseContactsJson,
@@ -328,22 +332,109 @@ describe('displayRelation', () => {
   });
 });
 
+/** 主聊天的对话记录：小雨和阿杰在对话里出现过，王阿姨只在世界书里、对话里没有。 */
+function fakeChatMessages(): RPChatMessage[] {
+  return [
+    { id: 'm1', role: 'user', content: '今天小雨来花店帮忙，她说想学插花。', createdAt: 1 },
+    { id: 'm2', role: 'assistant', content: '小雨手很巧，让她先从包花束学起。', createdAt: 2 },
+    { id: 'm3', role: 'user', content: '阿杰刚才也来了，说下周带一批新花过来。', createdAt: 3 },
+    { id: 'm4', role: 'assistant', content: '阿杰每次来都带东西，让他别破费了。', createdAt: 4 },
+  ];
+}
+
+function initUserText(messages: RPChatMessage[], user?: { name: string; description: string }): string {
+  return (
+    buildInitMessages(fakeCard(), messages, user).find((m) => m.role === 'user')?.content ?? ''
+  );
+}
+
+describe('formatChatTranscript', () => {
+  it('只留最近 30 条（INIT_CHAT_WINDOW = 30），说话人写清楚：用户 / 主角名', () => {
+    expect(INIT_CHAT_WINDOW).toBe(30);
+    const messages: RPChatMessage[] = Array.from({ length: 35 }, (_, i) => ({
+      id: `m${i}`,
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `第${i + 1}句`,
+      createdAt: i,
+    }));
+    const text = formatChatTranscript(messages, '李淑纯');
+    expect(text).not.toContain('第1句');
+    expect(text).not.toContain('第5句');
+    expect(text).toContain('第6句');
+    expect(text).toContain('第35句');
+    expect(text).toContain('用户：第7句');
+    expect(text).toContain('李淑纯：第8句');
+  });
+
+  it('系统消息、隐藏消息、开场白和空消息都不要', () => {
+    const messages: RPChatMessage[] = [
+      { id: 's', role: 'system', content: '系统提示', createdAt: 1 },
+      { id: 'h', role: 'user', content: '藏起来的话', hidden: true, createdAt: 2 },
+      { id: 'g', role: 'assistant', content: '你来啦，今天想买点什么花？', isGreeting: true, createdAt: 3 },
+      { id: 'e', role: 'user', content: '   ', createdAt: 4 },
+      { id: 'u', role: 'user', content: '小雨今天来帮忙。', createdAt: 5 },
+    ];
+    const text = formatChatTranscript(messages, '李淑纯');
+    expect(text).toBe('用户：小雨今天来帮忙。');
+  });
+
+  it('只有开场白时返回空字符串', () => {
+    expect(
+      formatChatTranscript(
+        [{ id: 'g', role: 'assistant', content: '你来啦。', isGreeting: true, createdAt: 1 }],
+        '李淑纯',
+      ),
+    ).toBe('');
+  });
+
+  it('单条超 200 字截断，加“…”收尾', () => {
+    const text = formatChatTranscript(
+      [{ id: 'u', role: 'user', content: '小雨'.repeat(150), createdAt: 1 }],
+      '李淑纯',
+    );
+    expect(text.endsWith('…')).toBe(true);
+    expect([...text].length).toBeLessThanOrEqual('用户：'.length + 201);
+  });
+});
+
 describe('buildInitMessages', () => {
-  it('把卡的内容都交过去', () => {
-    const messages = buildInitMessages(fakeCard());
-    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
-    expect(userText).toContain('李淑纯');
-    expect(userText).toContain('闺蜜小雨');
-    expect(userText).toContain('哥哥阿杰');
+  it('初始化输入里有主聊天的对话记录（对话里出现过的小雨和阿杰）', () => {
+    const userText = initUserText(fakeChatMessages());
+    expect(userText).toContain('用户：今天小雨来花店帮忙');
+    expect(userText).toContain('李淑纯：小雨手很巧');
+    expect(userText).toContain('阿杰刚才也来了');
     expect(userText).toContain('JSON');
+    expect(userText).toContain('主聊天的对话记录');
+  });
+
+  it('初始化输入里没有卡的字段内容（介绍、性格、场景、开场白都不读）', () => {
+    const userText = initUserText(fakeChatMessages());
+    expect(userText).not.toContain('和闺蜜小雨一起开花店');
+    expect(userText).not.toContain('温柔细心');
+    expect(userText).not.toContain('花店里的一天');
+    expect(userText).not.toContain('你来啦，今天想买点什么花？');
+  });
+
+  it('初始化输入里没有世界书内容：只在世界书里的人不该出现在输入里', () => {
+    const userText = initUserText(fakeChatMessages());
+    expect(userText).not.toContain('世界书内容');
+    expect(userText).not.toContain('王阿姨');
+    expect(userText).not.toContain('每周三来收租');
+    expect(userText).toContain('只在别处');
+  });
+
+  it('主角名只用来排除主角本人', () => {
+    const userText = initUserText(fakeChatMessages());
+    expect(userText).toContain('李淑纯');
+    expect(userText).toContain('主角本人不是联系人');
+    expect(userText).toContain('不要把主角算进去');
   });
 
   it('传了 User 身份：初始化输入里有 User 是谁，relation 按 User 来算', () => {
-    const messages = buildInitMessages(fakeCard(), '', {
+    const userText = initUserText(fakeChatMessages(), {
       name: '转学生小林',
       description: '刚转学来的新生，和李淑纯同班',
     });
-    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain('转学生小林');
     expect(userText).toContain('刚转学来的新生');
     expect(userText).toContain('User');
@@ -353,17 +444,15 @@ describe('buildInitMessages', () => {
   });
 
   it('没传 User 身份：明说没有单独定义 User 的身份，不让模型猜', () => {
-    const messages = buildInitMessages(fakeCard());
-    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    const userText = initUserText(fakeChatMessages());
     expect(userText).toContain('没有单独定义 User 的身份');
   });
 
   it('提示词让模型把 relation 写成和 User 的关系、relationToMain 写成和主角的关系；没写不要编', () => {
-    const messages = buildInitMessages(fakeCard(), '', {
+    const userText = initUserText(fakeChatMessages(), {
       name: '转学生小林',
       description: '刚转学来的新生',
     });
-    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain('relationToMain');
     expect(userText).toContain('和 User 的关系');
     expect(userText).toContain('和主角的关系');
@@ -371,17 +460,22 @@ describe('buildInitMessages', () => {
     expect(userText).toContain('relation 写空字符串');
   });
 
-  it('提示词要求只找其他人物，不把主角本人算进去；没别人时返回空数组', () => {
-    const messages = buildInitMessages(fakeCard());
-    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
-    expect(userText).toContain('不要把卡的主角本人算进去');
+  it('提示词要求只找对话里出现过的人，不把主角本人算进去；没别人时返回空数组', () => {
+    const userText = initUserText(fakeChatMessages());
+    expect(userText).toContain('只看上面的对话记录');
+    expect(userText).toContain('不要把主角算进去');
     expect(userText).toContain('空数组 []');
     expect(userText).not.toContain('包括主角本人');
   });
 
-  it('提示词要求开场白短、按剧情写，不照抄 first_mes、不带动作描写', () => {
-    const messages = buildInitMessages(fakeCard());
-    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+  it('对话是空的：明说主聊天里还没有对话、不要编人', () => {
+    const userText = initUserText([]);
+    expect(userText).toContain('还没有对话');
+    expect(userText).toContain('空数组 []');
+  });
+
+  it('提示词要求开场白短、按对话里的剧情写，不照抄 first_mes、不带动作描写', () => {
+    const userText = initUserText(fakeChatMessages());
     expect(userText).toContain('40 字');
     expect(userText).toContain('照抄');
     expect(userText).toContain('*动作描写*');
@@ -389,8 +483,7 @@ describe('buildInitMessages', () => {
   });
 
   it('提示词要求写之前先想一想，写的时候保持在角色里、不 OOC、不提 AI', () => {
-    const messages = buildInitMessages(fakeCard());
-    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    const userText = initUserText(fakeChatMessages());
     expect(userText).toContain('先想一想');
     expect(userText).toContain('这个人是谁');
     expect(userText).toContain('不要 OOC');
@@ -398,36 +491,96 @@ describe('buildInitMessages', () => {
   });
 
   it('提示词让模型给每个人返回性别（female / male / unknown）', () => {
-    const messages = buildInitMessages(fakeCard());
-    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    const userText = initUserText(fakeChatMessages());
     expect(userText).toContain('gender');
     expect(userText).toContain('female');
     expect(userText).toContain('male');
     expect(userText).toContain('unknown');
   });
 
-  it('提示词让模型给每个人写人设（profile），按卡里/世界书里写到的来，没写的不要编', () => {
-    const messages = buildInitMessages(fakeCard());
-    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+  it('提示词让模型给每个人写人设（profile），按对话里写到的来，没写的不要编', () => {
+    const userText = initUserText(fakeChatMessages());
     expect(userText).toContain('profile');
     expect(userText).toContain('人设');
+    expect(userText).toContain('按对话里写到的来');
     expect(userText).toContain('不要编');
     expect(userText).toContain('空字符串');
   });
+});
 
-  it('传了世界书内容：初始化输入里有世界书一节，模型找人时连世界书里的人也找', () => {
-    const lorebookText = '花店的房东叫王阿姨，每周三来收租。';
-    const messages = buildInitMessages(fakeCard(), lorebookText);
-    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
-    expect(userText).toContain('世界书内容');
-    expect(userText).toContain('花店的房东叫王阿姨');
-    expect(userText).toContain('只在世界书里出现的人物也要找出来');
+describe('initContacts', () => {
+  /**
+   * 假模型：只读初始化请求里的对话记录，返回对话里出现过的人——
+   * 模拟真的模型按聊天认人。请求里没提到的名字，它也不会返回。
+   */
+  function chatReadingFakeLlm() {
+    const seen: { messages: { content?: string }[] }[] = [];
+    const llm = {
+      complete: async (
+        _connectionId: string,
+        req: { messages: { content?: string }[] },
+      ) => {
+        seen.push(req);
+        const text = req.messages.map((m) => m.content ?? '').join('\n');
+        const found = ['小雨', '阿杰'].filter((name) => text.includes(name));
+        return {
+          text: JSON.stringify(
+            found.map((name) => ({
+              name,
+              relation: '朋友',
+              relationToMain: '',
+              openingMessage: '在吗',
+              gender: 'female',
+              profile: '对话里提到的朋友',
+            })),
+          ),
+          toolCalls: [],
+        };
+      },
+    } as unknown as LLMService;
+    return { llm, seen };
+  }
+
+  it('从对话里找出出现过的人（小雨和阿杰），并且只找对话里的人', async () => {
+    const { llm, seen } = chatReadingFakeLlm();
+    const contacts = await initContacts(fakeCard(), llm, 'conn', 'model', fakeChatMessages());
+    expect(contacts?.map((c) => c.name).sort()).toEqual(['小雨', '阿杰']);
+    expect(contacts?.every((c) => c.affection === 0 && c.v === 2)).toBe(true);
+    // 发给模型的请求里有对话记录、没有世界书里的人。
+    const sent = seen[0]?.messages.map((m) => m.content ?? '').join('\n') ?? '';
+    expect(sent).toContain('小雨来花店帮忙');
+    expect(sent).not.toContain('王阿姨');
   });
 
-  it('没传世界书：初始化输入里没有世界书一节', () => {
-    const messages = buildInitMessages(fakeCard());
-    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
-    expect(userText).not.toContain('世界书内容');
+  it('对话里没出现过其他人：返回空列表，不编联系人', async () => {
+    const { llm } = chatReadingFakeLlm();
+    const onlyMain: RPChatMessage[] = [
+      { id: 'm1', role: 'user', content: '今天天气真好。', createdAt: 1 },
+      { id: 'm2', role: 'assistant', content: '是啊，适合开门营业。', createdAt: 2 },
+    ];
+    expect(await initContacts(fakeCard(), llm, 'conn', 'model', onlyMain)).toEqual([]);
+    expect(await initContacts(fakeCard(), llm, 'conn', 'model', [])).toEqual([]);
+  });
+
+  it('模型返回里混进主角本人：解析时拦住，不进联系人', async () => {
+    const llm = {
+      complete: async () => ({
+        text: JSON.stringify([
+          { name: '李淑纯', relation: '本人', openingMessage: '你好', gender: 'female', profile: '' },
+          { name: '小雨', relation: '朋友', openingMessage: '在吗', gender: 'female', profile: '对话里提到的朋友' },
+        ]),
+        toolCalls: [],
+      }),
+    } as unknown as LLMService;
+    const contacts = await initContacts(fakeCard(), llm, 'conn', 'model', fakeChatMessages());
+    expect(contacts?.map((c) => c.name)).toEqual(['小雨']);
+  });
+
+  it('模型返回解析不出来：返回 null（调用方走兜底）', async () => {
+    const llm = {
+      complete: async () => ({ text: '我不知道', toolCalls: [] }),
+    } as unknown as LLMService;
+    expect(await initContacts(fakeCard(), llm, 'conn', 'model', fakeChatMessages())).toBeNull();
   });
 });
 
