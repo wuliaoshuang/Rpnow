@@ -1135,6 +1135,51 @@ function ModelSettings() {
   // ------------------------------------------------------------ 列表页
   return (
     <div className="space-y-3">
+      {/* 小手机：微信里角色回复用的模型。空着 = 跟随主聊天的默认连接和模型。 */}
+      <div className="space-y-3 rounded-xl border border-[var(--rp-border)] bg-[var(--rp-bg-elevated)] p-3">
+        <div>
+          <h3 className="text-[13px] font-semibold">小手机</h3>
+          <p className="text-[11.5px] text-[var(--rp-fg-muted)]">
+            小手机里微信聊天的回复模型。连接和模型都空着时，跟随主聊天的默认连接。
+          </p>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="phone-chat-conn">聊天连接</Label>
+          <Select
+            value={settings.phone?.chatConnectionId ?? ''}
+            onValueChange={(v) =>
+              setSettings({ phone: { ...settings.phone, chatConnectionId: v || undefined } })
+            }
+          >
+            <SelectTrigger id="phone-chat-conn">
+              <SelectValue placeholder="跟随主聊天默认" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="">跟随主聊天默认</SelectItem>
+              {connections.map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.name}（{providerInfo(c.provider)?.label ?? c.provider}）
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="phone-chat-model">聊天模型</Label>
+          <Input
+            id="phone-chat-model"
+            value={settings.phone?.chatModel ?? ''}
+            onChange={(e) =>
+              setSettings({ phone: { ...settings.phone, chatModel: e.target.value || undefined } })
+            }
+            placeholder={
+              connections.find((c) => c.id === (settings.phone?.chatConnectionId || settings.defaultConnectionId))
+                ?.defaultModel || '默认模型'
+            }
+          />
+        </div>
+      </div>
+
       <div className="relative">
         <Search
           className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[var(--rp-fg-subtle)]"
