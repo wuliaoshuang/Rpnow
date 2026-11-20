@@ -67,6 +67,15 @@ describe('PHONE_TOOLS', () => {
     expect(params.properties.people.description).toContain('duo');
     expect(params.properties.people.description).toContain('multi');
   });
+
+  it('send_image 只在用户明确要图时调用：不主动发图，删掉“自己提到照片就发”的触发', () => {
+    const imageTool = PHONE_TOOLS.find((t) => t.name === 'send_image');
+    expect(imageTool?.description).toContain('只有当用户明确让你发图的时候');
+    expect(imageTool?.description).toContain('用户没让你发图，就不要调用它');
+    expect(imageTool?.description).toContain('不要自己主动发图');
+    expect(imageTool?.description).not.toContain('你提到自己拍了照片');
+    expect(imageTool?.description).not.toContain('想分享一张图');
+  });
 });
 
 describe('parseToolArguments', () => {

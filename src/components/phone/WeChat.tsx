@@ -30,6 +30,7 @@ import {
   buildReplySystemPrompt,
   enforceComposition,
   inferPeopleFromRequest,
+  looksLikeImageRequest,
 } from '@/core/phone/reply.js';
 import type { ChatHistoryEntry } from '@/core/phone/reply.js';
 import {
@@ -571,6 +572,17 @@ export function WeChat({
               people: 'solo' as ImagePeople,
             })),
           );
+        // 自动生图守门：只有用户这句明确要图时才发图。模型自己想发图
+        // （工具调用或 [发图：…] 标记）不算数——用户没要图就不生图，
+        // 不调生图接口，聊天里也不出现图；文字和表情包不受影响，照常发。
+        // “＋”按钮是用户自己点的，不走这里，不受这个守门限制。
+        const lastUserMessage = [...history]
+          .reverse()
+          .find((m) => m.role === 'user' && m.type === 'text');
+        const userAskedForImage = lastUserMessage
+          ? looksLikeImageRequest(lastUserMessage.content)
+          : false;
+        const imageRequestsToSend = userAskedForImage ? imageRequests : [];
         const stickerEmotions: StickerEmotion[] = [];
         for (const tc of toolCalls) {
           if (tc.name === 'send_sticker') {
@@ -588,7 +600,7 @@ export function WeChat({
           ]);
         }
         const otherContacts = (contacts ?? []).filter((c) => c.id !== contact.id);
-        for (const req of imageRequests) {
+        for (const req of imageRequestsToSend) {
           // 生图要带着最近的对话：模型得知道现在是什么场景，才能把角色画进场景里；
           // 人数是回复模型按场景定的，其他联系人一并给写提示词的模型当参考。
           await generateImageFromDescription(
