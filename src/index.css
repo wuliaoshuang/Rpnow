@@ -116,6 +116,21 @@ body {
   padding: 0;
 }
 
+/*
+ * 禁止页面缩放（PR #4 viewport meta 的补强）。
+ *
+ * index.html 的 meta 里已有 `maximum-scale=1.0, user-scalable=no`，但 iOS
+ * Safari 从 iOS 10 起忽略 `user-scalable=no`，`maximum-scale=1.0` 也拦不
+ * 住双击缩放。`touch-action: manipulation` 禁掉双击缩放，同时保留平移
+ * （滚动）和点按；捏合缩放再由 src/lib/noZoom.ts 的 `gesturestart` 拦截
+ * 补上。不要用 `touch-action: none`——那会连滚动一起禁掉。
+ * 放在 @layer 之外，和上面的根重置一样，确保不被 Tailwind preflight 盖掉。
+ */
+html,
+body {
+  touch-action: manipulation;
+}
+
 @layer base {
   /* Brand display font (bundled, offline-safe): Fraunces Italic — a modern
      "soft serif" with a genuine italic cut. Variable font: the weight axis is

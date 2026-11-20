@@ -3,6 +3,7 @@ const { StrictMode, useEffect, useState } = React;
 import { createRoot } from 'react-dom/client';
 import './index.css';
 import { boot, applyTheme } from './boot.js';
+import { installNoZoom } from './lib/noZoom.js';
 import { useApp } from './state/store.js';
 import { runtime } from './lib/runtime.js';
 import { AppShell, type Route } from './components/layout/AppShell.js';
@@ -46,6 +47,13 @@ import {
   UPDATE_POLL_INTERVAL_MS,
   type VersionInfo,
 } from './core/version.js';
+
+/**
+ * 禁止页面缩放的 iOS 补强（viewport meta 的搭档，见 src/lib/noZoom.ts）。
+ * 只拦捏合手势的 `gesturestart`，滚动、点按、键盘 inset 检测都不受影响。
+ * 在应用挂载前装好，这样整页（含小手机悬浮框、图片查看器）都受保护。
+ */
+installNoZoom();
 
 /**
  * The service worker only exists in a production web build.
