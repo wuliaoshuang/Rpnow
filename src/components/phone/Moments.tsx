@@ -26,8 +26,8 @@
  *     重开还在；老聊天第一次打开是空的，不触发重新初始化；“重置”会连
  *     朋友圈一起清掉（朋友圈属于这个聊天的手机）。
  *   - 联系人和微信共用同一份缓存（`rpnow:phone:contacts:<chatId>`）：
- *     微信第一次打开时初始化一次，这里只读缓存；还没初始化过（用户先
- *     点的朋友圈）就提示先去微信认识卡里的人。
+ *     这里只读缓存，不初始化；联系人是空的（用户先点的朋友圈、主聊天
+ *     还没产出隐藏数据块）就提示主聊天里聊出新人物后再来。
  */
 import * as React from 'react';
 import { AtSign, Camera, ChevronLeft, MapPin, Plus, Send, Trash2 } from 'lucide-react';
@@ -460,7 +460,7 @@ export function Moments({
             </p>
             {contacts !== null && contacts.length === 0 && (
               <p className="mt-2 text-[13px] text-neutral-400">
-                还没有联系人：先去微信里认识卡里的人，回来再发。
+                还没有联系人：主聊天里聊出新人物后，回来再发。
               </p>
             )}
           </div>
@@ -658,7 +658,7 @@ export function Moments({
               ))}
               {(contacts ?? []).length === 0 && (
                 <p className="py-4 text-center text-sm text-neutral-500">
-                  还没有联系人：先去微信里认识卡里的人，回来再发。
+                  还没有联系人：主聊天里聊出新人物后，回来再发。
                 </p>
               )}
             </div>

@@ -14,6 +14,9 @@
  *   (d) 再重开一次手机 → 同一个隐藏块被重复扫描，阿杰的微信记录里消息没有重复；
  *   (e) 一条带坏掉的隐藏块的回复 → 手机不崩，联系人、微信记录都不变；
  *   (f) 提示词查看器还是 14 节；预设书照常绑到聊天上。
+ *   (g) 手机开着的时候，主聊天来了一条带隐藏块的新消息 → 不用重开手机，
+ *       扫描 effect 直接把新人认出来（证明扫描不只在打开时跑）；
+ *   (h) 重置 → 联系人和微信记录都清掉，空状态显示新文案。
  *
  * 假模型按最新一条用户消息决定回什么：提到阿杰 → 阿杰块；提到小雨 →
  * 小雨块；提到“乱码” → 没闭合的坏块；其他 → 纯文本。旧的初始化请求
@@ -249,7 +252,7 @@ check('没有隐藏块时，联系人列表是空的', contacts.length === 0, `�
 check('初始化模型调用是 0 次（旧 PR #53 逻辑已删）', initBodies.length === 0, `初始化请求 ${initBodies.length} 个`);
 check('列表里没有小雨', await phone.locator('button:has-text("小雨")').count() === 0);
 check('列表里没有阿杰', await phone.locator('button:has-text("阿杰")').count() === 0);
-check('列表显示“暂时没有联系人”', await phone.locator('text=暂时没有联系人').count() >= 1);
+check('列表显示新空状态文案', await phone.locator('text=主聊天里聊出新人物后，这里就会出现').count() >= 1);
 const presetBound = await page.evaluate(async (id) => {
   const s = window.__rpnowStore.getState();
   const chat = s.chats.find((c) => c.id === id);
@@ -389,6 +392,66 @@ check(
   `实际 ${ajieChatAfterBroken?.messages.length}`,
 );
 check('初始化模型调用还是 0 次', initBodies.length === 0, `初始化请求 ${initBodies.length} 个`);
+
+// ---- (g) 手机开着的时候，主聊天来了一条带隐藏块的新消息：不用重开，联系人直接出现 ----
+// 手机还开着（上一步 (e) 结束时没关）。直接往主聊天里追加一条带隐藏块的
+// 回复（模拟主聊天模型刚回了一条），扫描 effect 订阅着主聊天变化，应该
+// 不用重开手机就把新人认出来。
+const AHAO_BLOCK =
+  '<!-- [小手机数据] {"characters":[{"name":"阿豪","profile":"开面馆的，话不多","relation":"朋友","relationToMain":"邻居","openingMessage":"今天的面多加了个蛋","gender":"male"}],"messages":[{"character":"阿豪","role":"character","content":"今天的面多加了个蛋，趁热吃"}]} -->';
+await page.evaluate(async (args) => {
+  const s = window.__rpnowStore.getState();
+  const chat = s.chats.find((c) => c.id === args.id);
+  await s.saveChat({
+    ...chat,
+    messages: [
+      ...(chat.messages ?? []),
+      {
+        id: `m-inject-${Date.now()}`,
+        role: 'assistant',
+        content: `阿豪今天也来了，还多加了个蛋。${args.block}`,
+        createdAt: Date.now(),
+      },
+    ],
+  });
+}, { id: chatId, block: AHAO_BLOCK });
+contacts = await waitForContacts((cs) => cs.some((c) => c.name === '阿豪'));
+check(
+  '手机开着时主聊天来了新隐藏块，不用重开，阿豪直接出现',
+  contacts.some((c) => c.name === '阿豪'),
+  `实际 ${contacts.map((c) => c.name).join(',')}`,
+);
+check('列表里直接有阿豪', await phone.locator('button:has-text("阿豪")').count() >= 1);
+const ahao = contacts.find((c) => c.name === '阿豪');
+const ahaoChat = await waitForWeChatChat(ahao.id, (c) => c.messages.length >= 2);
+const ahaoContents = ahaoChat?.messages.map((m) => `${m.role}:${m.content}`) ?? [];
+check(
+  '阿豪的微信记录里有开场白和那条新消息',
+  JSON.stringify(ahaoContents) === JSON.stringify([
+    'assistant:今天的面多加了个蛋',
+    'assistant:今天的面多加了个蛋，趁热吃',
+  ]),
+  `实际 ${ahaoContents.join(' | ')}`,
+);
+check('初始化模型调用还是 0 次（手机开着也没调初始化）', initBodies.length === 0, `初始化请求 ${initBodies.length} 个`);
+
+// ---- (h) 重置：联系人和微信记录都清掉，空状态显示新文案 ----
+await phone.getByRole('button', { name: '清空并重置' }).click();
+await phone.getByRole('button', { name: '确定重置' }).click();
+await page.waitForTimeout(1500);
+contacts = await readContacts();
+check('重置后联系人列表是空的', contacts.length === 0, `实际 ${contacts.map((c) => c.name).join(',')}`);
+check(
+  '重置后空状态显示新文案',
+  await phone.locator('text=主聊天里聊出新人物后，这里就会出现').count() >= 1,
+);
+const ajieChatAfterReset = await readWeChatChat(ajie.id);
+check('重置后阿杰的微信记录清掉了', ajieChatAfterReset === null);
+const xiaoyuChatAfterReset = await readWeChatChat(xiaoyu.id);
+check('重置后小雨的微信记录清掉了', xiaoyuChatAfterReset === null);
+const ahaoChatAfterReset = await readWeChatChat(ahao.id);
+check('重置后阿豪的微信记录清掉了', ahaoChatAfterReset === null);
+check('重置后初始化还是 0 次', initBodies.length === 0, `初始化请求 ${initBodies.length} 个`);
 
 check('页面无报错', errors.length === 0, errors.join(' | ').slice(0, 300));
 
