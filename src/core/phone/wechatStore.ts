@@ -1,47 +1,70 @@
 /**
- * 微信聊天记录的存取 — 每个角色卡一个会话，存在 IndexedDB（idbStorage）。
+ * 微信聊天记录与联系人的存取（IndexedDB，idbStorage）。
+ *
+ *   - 联系人：按聊天存，`rpnow:phone:contacts:<chatId>`，AI 初始化一次后缓存。
+ *   - 聊天记录：按联系人存，`rpnow:phone:wechat:<contactId>`；主角的
+ *     contactId 就是卡 id，所以以前存的记录不断档。
  */
 import { idbStorage } from '@/core/storage/index.js';
 import { uid } from '@/lib/utils.js';
 import type { RPCard } from '@/core/types/card.js';
-import type { PhoneMessage, WeChatChat } from './types.js';
+import type { PhoneContact, PhoneMessage, WeChatChat } from './types.js';
 
-function storageKey(cardId: string): string {
-  return `rpnow:phone:wechat:${cardId}`;
+function chatKey(contactId: string): string {
+  return `rpnow:phone:wechat:${contactId}`;
 }
 
-/** 读出指定角色卡的微信聊天记录；没存过返回 null。 */
-export async function loadWeChatChat(cardId: string): Promise<WeChatChat | null> {
-  const chat = await idbStorage.get<WeChatChat>(storageKey(cardId));
+function contactsKey(chatId: string): string {
+  return `rpnow:phone:contacts:${chatId}`;
+}
+
+/** 读出指定聊天的联系人列表；没初始化过返回 null。 */
+export async function loadContacts(chatId: string): Promise<PhoneContact[] | null> {
+  const contacts = await idbStorage.get<PhoneContact[]>(contactsKey(chatId));
+  return contacts ?? null;
+}
+
+/** 保存指定聊天的联系人列表（AI 初始化的结果）。 */
+export async function saveContacts(chatId: string, contacts: PhoneContact[]): Promise<void> {
+  await idbStorage.set(contactsKey(chatId), contacts);
+}
+
+/** 读出指定联系人的微信聊天记录；没存过返回 null。 */
+export async function loadWeChatChat(contactId: string): Promise<WeChatChat | null> {
+  const chat = await idbStorage.get<WeChatChat>(chatKey(contactId));
   return chat ?? null;
 }
 
 /** 保存一整个微信聊天记录。 */
 export async function saveWeChatChat(chat: WeChatChat): Promise<void> {
-  await idbStorage.set(storageKey(chat.cardId), chat);
+  await idbStorage.set(chatKey(chat.contactId), chat);
 }
 
-/** 开场白：优先用角色卡的第一条消息，没有就用默认问候。 */
-export function greetingMessage(card: RPCard): PhoneMessage {
+/** 某个联系人的开场消息：就是初始化时定好的那句开场白。 */
+export function greetingMessage(contact: PhoneContact): PhoneMessage {
   return {
     id: uid('m'),
     role: 'assistant',
     type: 'text',
-    content: card.data.first_mes || `你好，我是${card.data.name}。`,
+    content: contact.openingMessage,
     createdAt: Date.now(),
   };
 }
 
 /**
- * 取出指定角色卡的微信聊天记录；没存过（或存的记录没有消息）时，
- * 用开场白新建一个会话并存下来。
+ * 取出指定联系人的微信聊天记录；没存过（或存的记录没有消息）时，
+ * 用它的开场白新建一个会话并存下来。
  */
-export async function ensureChat(card: RPCard): Promise<WeChatChat> {
-  const stored = await loadWeChatChat(card.id);
-  if (stored && stored.messages.length > 0) return stored;
+export async function ensureChat(card: RPCard, contact: PhoneContact): Promise<WeChatChat> {
+  const stored = await loadWeChatChat(contact.id);
+  if (stored && stored.messages.length > 0) {
+    // 老记录没有 contactId 字段时补上（以前只存了主角的）。
+    return { ...stored, contactId: stored.contactId ?? card.id };
+  }
   const chat: WeChatChat = {
     cardId: card.id,
-    messages: [greetingMessage(card)],
+    contactId: contact.id,
+    messages: [greetingMessage(contact)],
     updatedAt: Date.now(),
   };
   await saveWeChatChat(chat);

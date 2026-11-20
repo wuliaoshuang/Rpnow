@@ -1,8 +1,9 @@
 /**
  * WeChat — 小手机里的微信。
  *
- * 联系人就是角色卡：点一个角色进聊天，记录按角色卡单独保存
- *（IndexedDB，见 `@/core/phone/wechatStore.js`）。
+ * 联系人是当前聊天卡里出现的人物：主角 + 卡里提到的人。第一次打开时调一次
+ * 模型找出来（见 `@/core/phone/contacts.js`），按聊天缓存进 IndexedDB，
+ * 之后直接读缓存。每个联系人有自己的聊天记录，按联系人单独保存。
  */
 import * as React from 'react';
 import { ChevronLeft, Image as ImageIcon, Plus, Send, Settings } from 'lucide-react';
@@ -11,11 +12,14 @@ import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { uid } from '@/lib/utils.js';
 import type { RPCard } from '@/core/types/card.js';
 import type { LLMMessage } from '@/core/llm/types.js';
-import type { PhoneMessage } from '@/core/phone/types.js';
+import type { PhoneContact, PhoneMessage } from '@/core/phone/types.js';
+import { fallbackContacts, initContacts } from '@/core/phone/contacts.js';
 import {
   ensureChat,
   greetingMessage,
+  loadContacts,
   loadWeChatChat,
+  saveContacts,
   saveWeChatChat,
 } from '@/core/phone/wechatStore.js';
 import { detectEmotion, pickSticker } from '@/core/phone/stickers.js';
@@ -29,12 +33,27 @@ function makeMessage(
   return { id: msg.id ?? uid('m'), createdAt: Date.now(), ...msg };
 }
 
-function Avatar({ card, size }: { card: RPCard; size: string }) {
-  const name = card.data.name || '？';
-  if (card.avatar) {
+/** 名字定一个头像底色（没头像的联系人用首字 + 底色）。 */
+function colorFor(name: string): string {
+  const palette = ['#7c6aae', '#5b8c5a', '#c07a5a', '#5a7fa6', '#a65a7a', '#8a7a3a'];
+  let h = 0;
+  for (const ch of name) h = (h * 31 + (ch.codePointAt(0) ?? 0)) >>> 0;
+  return palette[h % palette.length];
+}
+
+function Avatar({
+  name,
+  avatarUrl,
+  size,
+}: {
+  name: string;
+  avatarUrl?: string;
+  size: string;
+}) {
+  if (avatarUrl) {
     return (
       <img
-        src={card.avatar}
+        src={avatarUrl}
         alt={name}
         className={`${size} shrink-0 rounded-lg object-cover`}
       />
@@ -42,22 +61,32 @@ function Avatar({ card, size }: { card: RPCard; size: string }) {
   }
   return (
     <span
-      className={`${size} flex shrink-0 items-center justify-center rounded-lg bg-neutral-400 text-lg font-semibold text-white`}
+      className={`${size} flex shrink-0 items-center justify-center rounded-lg text-lg font-semibold text-white`}
+      style={{ backgroundColor: colorFor(name) }}
     >
-      {name.charAt(0)}
+      {name.charAt(0) || '？'}
     </span>
   );
 }
 
-export function WeChat({ onBack }: { onBack: () => void }) {
-  const cards = useApp((s) => s.cards);
+export function WeChat({
+  chatId,
+  card,
+  onBack,
+}: {
+  chatId: string;
+  card: RPCard;
+  onBack: () => void;
+}) {
   const settings = useApp((s) => s.settings);
   const llmConnections = useApp((s) => s.llmConnections);
   const imageConnections = useApp((s) => s.imageConnections);
   const llm = useLLM();
   const image = useImage();
 
-  const [selectedCard, setSelectedCard] = React.useState<RPCard | null>(null);
+  /** null = 还在认识卡里的人（只在第一次打开这个聊天时出现）。 */
+  const [contacts, setContacts] = React.useState<PhoneContact[] | null>(null);
+  const [selected, setSelected] = React.useState<PhoneContact | null>(null);
   const [messages, setMessages] = React.useState<PhoneMessage[]>([]);
   const [previews, setPreviews] = React.useState<Record<string, string>>({});
   const [input, setInput] = React.useState('');
@@ -70,25 +99,69 @@ export function WeChat({ onBack }: { onBack: () => void }) {
 
   const phone = settings.phone ?? {};
 
-  // 联系人列表：懒加载每个聊天的最后一条消息做预览。
+  // 联系人：先读缓存；没缓存才调一次模型初始化，失败就只留主角。
   React.useEffect(() => {
-    if (selectedCard) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const cached = await loadContacts(chatId);
+        if (cancelled) return;
+        if (cached && cached.length > 0) {
+          setContacts(cached);
+          return;
+        }
+        const connectionId = phone.chatConnectionId || settings.defaultConnectionId || '';
+        const connection = llmConnections.find((c) => c.id === connectionId);
+        if (llm && connection) {
+          try {
+            const model = phone.chatModel || connection.defaultModel || '';
+            const initialized = await initContacts(card, llm, connectionId, model);
+            if (cancelled) return;
+            const list = initialized ?? fallbackContacts(card);
+            setContacts(list);
+            await saveContacts(chatId, list);
+            return;
+          } catch {
+            // 初始化失败，掉到下面的兜底。
+          }
+        }
+        if (!cancelled) setContacts(fallbackContacts(card));
+      } catch {
+        if (!cancelled) setContacts(fallbackContacts(card));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    chatId,
+    card,
+    llm,
+    llmConnections,
+    phone.chatConnectionId,
+    phone.chatModel,
+    settings.defaultConnectionId,
+  ]);
+
+  // 联系人列表：懒加载每个联系人的最后一条消息做预览。
+  React.useEffect(() => {
+    if (selected || !contacts) return;
     let cancelled = false;
     void (async () => {
       const next: Record<string, string> = {};
-      for (const card of cards) {
+      for (const contact of contacts) {
         try {
-          const chat = await loadWeChatChat(card.id);
+          const chat = await loadWeChatChat(contact.id);
           const last = chat?.messages[chat.messages.length - 1];
-          next[card.id] = last
+          next[contact.id] = last
             ? last.type === 'image'
               ? '[图片]'
               : last.type === 'sticker'
                 ? '[表情]'
                 : last.content
-            : card.data.description || '';
+            : contact.openingMessage;
         } catch {
-          next[card.id] = card.data.description || '';
+          next[contact.id] = contact.openingMessage;
         }
         if (cancelled) return;
       }
@@ -97,26 +170,31 @@ export function WeChat({ onBack }: { onBack: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, [cards, selectedCard]);
+  }, [contacts, selected]);
 
   // 新消息到底部。
   React.useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, busy, generating, selectedCard]);
+  }, [messages, busy, generating, selected]);
 
   const persist = React.useCallback(
-    async (card: RPCard, next: PhoneMessage[]) => {
-      await saveWeChatChat({ cardId: card.id, messages: next, updatedAt: Date.now() });
+    async (contact: PhoneContact, next: PhoneMessage[]) => {
+      await saveWeChatChat({
+        cardId: card.id,
+        contactId: contact.id,
+        messages: next,
+        updatedAt: Date.now(),
+      });
     },
-    [],
+    [card.id],
   );
 
   const appendMessages = React.useCallback(
-    (card: RPCard, added: PhoneMessage[]) => {
+    (contact: PhoneContact, added: PhoneMessage[]) => {
       setMessages((prev) => {
         const next = [...prev, ...added];
-        void persist(card, next);
+        void persist(contact, next);
         return next;
       });
     },
@@ -124,32 +202,32 @@ export function WeChat({ onBack }: { onBack: () => void }) {
   );
 
   const openChat = React.useCallback(
-    async (card: RPCard) => {
-      setSelectedCard(card);
+    async (contact: PhoneContact) => {
+      setSelected(contact);
       setMessages([]);
-      setImagePrompt(`${card.data.name}，精美插画`);
+      setImagePrompt(`${contact.name}，精美插画`);
       try {
-        const chat = await ensureChat(card);
+        const chat = await ensureChat(card, contact);
         setMessages(chat.messages);
       } catch (err) {
         // 兜底：存取失败也先把开场白摆出来，不让聊天开天窗。
-        setMessages([greetingMessage(card)]);
+        setMessages([greetingMessage(contact)]);
         setMessages((prev) => {
-          void persist(card, prev);
+          void persist(contact, prev);
           return prev;
         });
         void err;
       }
     },
-    [persist],
+    [card, persist],
   );
 
   const requestReply = React.useCallback(
-    async (card: RPCard, history: PhoneMessage[]) => {
+    async (contact: PhoneContact, history: PhoneMessage[]) => {
       const connectionId = phone.chatConnectionId || settings.defaultConnectionId || '';
       const connection = llmConnections.find((c) => c.id === connectionId);
       if (!llm || !connection) {
-        appendMessages(card, [
+        appendMessages(contact, [
           makeMessage({
             role: 'system',
             type: 'text',
@@ -160,10 +238,8 @@ export function WeChat({ onBack }: { onBack: () => void }) {
       }
       const model = phone.chatModel || connection.defaultModel || '';
       const recent = history.filter((m) => m.role !== 'system').slice(-10);
-      const llmMessages: LLMMessage[] = [
-        {
-          role: 'system',
-          content: [
+      const systemPrompt = contact.isMain
+        ? [
             `你是「${card.data.name}」，正在微信上和用户聊天。`,
             card.data.description ? `角色介绍：${card.data.description}` : '',
             card.data.personality ? `性格：${card.data.personality}` : '',
@@ -172,8 +248,20 @@ export function WeChat({ onBack }: { onBack: () => void }) {
             '请用角色的口吻简短回复，像在微信上发消息：1–3 句短句，口语化、亲切。不要写长段角色扮演，不要加舞台提示、括号说明或动作描写。',
           ]
             .filter(Boolean)
-            .join('\n'),
-        },
+            .join('\n')
+        : [
+            `你是「${contact.name}」，是「${card.data.name}」的${contact.relation}，正在微信上和用户聊天。`,
+            card.data.description ? `角色卡介绍：${card.data.description}` : '',
+            card.data.scenario ? `场景：${card.data.scenario}` : '',
+            contact.openingMessage
+              ? `你发来的第一条消息：${contact.openingMessage}`
+              : '',
+            '请用这个人的口吻简短回复，像在微信上发消息：1–3 句短句，口语化、亲切。不要写长段角色扮演，不要加舞台提示、括号说明或动作描写。',
+          ]
+            .filter(Boolean)
+            .join('\n');
+      const llmMessages: LLMMessage[] = [
+        { role: 'system', content: systemPrompt },
         ...recent.map((m): LLMMessage => ({
           role: m.role === 'assistant' ? 'assistant' : 'user',
           content:
@@ -195,13 +283,13 @@ export function WeChat({ onBack }: { onBack: () => void }) {
         const replyText = result.text.trim();
         if (!replyText) return;
         const reply = makeMessage({ role: 'assistant', type: 'text', content: replyText });
-        appendMessages(card, [reply]);
+        appendMessages(contact, [reply]);
         // 情绪贴纸：中性不贴。
         const emotion = detectEmotion(replyText);
         if (emotion !== 'neutral') {
           const stickerUrl = pickSticker(emotion);
           if (stickerUrl) {
-            appendMessages(card, [
+            appendMessages(contact, [
               makeMessage({
                 role: 'assistant',
                 type: 'sticker',
@@ -212,7 +300,7 @@ export function WeChat({ onBack }: { onBack: () => void }) {
           }
         }
       } catch (err) {
-        appendMessages(card, [
+        appendMessages(contact, [
           makeMessage({
             role: 'system',
             type: 'text',
@@ -223,28 +311,36 @@ export function WeChat({ onBack }: { onBack: () => void }) {
         setBusy(false);
       }
     },
-    [appendMessages, llm, llmConnections, phone.chatConnectionId, phone.chatModel, settings.defaultConnectionId],
+    [
+      appendMessages,
+      card,
+      llm,
+      llmConnections,
+      phone.chatConnectionId,
+      phone.chatModel,
+      settings.defaultConnectionId,
+    ],
   );
 
   const sendText = () => {
-    const card = selectedCard;
+    const contact = selected;
     const text = input.trim();
-    if (!card || !text || busy) return;
+    if (!contact || !text || busy) return;
     const userMsg = makeMessage({ role: 'user', type: 'text', content: text });
     const next = [...messages, userMsg];
     setMessages(next);
-    void persist(card, next);
+    void persist(contact, next);
     setInput('');
-    void requestReply(card, next);
+    void requestReply(contact, next);
   };
 
   const generateImage = async () => {
-    const card = selectedCard;
-    if (!card || generating) return;
-    const prompt = imagePrompt.trim() || `${card.data.name}，精美插画`;
+    const contact = selected;
+    if (!contact || generating) return;
+    const prompt = imagePrompt.trim() || `${contact.name}，精美插画`;
     const connectionId = phone.imageConnectionId || imageConnections[0]?.id || '';
     if (!image || !connectionId) {
-      appendMessages(card, [
+      appendMessages(contact, [
         makeMessage({
           role: 'system',
           type: 'text',
@@ -255,7 +351,7 @@ export function WeChat({ onBack }: { onBack: () => void }) {
     }
     setGenerating(true);
     const note = makeMessage({ role: 'system', type: 'text', content: '正在生成图片…' });
-    appendMessages(card, [note]);
+    appendMessages(contact, [note]);
     try {
       const results = await image.generate(connectionId, {
         prompt,
@@ -266,13 +362,15 @@ export function WeChat({ onBack }: { onBack: () => void }) {
       if (!first) throw new Error('没有生成出图片');
       const blob = await dataUrlToBlob(first.dataUrl);
       const saved = await saveMediaImage(blob, {
-        chatId: card.id,
+        chatId,
         cardId: card.id,
         prompt,
         provider: first.provider,
         model: first.model,
+        // 手机里生的图进相册留存。
+        source: 'phone',
       });
-      appendMessages(card, [
+      appendMessages(contact, [
         makeMessage({
           role: 'assistant',
           type: 'image',
@@ -281,7 +379,7 @@ export function WeChat({ onBack }: { onBack: () => void }) {
         }),
       ]);
     } catch (err) {
-      appendMessages(card, [
+      appendMessages(contact, [
         makeMessage({
           role: 'system',
           type: 'text',
@@ -294,7 +392,7 @@ export function WeChat({ onBack }: { onBack: () => void }) {
   };
 
   // ---------------- 联系人列表 ----------------
-  if (!selectedCard) {
+  if (!selected) {
     return (
       <div className="flex min-h-0 flex-1 flex-col bg-white text-neutral-900">
         <div className="flex shrink-0 items-center gap-1 border-b border-neutral-200 px-2 py-2.5">
@@ -309,25 +407,32 @@ export function WeChat({ onBack }: { onBack: () => void }) {
           <h2 className="text-base font-semibold">微信</h2>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {cards.length === 0 ? (
-            <p className="px-4 py-8 text-center text-sm text-neutral-500">
-              还没有角色卡，先去创建一张角色卡吧
+          {contacts === null ? (
+            <p className="animate-pulse px-4 py-8 text-center text-sm text-neutral-500">
+              正在认识卡里的人…
             </p>
           ) : (
-            cards.map((card) => (
+            contacts.map((contact) => (
               <button
-                key={card.id}
+                key={contact.id}
                 type="button"
-                onClick={() => void openChat(card)}
+                onClick={() => void openChat(contact)}
                 className="flex w-full cursor-pointer items-center gap-3 border-b border-neutral-100 px-4 py-3 text-left transition-colors hover:bg-neutral-50"
               >
-                <Avatar card={card} size="size-12" />
+                <Avatar
+                  name={contact.name}
+                  avatarUrl={contact.isMain ? card.avatar : undefined}
+                  size="size-12"
+                />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[15px] font-medium">
-                    {card.data.name}
+                  <span className="flex items-baseline gap-1.5">
+                    <span className="truncate text-[15px] font-medium">{contact.name}</span>
+                    <span className="shrink-0 text-xs text-neutral-400">
+                      {contact.relation}
+                    </span>
                   </span>
                   <span className="block truncate text-[13px] text-neutral-500">
-                    {previews[card.id] ?? card.data.description ?? ''}
+                    {previews[contact.id] ?? contact.openingMessage}
                   </span>
                 </span>
               </button>
@@ -339,19 +444,24 @@ export function WeChat({ onBack }: { onBack: () => void }) {
   }
 
   // ---------------- 聊天窗口 ----------------
-  const card = selectedCard;
+  const contact = selected;
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-[#ededed] text-neutral-900">
       <div className="flex shrink-0 items-center gap-1 border-b border-neutral-200 bg-white px-2 py-2">
         <button
           type="button"
           aria-label="返回联系人"
-          onClick={() => setSelectedCard(null)}
+          onClick={() => setSelected(null)}
           className="flex size-9 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-neutral-100"
         >
           <ChevronLeft className="size-6" />
         </button>
-        <h2 className="min-w-0 flex-1 truncate text-base font-semibold">{card.data.name}</h2>
+        <h2 className="min-w-0 flex-1 truncate text-base font-semibold">
+          {contact.name}
+          <span className="ml-1.5 text-xs font-normal text-neutral-400">
+            {contact.relation}
+          </span>
+        </h2>
         <button
           type="button"
           aria-label="小手机生图设置"
@@ -378,7 +488,13 @@ export function WeChat({ onBack }: { onBack: () => void }) {
             const isOwn = m.role === 'user';
             return (
               <div key={m.id} className={`flex items-start gap-2 ${isOwn ? 'flex-row-reverse' : ''}`}>
-                {!isOwn && <Avatar card={card} size="size-9" />}
+                {!isOwn && (
+                  <Avatar
+                    name={contact.name}
+                    avatarUrl={contact.isMain ? card.avatar : undefined}
+                    size="size-9"
+                  />
+                )}
                 {m.type === 'sticker' && m.stickerUrl ? (
                   <img
                     src={m.stickerUrl}
@@ -405,7 +521,11 @@ export function WeChat({ onBack }: { onBack: () => void }) {
           })}
           {busy && (
             <div className="flex items-start gap-2">
-              <Avatar card={card} size="size-9" />
+              <Avatar
+                name={contact.name}
+                avatarUrl={contact.isMain ? card.avatar : undefined}
+                size="size-9"
+              />
               <div className="rounded-xl bg-white px-3 py-2 text-[15px] text-neutral-500 shadow-sm">
                 对方正在输入…
               </div>
@@ -420,7 +540,7 @@ export function WeChat({ onBack }: { onBack: () => void }) {
           <input
             value={imagePrompt}
             onChange={(e) => setImagePrompt(e.target.value)}
-            placeholder={`${card.data.name}，精美插画`}
+            placeholder={`${contact.name}，精美插画`}
             className="min-w-0 flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#07C160]"
           />
           <button

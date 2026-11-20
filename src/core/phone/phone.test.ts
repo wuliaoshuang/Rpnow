@@ -7,27 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { STICKERS, detectEmotion, pickSticker } from './stickers.js';
 import { greetingMessage } from './wechatStore.js';
-import type { RPCard } from '@/core/types/card.js';
 import type { StickerEmotion } from './types.js';
-
-function fakeCard(overrides: Partial<RPCard['data']> = {}): RPCard {
-  return {
-    id: 'card-1',
-    data: {
-      name: '小橘',
-      description: '',
-      personality: '',
-      scenario: '',
-      first_mes: '你好呀，今天想聊点什么？',
-      mes_example: '',
-      ...overrides,
-    },
-    spec: 'v2',
-    specVersion: '2.0',
-    createdAt: 0,
-    updatedAt: 0,
-  };
-}
 
 describe('detectEmotion', () => {
   it.each([
@@ -73,17 +53,18 @@ describe('pickSticker', () => {
 });
 
 describe('greetingMessage', () => {
-  it('用角色卡的第一条消息当开场白', () => {
-    const msg = greetingMessage(fakeCard());
+  it('用联系人的开场白当第一条消息', () => {
+    const msg = greetingMessage({
+      id: 'card-1',
+      name: '小橘',
+      relation: '本人',
+      openingMessage: '你好呀，今天想聊点什么？',
+      isMain: true,
+    });
     expect(msg.role).toBe('assistant');
     expect(msg.type).toBe('text');
     expect(msg.content).toBe('你好呀，今天想聊点什么？');
     expect(msg.id).toMatch(/^m/);
     expect(msg.createdAt).toBeGreaterThan(0);
-  });
-
-  it('角色卡没有第一条消息时用默认问候', () => {
-    const msg = greetingMessage(fakeCard({ first_mes: '' }));
-    expect(msg.content).toBe('你好，我是小橘。');
   });
 });
