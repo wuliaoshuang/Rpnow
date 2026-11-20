@@ -4,10 +4,21 @@
  *
  * 卡的主角本人不是联系人：解析时名字是卡名、或 relation 写“本人”
  * 的条目都跳过；兜底是空列表，不编联系人。
+ * relation 是和 User 的关系（不是和主角的关系），和主角的关系写进
+ * relationToMain；新解析的联系人一律写 v: 2。
  */
 import { describe, expect, it } from 'vitest';
 import type { RPCard } from '@/core/types/card.js';
-import { buildInitMessages, cleanOpeningMessage, fallbackContacts, isStaleContacts, parseContactsJson } from './contacts.js';
+import type { RPPersona } from '@/core/types/chat.js';
+import {
+  buildInitMessages,
+  cleanOpeningMessage,
+  displayRelation,
+  fallbackContacts,
+  isStaleContacts,
+  parseContactsJson,
+  resolvePhoneUser,
+} from './contacts.js';
 import type { PhoneContact } from './types.js';
 
 function fakeCard(overrides: Partial<RPCard['data']> = {}): RPCard {
@@ -59,18 +70,28 @@ describe('cleanOpeningMessage', () => {
 });
 
 describe('parseContactsJson', () => {
-  it('正常 JSON：主角条目被排除，只留其他人', () => {
+  it('正常 JSON：主角条目被排除，只留其他人；relation 是和 User 的关系，relationToMain 是和主角的关系，新联系人写 v: 2', () => {
     const text = JSON.stringify([
       { name: '李淑纯', relation: '本人', openingMessage: '嗨，我是淑纯' },
-      { name: '小雨', relation: '闺蜜', openingMessage: '在吗在吗，出来玩呀' },
-      { name: '阿杰', relation: '哥哥', openingMessage: '今天花店忙不忙' },
+      { name: '小雨', relation: '闺蜜', relationToMain: '闺蜜', openingMessage: '在吗在吗，出来玩呀' },
+      { name: '阿杰', relation: '哥哥', relationToMain: '哥哥', openingMessage: '今天花店忙不忙' },
     ]);
     const list = parseContactsJson(text, fakeCard());
     expect(list).not.toBeNull();
     expect(list!.map((c) => c.name)).toEqual(['小雨', '阿杰']);
-    expect(list![0]).toMatchObject({ name: '小雨', relation: '闺蜜' });
-    expect(list![0].id).toMatch(/^c_/);
+    expect(list![0]).toMatchObject({ name: '小雨', relation: '闺蜜', relationToMain: '闺蜜', v: 2 });
+    expect(list![1]).toMatchObject({ name: '阿杰', relation: '哥哥', relationToMain: '哥哥', v: 2 });
     expect(list!.some((c) => c.name === '李淑纯')).toBe(false);
+  });
+
+  it('和 User 的关系、和主角的关系各存各的：两边不一样时都不丢', () => {
+    const text = JSON.stringify([
+      { name: '小雨', relation: '室友', relationToMain: '闺蜜', openingMessage: '嗨' },
+    ]);
+    const list = parseContactsJson(text, fakeCard());
+    expect(list![0].relation).toBe('室友');
+    expect(list![0].relationToMain).toBe('闺蜜');
+    expect(list![0].v).toBe(2);
   });
 
   it('主角条目靠 relation 本人也能认出来并排除', () => {
@@ -145,14 +166,16 @@ describe('parseContactsJson', () => {
     expect(list![0].relation).toBe('闺蜜');
   });
 
-  it('缺字段时补默认值，不丢人', () => {
+  it('缺字段时：开场白补默认问候；relation 留空（不编一个和 User 的关系），relationToMain 不写', () => {
     const text = JSON.stringify([{ name: '阿杰' }]);
     const list = parseContactsJson(text, fakeCard());
     expect(list![0]).toMatchObject({
       name: '阿杰',
-      relation: '朋友',
+      relation: '',
       openingMessage: '你好，我是阿杰。',
     });
+    expect(list![0].relationToMain).toBeUndefined();
+    expect(list![0].v).toBe(2);
   });
 
   it('模型开场白写成大段时压短，不展示长段落', () => {
@@ -254,6 +277,50 @@ describe('parseContactsJson', () => {
   });
 });
 
+describe('resolvePhoneUser', () => {
+  const personas: RPPersona[] = [
+    { id: 'p-1', name: '转学生小林', description: '刚转学来的新生，和李淑纯同班', createdAt: 0, updatedAt: 0 },
+    { id: 'p-2', name: '老用户', description: '另一个人设', createdAt: 0, updatedAt: 0 },
+  ];
+
+  it('按聊天的 personaId 找到对应的人设', () => {
+    expect(resolvePhoneUser({ personaId: 'p-2' }, personas)).toEqual({
+      name: '老用户',
+      description: '另一个人设',
+    });
+  });
+
+  it('聊天没填 personaId 时，用第一个人设（和主聊天一个规矩）', () => {
+    expect(resolvePhoneUser({}, personas)).toEqual({
+      name: '转学生小林',
+      description: '刚转学来的新生，和李淑纯同班',
+    });
+  });
+
+  it('一个人设都没有时，返回 undefined（没有单独定义 User 的身份）', () => {
+    expect(resolvePhoneUser({}, [])).toBeUndefined();
+    expect(resolvePhoneUser({ personaId: 'p-9' }, [])).toBeUndefined();
+  });
+});
+
+describe('displayRelation', () => {
+  it('和 User 的关系写了，就显示它', () => {
+    expect(
+      displayRelation({ id: 'c_1', name: '小雨', relation: '室友', relationToMain: '闺蜜', openingMessage: '嗨' }),
+    ).toBe('室友');
+  });
+
+  it('和 User 的关系没写、和主角的关系写了，显示“主角的闺蜜”', () => {
+    expect(
+      displayRelation({ id: 'c_1', name: '小雨', relation: '', relationToMain: '闺蜜', openingMessage: '嗨' }),
+    ).toBe('主角的闺蜜');
+  });
+
+  it('两边都没写，显示通用标签“朋友”', () => {
+    expect(displayRelation({ id: 'c_1', name: '小雨', relation: '', openingMessage: '嗨' })).toBe('朋友');
+  });
+});
+
 describe('buildInitMessages', () => {
   it('把卡的内容都交过去', () => {
     const messages = buildInitMessages(fakeCard());
@@ -262,6 +329,39 @@ describe('buildInitMessages', () => {
     expect(userText).toContain('闺蜜小雨');
     expect(userText).toContain('哥哥阿杰');
     expect(userText).toContain('JSON');
+  });
+
+  it('传了 User 身份：初始化输入里有 User 是谁，relation 按 User 来算', () => {
+    const messages = buildInitMessages(fakeCard(), '', {
+      name: '转学生小林',
+      description: '刚转学来的新生，和李淑纯同班',
+    });
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('转学生小林');
+    expect(userText).toContain('刚转学来的新生');
+    expect(userText).toContain('User');
+    expect(userText).toContain('relationToMain');
+    expect(userText).toContain('relation 是和 User 的关系');
+    expect(userText).toContain('不要把和主角的关系写进 relation 里');
+  });
+
+  it('没传 User 身份：明说没有单独定义 User 的身份，不让模型猜', () => {
+    const messages = buildInitMessages(fakeCard());
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('没有单独定义 User 的身份');
+  });
+
+  it('提示词让模型把 relation 写成和 User 的关系、relationToMain 写成和主角的关系；没写不要编', () => {
+    const messages = buildInitMessages(fakeCard(), '', {
+      name: '转学生小林',
+      description: '刚转学来的新生',
+    });
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('relationToMain');
+    expect(userText).toContain('和 User 的关系');
+    expect(userText).toContain('和主角的关系');
+    expect(userText).toContain('没写不要编');
+    expect(userText).toContain('relation 写空字符串');
   });
 
   it('提示词要求只找其他人物，不把主角本人算进去；没别人时返回空数组', () => {
@@ -339,8 +439,16 @@ describe('isStaleContacts', () => {
     expect(isStaleContacts(staleList, fakeCard())).toBe(true);
   });
 
-  it('列表里只有其他人时，不是旧缓存', () => {
-    expect(isStaleContacts([staleList[1]], fakeCard())).toBe(false);
+  it('v 是 2 且只有其他人时，不是旧缓存', () => {
+    const fresh: PhoneContact[] = [
+      { id: 'c_1', name: '小雨', relation: '闺蜜', relationToMain: '闺蜜', openingMessage: '在吗在吗', v: 2 },
+    ];
+    expect(isStaleContacts(fresh, fakeCard())).toBe(false);
+  });
+
+  it('没有 v（v1 旧缓存，relation 还是按主角算的、没按 User 算过）时，是旧缓存', () => {
+    // 只有其他人、也没有主角，但 relation 是旧逻辑按主角算的，必须重算。
+    expect(isStaleContacts([staleList[1]], fakeCard())).toBe(true);
   });
 
   it('relation 写“本人”的条目也算主角，是旧缓存', () => {

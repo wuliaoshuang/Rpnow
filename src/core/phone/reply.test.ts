@@ -18,6 +18,7 @@ import {
   formatPlotProgress,
   inferPeopleFromRequest,
   looksLikeImageRequest,
+  relationClause,
 } from './reply.js';
 
 const SCENARIO_MARKER = 'SCENARIO_花店里的一天，主人推门进来';
@@ -46,18 +47,22 @@ const xiaoyuContact: PhoneContact = {
   id: 'c_xiaoyu',
   name: '小雨',
   relation: '闺蜜',
+  relationToMain: '闺蜜',
   openingMessage: '在吗在吗，出来玩呀',
   gender: 'female',
   profile: '活泼开朗，短发，爱笑，喜欢拉着人出去玩',
+  v: 2,
 };
 
 const ajieContact: PhoneContact = {
   id: 'c_ajie',
   name: '阿杰',
   relation: '哥哥',
+  relationToMain: '哥哥',
   openingMessage: '今天花店忙不忙',
   gender: 'male',
   profile: '沉稳可靠，高个子，常穿围裙在花店帮忙',
+  v: 2,
 };
 
 describe('buildReplySystemPrompt', () => {
@@ -101,7 +106,7 @@ describe('buildReplySystemPrompt', () => {
     expect(prompt).not.toContain(long);
   });
 
-  it('小雨：留着自己的名字、和主角的关系、卡的介绍', () => {
+  it('小雨：留着自己的名字、和 User 的关系、卡的介绍', () => {
     const prompt = buildReplySystemPrompt(fakeCard(), xiaoyuContact);
     expect(prompt).toContain('小雨');
     expect(prompt).toContain('闺蜜');
@@ -111,7 +116,7 @@ describe('buildReplySystemPrompt', () => {
     expect(prompt).not.toContain('温柔细心');
   });
 
-  it('阿杰：留着名字、和主角的关系、卡的介绍', () => {
+  it('阿杰：留着名字、和 User 的关系、卡的介绍', () => {
     const prompt = buildReplySystemPrompt(fakeCard(), ajieContact);
     expect(prompt).toContain('阿杰');
     expect(prompt).toContain('哥哥');
@@ -156,8 +161,49 @@ describe('buildReplySystemPrompt', () => {
     }
     expect(buildReplySystemPrompt(fakeCard(), xiaoyuContact)).toContain('你要扮演「小雨」');
     expect(buildReplySystemPrompt(fakeCard(), ajieContact)).toContain('你要扮演「阿杰」');
-    expect(buildReplySystemPrompt(fakeCard(), xiaoyuContact)).toContain('「李淑纯」的闺蜜');
-    expect(buildReplySystemPrompt(fakeCard(), ajieContact)).toContain('「李淑纯」的哥哥');
+    expect(buildReplySystemPrompt(fakeCard(), xiaoyuContact)).toContain('用户的闺蜜');
+    expect(buildReplySystemPrompt(fakeCard(), ajieContact)).toContain('用户的哥哥');
+  });
+
+  it('和 User 的关系、和主角的关系不一样时，两头都写清楚', () => {
+    const contact: PhoneContact = {
+      id: 'c_xiaoyu',
+      name: '小雨',
+      relation: '室友',
+      relationToMain: '闺蜜',
+      openingMessage: '在吗在吗',
+    };
+    const prompt = buildReplySystemPrompt(fakeCard(), contact);
+    expect(prompt).toContain('是用户的室友');
+    expect(prompt).toContain('也是「李淑纯」的闺蜜');
+  });
+
+  it('和 User 的关系没写、只写了和主角的关系时，按主角的关系写，并写明不要自己编一个和 User 的关系', () => {
+    const contact: PhoneContact = {
+      id: 'c_xiaoyu',
+      name: '小雨',
+      relation: '',
+      relationToMain: '闺蜜',
+      openingMessage: '在吗在吗',
+    };
+    const prompt = buildReplySystemPrompt(fakeCard(), contact);
+    expect(prompt).toContain('是「李淑纯」的闺蜜');
+    expect(prompt).toContain('卡里没写小雨和你是什么关系');
+    expect(prompt).toContain('不要自己编一个和你的关系');
+    expect(prompt).not.toContain('是用户的闺蜜');
+  });
+
+  it('两边关系都没写时，提示词里不写关系这一句，不崩', () => {
+    const contact: PhoneContact = {
+      id: 'c_xiaoyu',
+      name: '小雨',
+      relation: '',
+      openingMessage: '在吗在吗',
+    };
+    const prompt = buildReplySystemPrompt(fakeCard(), contact);
+    expect(prompt).toContain('你要扮演「小雨」');
+    expect(prompt).not.toContain('是用户的');
+    expect(prompt).not.toContain('是「李淑纯」的');
   });
 
   it('发图时要按场景判断图里有几个人，填 people 参数', () => {
@@ -295,6 +341,34 @@ describe('buildReplySystemPrompt', () => {
       expect(prompt).toContain('[发图：这张图的内容]');
       expect(prompt).toContain('[表情：开心/难过/害羞/惊讶/亲昵/生气]');
     }
+  });
+});
+
+describe('relationClause', () => {
+  const base: PhoneContact = { id: 'c_1', name: '小雨', relation: '', openingMessage: '嗨' };
+
+  it('两边都写了、不一样：是用户的 X，也是主角的 Y', () => {
+    expect(relationClause({ ...base, relation: '室友', relationToMain: '闺蜜' }, '李淑纯')).toBe(
+      '是用户的室友，也是「李淑纯」的闺蜜',
+    );
+  });
+
+  it('两边写了一样的，只写一遍（是用户的 X）', () => {
+    expect(relationClause({ ...base, relation: '闺蜜', relationToMain: '闺蜜' }, '李淑纯')).toBe(
+      '是用户的闺蜜',
+    );
+  });
+
+  it('只写了和 User 的关系：是用户的 X', () => {
+    expect(relationClause({ ...base, relation: '哥哥' }, '李淑纯')).toBe('是用户的哥哥');
+  });
+
+  it('只写了和主角的关系：是主角的 X', () => {
+    expect(relationClause({ ...base, relationToMain: '闺蜜' }, '李淑纯')).toBe('是「李淑纯」的闺蜜');
+  });
+
+  it('两边都没写：空字符串', () => {
+    expect(relationClause(base, '李淑纯')).toBe('');
   });
 });
 
@@ -566,7 +640,7 @@ describe('buildImagePromptMessages', () => {
     expect(userText).toContain('一条详细的英文生图提示词');
   });
 
-  it('阿杰：带着名字和与主角的关系', () => {
+  it('阿杰：带着名字和与 User、主角的关系', () => {
     const messages = buildImagePromptMessages(fakeCard(), ajieContact, '阿杰在花店门口招手', []);
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain('阿杰');
@@ -679,6 +753,19 @@ describe('buildImageTagContext', () => {
     const context = buildImageTagContext(fakeCard(), xiaoyuContact, '小雨在花店门口招手', []);
     expect(context).toContain('人设');
     expect(context).toContain('活泼开朗，短发，爱笑');
+  });
+
+  it('上下文里和 User 的关系、和主角的关系各写一行，不混在一起', () => {
+    const contact: PhoneContact = {
+      id: 'c_xiaoyu',
+      name: '小雨',
+      relation: '室友',
+      relationToMain: '闺蜜',
+      openingMessage: '嗨',
+    };
+    const context = buildImageTagContext(fakeCard(), contact, '小雨在花店门口招手', []);
+    expect(context).toContain('和用户的关系：室友');
+    expect(context).toContain('和主角「李淑纯」的关系：闺蜜');
   });
 
   it('不同联系人的人设各归各的：小雨的上下文里没有阿杰的人设', () => {

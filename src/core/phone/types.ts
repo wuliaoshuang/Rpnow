@@ -51,8 +51,19 @@ export interface PhoneContact {
    */
   id: string;
   name: string;
-  /** 和主角的关系，如“闺蜜”“哥哥”。 */
+  /**
+   * 和 User（在微信里和这个联系人聊天的那个人）的关系，如“闺蜜”“哥哥”。
+   * 初始化时模型按卡里 / 世界书里写到的定：卡里写了这个人和 User 是
+   * 什么关系就写什么；没写不要编，留空字符串。回复提示词里按这个关系
+   * 写（“是用户的闺蜜”），模型才知道该怎么对 User。
+   */
   relation: string;
+  /**
+   * 和卡的主角的关系，如“闺蜜”“哥哥”。卡里写了才有，没写不写。
+   * 回复提示词里当补充信息用——主角的关系不等于和 User 的关系；
+   * 和 User 的关系没写时，提示词里按这个写、并写明是主角的。
+   */
+  relationToMain?: string;
   /**
    * 它发来的第一条消息（微信口吻），由模型按剧情写的短消息；
    * 不再直接用卡的 first_mes。
@@ -69,6 +80,12 @@ export interface PhoneContact {
    * 可选——老缓存里没有这个字段，读的时候按 'unknown' 处理。
    */
   gender?: PhoneContactGender;
+  /**
+   * 联系人结构版本：v2 起 relation 是和 User 的关系（v1 及更早是和
+   * 主角的关系）。新解析的联系人一律写 v: 2；旧缓存没有这个字段，
+   * 读到就判定过期、重新初始化（关系要按 User 重算一遍）。
+   */
+  v?: number;
 }
 
 /** One WeChat conversation — one per contact. */
