@@ -7,7 +7,10 @@
  * `@/core/phone/contacts.js`），按聊天缓存进 IndexedDB，之后直接读缓存。
  * 每个联系人有自己的聊天记录，按联系人单独保存；每个联系人还带一条
  * 自己的人设（profile），回复时写进他/她自己的 system prompt，模型
- * 扮演他/她才不会 OOC。
+ * 扮演他/她才不会 OOC。每个联系人还有好感度（0–100，从 0 开始）：
+ * 用户发消息 +1，角色回一次 +1，封顶 100，存在联系人缓存里、关掉重开
+ * 还在；50 解锁约会请求，80 解锁私密照；好感度也写进回复提示词，模型
+ * 按亲密度回。
  *
  * 小手机是独立系统：微信是单独的聊天，不续写主线剧情；但回复时会把
  * 主线聊天（手机外面那个正常聊天）的最近进展当剧情进度放进提示词，
@@ -23,7 +26,7 @@
  * 微信记录），再让 AI 根据角色卡重新初始化一次；主聊天和相册不受影响。
  */
 import * as React from 'react';
-import { ChevronLeft, Image as ImageIcon, Plus, RotateCcw, Send, Settings, SlidersHorizontal } from 'lucide-react';
+import { CalendarHeart, Camera, ChevronLeft, Heart, Image as ImageIcon, Plus, RotateCcw, Send, Settings, SlidersHorizontal } from 'lucide-react';
 import { useApp } from '@/state/store.js';
 import { useImage, useLLM } from '@/hooks/useKernel.js';
 import { uid } from '@/lib/utils.js';
@@ -31,10 +34,18 @@ import type { RPCard } from '@/core/types/card.js';
 import type { LLMMessage, LLMResult } from '@/core/llm/types.js';
 import type { ImagePeople, PhoneContact, PhoneMessage, StickerEmotion } from '@/core/phone/types.js';
 import {
+  AFFECTION_DATE_UNLOCK,
+  AFFECTION_PER_CHARACTER_REPLY,
+  AFFECTION_PER_USER_MESSAGE,
+  AFFECTION_PRIVATE_PHOTO_UNLOCK,
+  addAffection,
+  affectionOf,
   displayRelation,
   fallbackContacts,
   hasUsableCache,
   initContacts,
+  isDateUnlocked,
+  isPrivatePhotoUnlocked,
   resolvePhoneUser,
 } from '@/core/phone/contacts.js';
 import { lorebookTextForInit } from '@/core/phone/lorebook.js';
@@ -295,6 +306,40 @@ export function WeChat({
       });
     },
     [card.id],
+  );
+
+  /**
+   * 好感度 +N：更新联系人列表、当前打开的联系人，并写回联系人缓存。
+   * 用户发消息 +1、角色回一次 +1，都走这里。返回加完后的联系人
+   * （调用方拿它去调 requestReply，提示词里的好感度就是最新的）。
+   * 用 ref 读最新的联系人列表——sendText 里加完、requestReply 里再加，
+   * 两次都在同一个事件链里，不能用闭包里的旧 contacts，不然第二次会
+   * 把第一次的 +1 盖掉。缓存写失败不挡路：内存里是对的，下次打开读
+   * 旧缓存（好感度会回退一次，但不影响本次使用——PR #46 的规矩）。
+   */
+  const contactsRef = React.useRef<PhoneContact[] | null>(null);
+  React.useEffect(() => {
+    contactsRef.current = contacts;
+  }, [contacts]);
+
+  const bumpAffection = React.useCallback(
+    (contactId: string, amount: number): PhoneContact | null => {
+      const list = contactsRef.current;
+      if (!list) return null;
+      const target = list.find((c) => c.id === contactId);
+      if (!target) return null;
+      const bumped = addAffection(target, amount);
+      if (bumped.affection === affectionOf(target)) return target;
+      const next = list.map((c) => (c.id === contactId ? bumped : c));
+      contactsRef.current = next;
+      setContacts(next);
+      setSelected((prev) => (prev && prev.id === contactId ? bumped : prev));
+      void saveContacts(chatId, next).catch(() => {
+        // 缓存写失败：内存里还是对的，本次照常用。
+      });
+      return bumped;
+    },
+    [chatId],
   );
 
   const appendMessages = React.useCallback(
@@ -676,6 +721,8 @@ export function WeChat({
             }
           }
         }
+        // 角色回了，好感度 +1（用户发消息那 +1 在 sendText / 约会请求里已经加了）。
+        bumpAffection(contact.id, AFFECTION_PER_CHARACTER_REPLY);
       } catch (err) {
         appendMessages(contact, [
           makeMessage({
@@ -690,6 +737,7 @@ export function WeChat({
     },
     [
       appendMessages,
+      bumpAffection,
       card,
       chatId,
       contacts,
@@ -711,7 +759,10 @@ export function WeChat({
     setMessages(next);
     void persist(contact, next);
     setInput('');
-    void requestReply(contact, next);
+    // 用户发消息，好感度 +1；拿加完后的联系人去要回复，提示词里的
+    // 好感度就是最新的（角色回了再 +1，一轮完整对话 +2）。
+    const bumped = bumpAffection(contact.id, AFFECTION_PER_USER_MESSAGE);
+    void requestReply(bumped ?? contact, next);
   };
 
   /**
@@ -728,6 +779,49 @@ export function WeChat({
       imagePrompt,
       messages,
       inferPeopleFromRequest(imagePrompt),
+      otherContacts,
+    );
+  };
+
+  /**
+   * 约会请求（好感度 50 解锁）：给角色发一条约TA出去的邀请，角色走
+   * 正常回复流程回——模型按提示词里的好感度决定怎么回。和发消息一样：
+   * 用户这句 +1，角色回了 +1。
+   */
+  const requestDate = () => {
+    const contact = selected;
+    if (!contact || busy || !isDateUnlocked(contact)) return;
+    const text = '这个周末有空吗？想约你出去约会';
+    const userMsg = makeMessage({ role: 'user', type: 'text', content: text });
+    const next = [...messages, userMsg];
+    setMessages(next);
+    void persist(contact, next);
+    const bumped = bumpAffection(contact.id, AFFECTION_PER_USER_MESSAGE);
+    void requestReply(bumped ?? contact, next);
+  };
+
+  /**
+   * 私密照（好感度 80 解锁）：让角色发一张只给你看的私密照。
+   * 用户主动点的，走“＋”按钮同一条生图流程（Tag 转写 + 人数强制 +
+   * 画师串/负面提示词），不是模型自己主动发图——不受 PR #40 守门的限制。
+   * 图是单人（solo）：角色自己在房间里拍的自拍，只发给你。
+   * 用户这句 +1；图本身是角色的回应，不再单独 +1。
+   */
+  const requestPrivatePhoto = () => {
+    const contact = selected;
+    if (!contact || generating || !isPrivatePhotoUnlocked(contact)) return;
+    const text = '发一张你的私密照给我看看';
+    const userMsg = makeMessage({ role: 'user', type: 'text', content: text });
+    const next = [...messages, userMsg];
+    setMessages(next);
+    void persist(contact, next);
+    bumpAffection(contact.id, AFFECTION_PER_USER_MESSAGE);
+    const otherContacts = (contacts ?? []).filter((c) => c.id !== contact.id);
+    void generateImageFromDescription(
+      contact,
+      `${contact.name}的私密自拍，在自己房间里拍的、只发给用户看的照片`,
+      next,
+      'solo',
       otherContacts,
     );
   };
@@ -789,6 +883,10 @@ export function WeChat({
                     {previews[contact.id] ?? contact.openingMessage}
                   </span>
                 </span>
+                <span className="flex shrink-0 items-center gap-1 text-[12px] tabular-nums text-neutral-500">
+                  <Heart className="size-3.5 fill-red-400 text-red-400" />
+                  {affectionOf(contact)}
+                </span>
               </button>
             ))
           )}
@@ -843,6 +941,10 @@ export function WeChat({
             {displayRelation(contact)}
           </span>
         </h2>
+        <span className="flex shrink-0 items-center gap-1 rounded-full bg-red-50 px-2 py-1 text-[12px] font-medium tabular-nums text-red-500">
+          <Heart className="size-3.5 fill-red-400 text-red-400" />
+          {affectionOf(contact)}
+        </span>
         <button
           type="button"
           aria-label="提示词构成"
@@ -942,34 +1044,73 @@ export function WeChat({
         </div>
       )}
 
-      {/* 输入栏 */}
-      <div className="flex shrink-0 items-center gap-2 border-t border-neutral-200 bg-white px-3 py-2 pb-2">
-        <button
-          type="button"
-          aria-label="更多"
-          onClick={() => setImageRowOpen((v) => !v)}
-          className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full border border-neutral-300 text-neutral-600 transition-colors hover:bg-neutral-100"
-        >
-          <Plus className="size-5" />
-        </button>
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') sendText();
-          }}
-          placeholder="发消息…"
-          className="min-w-0 flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#07C160]"
-        />
-        <button
-          type="button"
-          aria-label="发送"
-          onClick={sendText}
-          disabled={busy || !input.trim()}
-          className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#07C160] text-white transition-opacity disabled:opacity-40"
-        >
-          <Send className="size-4" />
-        </button>
+      {/* 约会 / 私密照：好感度解锁。没解锁时灰掉并标出阈值，解锁了才能点。 */}
+      <div className="shrink-0 border-t border-neutral-200 bg-white px-3 pb-2">
+        <div className="flex gap-2 pt-2">
+          <button
+            type="button"
+            aria-label="约会"
+            onClick={requestDate}
+            disabled={!isDateUnlocked(contact) || busy}
+            className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-3 py-2 text-sm transition-colors ${
+              isDateUnlocked(contact)
+                ? 'cursor-pointer bg-[#07C160] font-medium text-white hover:opacity-90'
+                : 'cursor-default bg-neutral-100 text-neutral-400'
+            } disabled:opacity-60`}
+          >
+            <CalendarHeart className="size-4" />
+            约会
+            {!isDateUnlocked(contact) && (
+              <span className="text-xs">· 好感度 {AFFECTION_DATE_UNLOCK} 解锁</span>
+            )}
+          </button>
+          <button
+            type="button"
+            aria-label="要一张私密照"
+            onClick={requestPrivatePhoto}
+            disabled={!isPrivatePhotoUnlocked(contact) || generating}
+            className={`flex flex-1 items-center justify-center gap-1 rounded-lg px-3 py-2 text-sm transition-colors ${
+              isPrivatePhotoUnlocked(contact)
+                ? 'cursor-pointer bg-[#07C160] font-medium text-white hover:opacity-90'
+                : 'cursor-default bg-neutral-100 text-neutral-400'
+            } disabled:opacity-60`}
+          >
+            <Camera className="size-4" />
+            私密照
+            {!isPrivatePhotoUnlocked(contact) && (
+              <span className="text-xs">· 好感度 {AFFECTION_PRIVATE_PHOTO_UNLOCK} 解锁</span>
+            )}
+          </button>
+        </div>
+        {/* 输入栏 */}
+        <div className="flex items-center gap-2 pt-2">
+          <button
+            type="button"
+            aria-label="更多"
+            onClick={() => setImageRowOpen((v) => !v)}
+            className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full border border-neutral-300 text-neutral-600 transition-colors hover:bg-neutral-100"
+          >
+            <Plus className="size-5" />
+          </button>
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') sendText();
+            }}
+            placeholder="发消息…"
+            className="min-w-0 flex-1 rounded-lg border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-[#07C160]"
+          />
+          <button
+            type="button"
+            aria-label="发送"
+            onClick={sendText}
+            disabled={busy || !input.trim()}
+            className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#07C160] text-white transition-opacity disabled:opacity-40"
+          >
+            <Send className="size-4" />
+          </button>
+        </div>
       </div>
 
       <PhoneImageConfig open={configOpen} onOpenChange={setConfigOpen} />

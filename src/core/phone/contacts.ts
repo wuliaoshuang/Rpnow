@@ -63,6 +63,51 @@ export function displayRelation(contact: PhoneContact): string {
   return '朋友';
 }
 
+/**
+ * 好感度：0–100，聊天涨上去的。数字都放在这里，以后要调阈值只改这里。
+ *
+ *   - 用户发一条消息 +1，角色回一次 +1（一轮完整对话 +2），封顶 100，
+ *     这版不扣好感度；
+ *   - 50 解锁约会请求（约她/他出去），80 解锁私密照（让她/他发一张
+ *     只给你看的照片）。
+ *
+ * 好感度存在联系人自己身上（PhoneContact.affection），跟着联系人缓存
+ * 一起进 IndexedDB，关掉重开还在；点“重置”清掉联系人缓存时一起清掉。
+ * 老缓存里没有这个字段，读的时候按 0 算——不触发重新初始化。
+ */
+export const AFFECTION_MAX = 100;
+/** 用户发一条消息，好感度 +1。 */
+export const AFFECTION_PER_USER_MESSAGE = 1;
+/** 角色回一次，好感度 +1。 */
+export const AFFECTION_PER_CHARACTER_REPLY = 1;
+/** 约会请求解锁：好感度达到这个数才能约她/他出去。 */
+export const AFFECTION_DATE_UNLOCK = 50;
+/** 私密照解锁：好感度达到这个数才能让她/他发一张私密照。 */
+export const AFFECTION_PRIVATE_PHOTO_UNLOCK = 80;
+
+/** 读一个联系人的好感度：没写（老缓存）按 0 算，超出 0–100 的压回来。 */
+export function affectionOf(contact: PhoneContact): number {
+  const raw = contact.affection;
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return 0;
+  return Math.min(AFFECTION_MAX, Math.max(0, Math.round(raw)));
+}
+
+/** 给一个联系人加好感度，返回新对象（原对象不动），封顶 100、不扣到 0 以下。 */
+export function addAffection(contact: PhoneContact, amount: number): PhoneContact {
+  const next = affectionOf(contact) + amount;
+  return { ...contact, affection: Math.min(AFFECTION_MAX, Math.max(0, next)) };
+}
+
+/** 好感度到 50 了吗——能约她/他出去了吗。 */
+export function isDateUnlocked(contact: PhoneContact): boolean {
+  return affectionOf(contact) >= AFFECTION_DATE_UNLOCK;
+}
+
+/** 好感度到 80 了吗——能让她/他发一张私密照了吗。 */
+export function isPrivatePhotoUnlocked(contact: PhoneContact): boolean {
+  return affectionOf(contact) >= AFFECTION_PRIVATE_PHOTO_UNLOCK;
+}
+
 /** 模型给的 gender 只认三个值，其他一律按 unknown 算。 */
 function parseGender(raw: unknown): PhoneContactGender {
   return raw === 'female' || raw === 'male' ? raw : 'unknown';
@@ -213,6 +258,8 @@ export function parseContactsJson(
       openingMessage: opening ? limitOpening(opening, name) : `你好，我是${name}。`,
       ...(profile ? { profile: limitProfile(profile) } : {}),
       gender: parseGender(raw.gender),
+      // 新联系人好感度从 0 开始（重新初始化也是从头认识，从 0 算）。
+      affection: 0,
       v: 2,
     });
     if (contacts.length >= MAX_CONTACTS) break;
