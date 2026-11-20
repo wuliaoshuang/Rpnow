@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { RPCard } from '@/core/types/card.js';
+import type { RPChatMessage } from '@/core/types/chat.js';
 import type { PhoneContact } from './types.js';
 import {
   buildImagePromptMessages,
@@ -11,6 +12,7 @@ import {
   buildReplySystemPrompt,
   enforceComposition,
   enforceSoloPrompt,
+  formatPlotProgress,
   inferPeopleFromRequest,
   looksLikeImageRequest,
 } from './reply.js';
@@ -140,6 +142,38 @@ describe('buildReplySystemPrompt', () => {
     }
   });
 
+  it('传了剧情进度：提示词里有这一节，写明只做了解、不续写主线', () => {
+    const plot = formatPlotProgress(
+      [
+        mainMsg('assistant', '刚在报到处领了学生卡，明天早上八点军训集合。'),
+        mainMsg('user', '我在4栋，你在哪栋？'),
+        mainMsg('assistant', '我在3栋，隔一栋楼。'),
+      ],
+      '李淑纯',
+    );
+    for (const contact of [mainContact, otherContact]) {
+      const prompt = buildReplySystemPrompt(fakeCard(), contact, plot);
+      expect(prompt).toContain('主线聊天的最近进展');
+      expect(prompt).toContain('仅供你了解当前剧情到了哪一步');
+      expect(prompt).toContain('军训集合');
+      expect(prompt).toContain('我在4栋');
+      expect(prompt).toContain('我在3栋');
+      expect(prompt).toContain('不要直接续写主线剧情');
+      expect(prompt).toContain('微信是你和用户单独的聊天');
+      // 独立性的老话还在：不是主线聊天的延续。
+      expect(prompt).toContain('不是主线聊天的延续');
+      expect(prompt).toContain('不要继续主线剧情');
+    }
+  });
+
+  it('没传剧情进度：提示词里没有这一节', () => {
+    for (const contact of [mainContact, otherContact]) {
+      const prompt = buildReplySystemPrompt(fakeCard(), contact);
+      expect(prompt).not.toContain('主线聊天的最近进展');
+      expect(prompt).not.toContain('不要直接续写主线剧情');
+    }
+  });
+
   it('讲清楚发图和发表情包两个工具怎么用', () => {
     for (const contact of [mainContact, otherContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
@@ -158,6 +192,73 @@ describe('buildReplySystemPrompt', () => {
       expect(prompt).toContain('[发图：这张图的内容]');
       expect(prompt).toContain('[表情：开心/难过/害羞/惊讶/亲昵/生气]');
     }
+  });
+});
+
+/** 主线聊天消息的假数据：默认 assistant、现在的时间戳。 */
+let mainMsgSeq = 0;
+function mainMsg(
+  role: RPChatMessage['role'],
+  content: string,
+  extra: Partial<RPChatMessage> = {},
+): RPChatMessage {
+  mainMsgSeq += 1;
+  return { id: `m-${mainMsgSeq}`, role, content, createdAt: 0, ...extra };
+}
+
+describe('formatPlotProgress', () => {
+  it('最近的消息都在，标清楚谁说的（用户 / 角色名）', () => {
+    const out = formatPlotProgress(
+      [
+        mainMsg('assistant', '刚在报到处领了学生卡，明天早上八点军训集合。'),
+        mainMsg('user', '我在4栋，你在哪栋？'),
+        mainMsg('assistant', '我在3栋，隔一栋楼。'),
+      ],
+      '李淑纯',
+    );
+    expect(out).toContain('李淑纯：刚在报到处领了学生卡');
+    expect(out).toContain('用户：我在4栋，你在哪栋？');
+    expect(out).toContain('李淑纯：我在3栋，隔一栋楼。');
+  });
+
+  it('只取最近 10 条，更早的不要', () => {
+    const messages = Array.from({ length: 12 }, (_, i) =>
+      mainMsg(i % 2 === 0 ? 'assistant' : 'user', `第${i + 1}条`),
+    );
+    const out = formatPlotProgress(messages, '李淑纯');
+    expect(out).not.toContain('第1条');
+    expect(out).not.toContain('第2条');
+    expect(out).toContain('第3条');
+    expect(out).toContain('第12条');
+    expect(out.split('\n')).toHaveLength(10);
+  });
+
+  it('超长的单条截断到 200 字，多余的用“…”代替', () => {
+    const long = '字'.repeat(250);
+    const out = formatPlotProgress([mainMsg('assistant', long)], '李淑纯');
+    expect(out).toBe(`李淑纯：${'字'.repeat(200)}…`);
+    expect(out.length).toBeLessThan(long.length);
+  });
+
+  it('系统消息、隐藏消息、开场白、空消息都不要', () => {
+    const out = formatPlotProgress(
+      [
+        mainMsg('system', '系统：这是系统提示'),
+        mainMsg('assistant', '这是开场白', { isGreeting: true }),
+        mainMsg('assistant', '这是隐藏的消息', { hidden: true }),
+        mainMsg('user', '   '),
+        mainMsg('assistant', '这是真正的剧情'),
+      ],
+      '李淑纯',
+    );
+    expect(out).toBe('李淑纯：这是真正的剧情');
+  });
+
+  it('空列表和只有开场白时返回空字符串', () => {
+    expect(formatPlotProgress([], '李淑纯')).toBe('');
+    expect(
+      formatPlotProgress([mainMsg('assistant', '这是开场白', { isGreeting: true })], '李淑纯'),
+    ).toBe('');
   });
 });
 

@@ -3,9 +3,13 @@
  *
  * 小手机是一套独立系统：微信里的聊天和主线角色扮演是两回事。
  * 回复只认角色本身是谁（名字、性格、介绍）和微信自己的聊天记录，
- * 不跟主线剧情走——场景、开场白、主线消息一律不进提示词。
+ * 不跟主线剧情走——场景、开场白一律不进提示词。
+ * 只有一样例外：主线聊天的最近进展会以“剧情进度”进回复提示词，
+ * 只是让角色知道剧情到了哪一步，别说出和主线矛盾的话——微信还是
+ * 独立的聊天，不续写主线，也不把主线里正在发生的事当成微信里的事。
  */
 import type { RPCard } from '@/core/types/card.js';
+import type { RPChatMessage } from '@/core/types/chat.js';
 import type { LLMMessage } from '@/core/llm/types.js';
 import type { ImagePeople, PhoneContact, PhoneContactGender } from './types.js';
 
@@ -201,6 +205,48 @@ const NO_OOC =
 const SHORT_STYLE = '像在微信上发消息：1–3 句短句，口语化、亲切。';
 
 /**
+ * 主线剧情进度：把主线聊天（手机外面那个正常聊天）的最近消息压成一小段。
+ *
+ * 只给角色“知道剧情到了哪一步”用——比如现在是报到日、角色在 3 栋、
+ * 用户在 4 栋，别在微信里说出和主线矛盾的话。不是让它续写主线。
+ *
+ * 只要最近 10 条：系统消息、隐藏消息、开场白（问候）和空消息都不要；
+ * 每条超过 200 字就截断（多余的用“…”代替），免得提示词被撑爆；
+ * 谁说的写清楚：用户还是这个角色。主线还没聊起来（空的、或者只有
+ * 开场白）就返回空字符串，调用方不往提示词里加这一节。
+ */
+const PLOT_PROGRESS_MAX_MESSAGES = 10;
+const PLOT_PROGRESS_MAX_CHARS = 200;
+
+export function formatPlotProgress(messages: RPChatMessage[], characterName: string): string {
+  const usable = messages.filter(
+    (m) => m.role !== 'system' && !m.hidden && !m.isGreeting && m.content.trim().length > 0,
+  );
+  const recent = usable.slice(-PLOT_PROGRESS_MAX_MESSAGES);
+  if (recent.length === 0) return '';
+  return recent
+    .map((m) => {
+      const who = m.role === 'assistant' ? characterName : '用户';
+      const chars = [...m.content.trim()];
+      const content =
+        chars.length > PLOT_PROGRESS_MAX_CHARS
+          ? `${chars.slice(0, PLOT_PROGRESS_MAX_CHARS).join('')}…`
+          : chars.join('');
+      return `${who}：${content}`;
+    })
+    .join('\n');
+}
+
+/**
+ * 剧情进度这一节的标题：只给“知道剧情到了哪一步”用，不续写主线，
+ * 也不把主线里正在发生的事当成微信里正在聊的事。
+ */
+const PLOT_PROGRESS_HEADER =
+  '以下是主线聊天的最近进展，仅供你了解当前剧情到了哪一步（比如角色现在在哪、在做什么）：';
+const PLOT_PROGRESS_FOOTER =
+  '不要直接续写主线剧情，也不要把主线里正在发生的事当成微信里正在聊的事。微信是你和用户单独的聊天。';
+
+/**
  * 工具：发图和发表情包——Agent 不是光会打字。
  *
  * 像真人一样自然地用：用户让你发图、发照片、看看你，或者你自己提到
@@ -226,8 +272,15 @@ const TOOLS =
  * 介绍）和联系人的关系都留在这里，模型按这个身份回。
  * 场景、开场白一律不进——那是主线剧情的东西，微信里不认。
  * 联系人的第一条消息也不写进这里：它本来就在微信聊天记录里。
+ *
+ * plotProgress 是主线聊天的最近进展（formatPlotProgress 压出来的）：
+ * 只用来让角色知道剧情到了哪一步，不续写主线；空的时候这一节整个不写。
  */
-export function buildReplySystemPrompt(card: RPCard, contact: PhoneContact): string {
+export function buildReplySystemPrompt(
+  card: RPCard,
+  contact: PhoneContact,
+  plotProgress = '',
+): string {
   const d = card.data;
   const framing = contact.isMain
     ? `我们现在在进行 role play（角色扮演）。你要扮演「${d.name}」，正在一个叫微信的地方，和用户聊天。`
@@ -242,7 +295,10 @@ export function buildReplySystemPrompt(card: RPCard, contact: PhoneContact): str
         `你是「${contact.name}」，是「${d.name}」的${contact.relation}，正在微信上和用户聊天。`,
         d.description ? `角色卡介绍：${d.description}` : '',
       ];
-  return [framing, ...identity, INDEPENDENCE, THINK_FIRST, NO_OOC, SHORT_STYLE, TOOLS]
+  const plotSection = plotProgress
+    ? [PLOT_PROGRESS_HEADER, plotProgress, PLOT_PROGRESS_FOOTER].join('\n')
+    : '';
+  return [framing, ...identity, INDEPENDENCE, plotSection, THINK_FIRST, NO_OOC, SHORT_STYLE, TOOLS]
     .filter(Boolean)
     .join('\n');
 }

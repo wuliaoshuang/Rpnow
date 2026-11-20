@@ -5,8 +5,9 @@
  * 模型找出来（见 `@/core/phone/contacts.js`），按聊天缓存进 IndexedDB，
  * 之后直接读缓存。每个联系人有自己的聊天记录，按联系人单独保存。
  *
- * 小手机是独立系统：回复只认角色本身是谁和微信自己的聊天记录，不跟主线
- * 剧情走（见 `@/core/phone/reply.js`）。旧逻辑存的缓存（主角开场白就是卡
+ * 小手机是独立系统：微信是单独的聊天，不续写主线剧情；但回复时会把
+ * 主线聊天（手机外面那个正常聊天）的最近进展当剧情进度放进提示词，
+ * 只做了解，让角色知道剧情到了哪一步（见 `@/core/phone/reply.js`）。旧逻辑存的缓存（主角开场白就是卡
  * 的 first_mes 原文）会在打开时丢掉、重新初始化，并把主角存过的微信记录
  * 第一条也换成新开场白。角色还是个 Agent：回复时模型能自己调发图和发表
  * 情包两个工具（见 `@/core/phone/tools.js`），用户要看图就真发一张图，
@@ -29,9 +30,11 @@ import {
   buildImageTagContext,
   buildReplySystemPrompt,
   enforceComposition,
+  formatPlotProgress,
   inferPeopleFromRequest,
   looksLikeImageRequest,
 } from '@/core/phone/reply.js';
+import { currentMessages } from '@/core/branch/engine.js';
 import type { ChatHistoryEntry } from '@/core/phone/reply.js';
 import {
   PHONE_TOOLS,
@@ -526,9 +529,16 @@ export function WeChat({
       }
       const model = phone.chatModel || connection.defaultModel || '';
       const recent = history.filter((m) => m.role !== 'system').slice(-10);
-      // 小手机是独立系统：回复只认角色本身是谁和微信自己的聊天记录，
-      // 不跟主线剧情走——场景、开场白、主线消息一律不进提示词。
-      const systemPrompt = buildReplySystemPrompt(card, contact);
+      // 小手机是独立系统：微信是单独的聊天，不续写主线剧情。
+      // 但角色得知道主线剧情到了哪一步（比如现在是报到日、自己在 3 栋、
+      // 用户在 4 栋），不然微信里会说出和主线矛盾的话——所以每次回复都
+      // 读当前主聊天（手机外面那个正常聊天）的最新消息，当场压成剧情
+      // 进度放进提示词里“只做了解”，主线推进了，这里的感知也跟着推进。
+      const mainChat = useApp.getState().chats.find((c) => c.id === chatId);
+      const plotProgress = mainChat
+        ? formatPlotProgress(currentMessages(mainChat), card.data.name)
+        : '';
+      const systemPrompt = buildReplySystemPrompt(card, contact, plotProgress);
       const llmMessages: LLMMessage[] = [
         { role: 'system', content: systemPrompt },
         ...historyEntries(recent),
@@ -657,6 +667,7 @@ export function WeChat({
     [
       appendMessages,
       card,
+      chatId,
       contacts,
       generateImageFromDescription,
       llm,
