@@ -31,6 +31,22 @@ const NO_OOC =
 const SHORT_STYLE = '像在微信上发消息：1–3 句短句，口语化、亲切。';
 
 /**
+ * 工具：发图和发表情包——Agent 不是光会打字。
+ *
+ * 像真人一样自然地用：用户让你发图、发照片、看看你，或者你自己提到
+ * 拍了照片、想分享一张图的时候，就调用发图工具发一张真的图，不要只在
+ * 文字里说“我拍了照片”却不发图；想表达情绪的时候就发表情包，不要光
+ * 靠文字。文字和工具可以一起用：先回一句文字，再发图或表情包。
+ * 调用不了工具时，改在文字里写标记（`[发图：…]` / `[表情：…]`），
+ * 我会帮你发出去，标记不会显示给用户看。
+ */
+const TOOLS =
+  '你有两个工具可以用：发图（send_image）和发表情包（send_sticker）。' +
+  '像真人一样自然地用它们：用户让你发图、发照片、看看你，或者你自己提到拍了照片、想分享一张图的时候，就调用发图工具发一张真的图，不要只在文字里说“我拍了照片”却不发图；' +
+  '想表达情绪的时候就发表情包，不要光靠文字。文字和工具可以一起用：先回一句文字，再发图或表情包。' +
+  '如果你调用不了工具，就在文字里用标记写出来：[发图：这张图的内容]、[表情：开心/难过/害羞/惊讶/亲昵/生气]，我会帮你发出去，标记不会显示给用户看。';
+
+/**
  * 回复用的 system prompt。
  *
  * 只留角色本身的身份（名字、性格、介绍）和联系人的关系；
@@ -49,7 +65,7 @@ export function buildReplySystemPrompt(card: RPCard, contact: PhoneContact): str
         `你是「${contact.name}」，是「${d.name}」的${contact.relation}，正在微信上和用户聊天。`,
         d.description ? `角色卡介绍：${d.description}` : '',
       ];
-  return [...identity, INDEPENDENCE, THINK_FIRST, NO_OOC, SHORT_STYLE]
+  return [...identity, INDEPENDENCE, THINK_FIRST, NO_OOC, SHORT_STYLE, TOOLS]
     .filter(Boolean)
     .join('\n');
 }
