@@ -26,6 +26,13 @@ export interface PhoneMessage {
   createdAt: number;
 }
 
+/**
+ * 联系人的性别：初始化时由模型按卡的内容判断一次，存下来备用。
+ * 生图时用它决定单人强制标签（1girl / 1boy / solo）；
+ * 老缓存里没有这个字段时按 'unknown' 算。
+ */
+export type PhoneContactGender = 'female' | 'male' | 'unknown';
+
 /** One WeChat contact — a person who appears in the current chat's card. */
 export interface PhoneContact {
   /**
@@ -43,6 +50,11 @@ export interface PhoneContact {
   openingMessage: string;
   /** 是否主角（卡本身）。 */
   isMain: boolean;
+  /**
+   * 性别：初始化时模型按卡的内容给的（female / male / unknown）。
+   * 可选——老缓存里没有这个字段，读的时候按 'unknown' 处理。
+   */
+  gender?: PhoneContactGender;
 }
 
 /** One WeChat conversation — one per contact. */

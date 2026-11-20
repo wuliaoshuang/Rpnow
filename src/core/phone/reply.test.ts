@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RPCard } from '@/core/types/card.js';
 import type { PhoneContact } from './types.js';
-import { buildImagePromptMessages, buildReplySystemPrompt } from './reply.js';
+import { buildImagePromptMessages, buildReplySystemPrompt, enforceSoloPrompt } from './reply.js';
 
 const SCENARIO_MARKER = 'SCENARIO_花店里的一天，主人推门进来';
 const FIRST_MES_MARKER = 'FIRSTMES_她回头看过来，蓝色的眼睛里带着明显的水光';
@@ -115,6 +115,63 @@ describe('buildReplySystemPrompt', () => {
       expect(prompt).toContain('[发图：这张图的内容]');
       expect(prompt).toContain('[表情：开心/难过/害羞/惊讶/亲昵/生气]');
     }
+  });
+});
+
+describe('enforceSoloPrompt', () => {
+  it('模型写了多人标签也照删：2girls、group、multiple girls 都去掉，开头是单人标记', () => {
+    const out = enforceSoloPrompt(
+      '2girls, long blue hair, blue eyes, floral apron, group, dorm building, multiple girls, masterpiece',
+      'female',
+    );
+    expect(out.startsWith('1girl, solo')).toBe(true);
+    expect(out).not.toContain('2girls');
+    expect(out).not.toContain('group');
+    expect(out).not.toContain('multiple girls');
+  });
+
+  it('性别决定开头的单人标记：女 1girl, solo / 男 1boy, solo / 未知 solo', () => {
+    expect(enforceSoloPrompt('school uniform, dorm building', 'female')).toBe(
+      '1girl, solo, school uniform, dorm building',
+    );
+    expect(enforceSoloPrompt('school uniform, dorm building', 'male')).toBe(
+      '1boy, solo, school uniform, dorm building',
+    );
+    expect(enforceSoloPrompt('school uniform, dorm building', 'unknown')).toBe(
+      'solo, school uniform, dorm building',
+    );
+  });
+
+  it('外貌和场景标签原样保留，只动人数', () => {
+    const out = enforceSoloPrompt(
+      '2girls, long blue hair, blue eyes, buying liangpi under a plane tree, old street, september sunlight',
+      'female',
+    );
+    expect(out).toBe(
+      '1girl, solo, long blue hair, blue eyes, buying liangpi under a plane tree, old street, september sunlight',
+    );
+  });
+
+  it('已经以 1girl 开头的，不重复加 1girl，只补 solo', () => {
+    expect(enforceSoloPrompt('1girl, long blue hair, dorm building', 'female')).toBe(
+      '1girl, solo, long blue hair, dorm building',
+    );
+    expect(enforceSoloPrompt('1boy, short black hair, dorm building', 'male')).toBe(
+      '1boy, solo, short black hair, dorm building',
+    );
+  });
+
+  it('已经是 1girl, solo 开头的，原样不动', () => {
+    expect(enforceSoloPrompt('1girl, solo, long blue hair', 'female')).toBe(
+      '1girl, solo, long blue hair',
+    );
+  });
+
+  it('多人标签大小写和空格不影响删除', () => {
+    const out = enforceSoloPrompt('2Girls, Crowd, school uniform', 'female');
+    expect(out).not.toContain('2Girls');
+    expect(out).not.toContain('Crowd');
+    expect(out).toBe('1girl, solo, school uniform');
   });
 });
 
