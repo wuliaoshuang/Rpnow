@@ -1,11 +1,14 @@
 /**
- * 小手机回复与生图提示词的单元测试：只测纯函数（提示词拼装），
- * 不测真的调模型——模型调用在 Playwright 里用假接口验。
- */
-import { describe, expect, it } from 'vitest';
-import type { RPCard } from '@/core/types/card.js';
-import type { RPChatMessage } from '@/core/types/chat.js';
-import type { PhoneContact } from './types.js';
+* 小手机回复与生图提示词的单元测试：只测纯函数（提示词拼装），
+* 不测真的调模型——模型调用在 Playwright 里用假接口验。
+*
+* 联系人都是卡里提到的其他人物（卡的主角本人不是联系人），
+* 每个联系人带自己的人设（profile），回复和生图都按这个人来。
+*/
+import { describe, expect, it} from 'vitest';
+import type { RPCard} from '@/core/types/card.js';
+import type { RPChatMessage} from '@/core/types/chat.js';
+import type { PhoneContact} from './types.js';
 import {
   buildImagePromptMessages,
   buildImageTagContext,
@@ -39,79 +42,111 @@ function fakeCard(overrides: Partial<RPCard['data']> = {}): RPCard {
   };
 }
 
-const mainContact: PhoneContact = {
-  id: 'card-1',
-  name: '李淑纯',
-  relation: '本人',
-  openingMessage: '嗨，我是淑纯',
-  isMain: true,
-};
-
-const otherContact: PhoneContact = {
+const xiaoyuContact: PhoneContact = {
   id: 'c_xiaoyu',
   name: '小雨',
   relation: '闺蜜',
   openingMessage: '在吗在吗，出来玩呀',
-  isMain: false,
+  gender: 'female',
+  profile: '活泼开朗，短发，爱笑，喜欢拉着人出去玩',
+};
+
+const ajieContact: PhoneContact = {
+  id: 'c_ajie',
+  name: '阿杰',
+  relation: '哥哥',
+  openingMessage: '今天花店忙不忙',
+  gender: 'male',
+  profile: '沉稳可靠，高个子，常穿围裙在花店帮忙',
 };
 
 describe('buildReplySystemPrompt', () => {
-  it('主角：设定（scenario）和开场白都进了提示词，但都标明了身份', () => {
-    const prompt = buildReplySystemPrompt(fakeCard(), mainContact);
-    // 设定：卡的 scenario 进了【设定】一节（介绍和性格已经在身份那一段，这里不重复）。
-    expect(prompt).toContain('【设定】');
+  it('小雨：设定（scenario）和开场白都进了提示词，但都标明了身份', () => {
+    const prompt = buildReplySystemPrompt(fakeCard(), xiaoyuContact);
+    // 设定：卡的 scenario 进了一节（介绍和性格已经在身份那一段，这里不重复）。
+    expect(prompt).toContain('\u3010设定\u3011');
     expect(prompt).toContain(SCENARIO_MARKER);
-    // 开场白：进了【开场白】一节，只当说话方式的参考——写明了不要当成
+    // 开场白：进了一节，只当说话方式的参考——写明了不要当成
     // 微信第一条消息、不要照抄；微信第一条还是模型按剧情写的短消息。
-    expect(prompt).toContain('【开场白】');
+    expect(prompt).toContain('\u3010开场白\u3011');
     expect(prompt).toContain(FIRST_MES_MARKER);
     expect(prompt).toContain('不要把它当成微信的第一条消息');
     expect(prompt).toContain('不要照抄');
   });
 
-  it('非主角：同样有设定和开场白', () => {
-    const prompt = buildReplySystemPrompt(fakeCard(), otherContact);
-    expect(prompt).toContain('【设定】');
+  it('阿杰：同样有设定和开场白', () => {
+    const prompt = buildReplySystemPrompt(fakeCard(), ajieContact);
+    expect(prompt).toContain('\u3010设定\u3011');
     expect(prompt).toContain(SCENARIO_MARKER);
-    expect(prompt).toContain('【开场白】');
+    expect(prompt).toContain('\u3010开场白\u3011');
     expect(prompt).toContain(FIRST_MES_MARKER);
   });
 
   it('卡没有 scenario / first_mes 时，这两节整个不写', () => {
     const prompt = buildReplySystemPrompt(
-      fakeCard({ scenario: '', first_mes: '' }),
-      mainContact,
+      fakeCard({ scenario: '', first_mes: ''}),
+      xiaoyuContact,
     );
-    expect(prompt).not.toContain('【设定】');
-    expect(prompt).not.toContain('【开场白】');
+    expect(prompt).not.toContain('\u3010设定\u3011');
+    expect(prompt).not.toContain('\u3010开场白\u3011');
     expect(prompt).not.toContain(SCENARIO_MARKER);
     expect(prompt).not.toContain(FIRST_MES_MARKER);
   });
 
   it('开场白太长时只引用前 500 字', () => {
     const long = `FIRSTMES_${'很长很长的开场白'.repeat(100)}`;
-    const prompt = buildReplySystemPrompt(fakeCard({ first_mes: long }), mainContact);
-    expect(prompt).toContain('【开场白】');
+    const prompt = buildReplySystemPrompt(fakeCard({ first_mes: long}), xiaoyuContact);
+    expect(prompt).toContain('\u3010开场白\u3011');
     expect(prompt).toContain('…');
     expect(prompt).not.toContain(long);
   });
 
-  it('主角：留着名字、介绍和性格', () => {
-    const prompt = buildReplySystemPrompt(fakeCard(), mainContact);
-    expect(prompt).toContain('李淑纯');
-    expect(prompt).toContain('和闺蜜小雨一起开花店');
-    expect(prompt).toContain('温柔细心');
-  });
-
-  it('非主角：留着名字、和主角的关系、卡的介绍', () => {
-    const prompt = buildReplySystemPrompt(fakeCard(), otherContact);
+  it('小雨：留着自己的名字、和主角的关系、卡的介绍', () => {
+    const prompt = buildReplySystemPrompt(fakeCard(), xiaoyuContact);
     expect(prompt).toContain('小雨');
     expect(prompt).toContain('闺蜜');
     expect(prompt).toContain('和闺蜜小雨一起开花店');
+    // 卡的介绍（主角开的店、蓝发蓝眼）是主角世界的背景，在身份里；
+    // 主角本人的性格（温柔细心）不是小雨的，不写进小雨的提示词。
+    expect(prompt).not.toContain('温柔细心');
+  });
+
+  it('阿杰：留着名字、和主角的关系、卡的介绍', () => {
+    const prompt = buildReplySystemPrompt(fakeCard(), ajieContact);
+    expect(prompt).toContain('阿杰');
+    expect(prompt).toContain('哥哥');
+    expect(prompt).toContain('和闺蜜小雨一起开花店');
+  });
+
+  it('联系人自己的人设（profile）写进提示词，扮演他/她才不会 OOC', () => {
+    const prompt = buildReplySystemPrompt(fakeCard(), xiaoyuContact);
+    expect(prompt).toContain('\u3010人设\u3011');
+    expect(prompt).toContain('活泼开朗，短发，爱笑');
+  });
+
+  it('不同联系人的人设各归各的：小雨的提示词里没有阿杰的人设', () => {
+    const xiaoyuPrompt = buildReplySystemPrompt(fakeCard(), xiaoyuContact);
+    const ajiePrompt = buildReplySystemPrompt(fakeCard(), ajieContact);
+    expect(xiaoyuPrompt).toContain('活泼开朗，短发，爱笑');
+    expect(xiaoyuPrompt).not.toContain('沉稳可靠，高个子');
+    expect(ajiePrompt).toContain('沉稳可靠，高个子');
+    expect(ajiePrompt).not.toContain('活泼开朗，短发，爱笑');
+  });
+
+  it('联系人没有人设时，提示词里没有人设一节，不崩', () => {
+    const contact: PhoneContact = {
+      id: 'c_xiaoyu',
+      name: '小雨',
+      relation: '闺蜜',
+      openingMessage: '在吗在吗',
+    };
+    const prompt = buildReplySystemPrompt(fakeCard(), contact);
+    expect(prompt).toContain('你要扮演「小雨」');
+    expect(prompt).not.toContain('\u3010人设\u3011');
   });
 
   it('第一句就写明这是 role play：扮演角色，在叫微信的地方和用户聊天', () => {
-    for (const contact of [mainContact, otherContact]) {
+    for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
       expect(prompt).toContain('role play');
       expect(prompt).toContain('角色扮演');
@@ -119,13 +154,14 @@ describe('buildReplySystemPrompt', () => {
       expect(prompt).toContain('一个叫微信的地方');
       expect(prompt).toContain('和用户聊天');
     }
-    expect(buildReplySystemPrompt(fakeCard(), mainContact)).toContain('你要扮演「李淑纯」');
-    expect(buildReplySystemPrompt(fakeCard(), otherContact)).toContain('你要扮演「小雨」');
-    expect(buildReplySystemPrompt(fakeCard(), otherContact)).toContain('「李淑纯」的闺蜜');
+    expect(buildReplySystemPrompt(fakeCard(), xiaoyuContact)).toContain('你要扮演「小雨」');
+    expect(buildReplySystemPrompt(fakeCard(), ajieContact)).toContain('你要扮演「阿杰」');
+    expect(buildReplySystemPrompt(fakeCard(), xiaoyuContact)).toContain('「李淑纯」的闺蜜');
+    expect(buildReplySystemPrompt(fakeCard(), ajieContact)).toContain('「李淑纯」的哥哥');
   });
 
   it('发图时要按场景判断图里有几个人，填 people 参数', () => {
-    for (const contact of [mainContact, otherContact]) {
+    for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
       expect(prompt).toContain('people');
       expect(prompt).toContain('solo / duo / multi');
@@ -135,7 +171,7 @@ describe('buildReplySystemPrompt', () => {
   });
 
   it('只在用户明确要图时发图：不主动发图，表情包可以主动发', () => {
-    for (const contact of [mainContact, otherContact]) {
+    for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
       expect(prompt).toContain('用户没让你发图时，不要发图');
       expect(prompt).toContain('不要自己主动发图');
@@ -146,7 +182,7 @@ describe('buildReplySystemPrompt', () => {
   });
 
   it('写明这是独立的微信聊天，不是主线剧情的延续', () => {
-    for (const contact of [mainContact, otherContact]) {
+    for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
       expect(prompt).toContain('独立的微信聊天');
       expect(prompt).toContain('不是主线聊天的延续');
@@ -156,7 +192,7 @@ describe('buildReplySystemPrompt', () => {
   });
 
   it('要求先想一想再回，全程不 OOC、不提 AI、不用动作描写', () => {
-    for (const contact of [mainContact, otherContact]) {
+    for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
       expect(prompt).toContain('先想一想');
       expect(prompt).toContain('不要 OOC');
@@ -175,8 +211,8 @@ describe('buildReplySystemPrompt', () => {
       ],
       '李淑纯',
     );
-    for (const contact of [mainContact, otherContact]) {
-      const prompt = buildReplySystemPrompt(fakeCard(), contact, { plotProgress: plot });
+    for (const contact of [xiaoyuContact, ajieContact]) {
+      const prompt = buildReplySystemPrompt(fakeCard(), contact, { plotProgress: plot});
       expect(prompt).toContain('主线聊天的最近进展');
       expect(prompt).toContain('仅供你了解当前剧情到了哪一步');
       expect(prompt).toContain('军训集合');
@@ -191,50 +227,50 @@ describe('buildReplySystemPrompt', () => {
   });
 
   it('没传剧情进度：提示词里没有这一节', () => {
-    for (const contact of [mainContact, otherContact]) {
+    for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
       expect(prompt).not.toContain('主线聊天的最近进展');
       expect(prompt).not.toContain('不要直接续写主线剧情');
     }
   });
 
-  it('传了世界书：提示词里有【世界书】一节；没传就没有', () => {
+  it('传了世界书：提示词里有一节；没传就没有', () => {
     const lorebookText = '花店二楼住着一只叫年糕的猫，店里的人都认识它。';
-    for (const contact of [mainContact, otherContact]) {
-      const prompt = buildReplySystemPrompt(fakeCard(), contact, { lorebookText });
-      expect(prompt).toContain('【世界书】');
+    for (const contact of [xiaoyuContact, ajieContact]) {
+      const prompt = buildReplySystemPrompt(fakeCard(), contact, { lorebookText});
+      expect(prompt).toContain('\u3010世界书\u3011');
       expect(prompt).toContain('花店二楼住着一只叫年糕的猫');
-      expect(buildReplySystemPrompt(fakeCard(), contact)).not.toContain('【世界书】');
+      expect(buildReplySystemPrompt(fakeCard(), contact)).not.toContain('\u3010世界书\u3011');
     }
   });
 
-  it('传了预设：提示词里有【预设】一节，放在最后（最高注入深度）', () => {
+  it('传了预设：提示词里有一节，放在最后（最高注入深度）', () => {
     const presetText = 'PRESET_写回复前先想一想角色此刻的心情。';
-    for (const contact of [mainContact, otherContact]) {
+    for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact, {
         plotProgress: '剧情进度_报到日',
         lorebookText: '世界书_花店二楼有猫',
         presetText,
       });
-      expect(prompt).toContain('【预设】');
+      expect(prompt).toContain('\u3010预设\u3011');
       expect(prompt).toContain('PRESET_写回复前先想一想角色此刻的心情');
       expect(prompt).toContain('最高优先级');
       // 顺序：预设在最后——在剧情进度、世界书、设定、开场白、工具说明
       // 之后，紧贴聊天记录（离生成最近、最显眼）。
       const idx = (s: string) => prompt.indexOf(s);
-      expect(idx('【预设】')).toBeGreaterThan(idx('主线聊天的最近进展'));
-      expect(idx('【预设】')).toBeGreaterThan(idx('【世界书】'));
-      expect(idx('【预设】')).toBeGreaterThan(idx('【设定】'));
-      expect(idx('【预设】')).toBeGreaterThan(idx('【开场白】'));
+      expect(idx('\u3010预设\u3011')).toBeGreaterThan(idx('主线聊天的最近进展'));
+      expect(idx('\u3010预设\u3011')).toBeGreaterThan(idx('\u3010世界书\u3011'));
+      expect(idx('\u3010预设\u3011')).toBeGreaterThan(idx('\u3010设定\u3011'));
+      expect(idx('\u3010预设\u3011')).toBeGreaterThan(idx('\u3010开场白\u3011'));
       // 预设是最后一段：它在工具说明之后，后面什么都没有。
-      expect(prompt.indexOf('【预设】')).toBeGreaterThan(prompt.indexOf('发图工具'));
+      expect(prompt.indexOf('\u3010预设\u3011')).toBeGreaterThan(prompt.indexOf('发图工具'));
     }
     // 没传预设：这一节整个不写。
-    expect(buildReplySystemPrompt(fakeCard(), mainContact)).not.toContain('【预设】');
+    expect(buildReplySystemPrompt(fakeCard(), xiaoyuContact)).not.toContain('\u3010预设\u3011');
   });
 
   it('预设那一段写明：回复格式仍是微信短消息，不套主聊天的正文包裹格式', () => {
-    const prompt = buildReplySystemPrompt(fakeCard(), mainContact, {
+    const prompt = buildReplySystemPrompt(fakeCard(), xiaoyuContact, {
       presetText: 'PRESET_随便写点什么。',
     });
     expect(prompt).toContain('回复的格式仍是微信短消息');
@@ -242,7 +278,7 @@ describe('buildReplySystemPrompt', () => {
   });
 
   it('讲清楚发图和发表情包两个工具怎么用', () => {
-    for (const contact of [mainContact, otherContact]) {
+    for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
       expect(prompt).toContain('send_image');
       expect(prompt).toContain('send_sticker');
@@ -254,7 +290,7 @@ describe('buildReplySystemPrompt', () => {
   });
 
   it('调用不了工具时，教模型用 [发图：…] / [表情：…] 标记', () => {
-    for (const contact of [mainContact, otherContact]) {
+    for (const contact of [xiaoyuContact, ajieContact]) {
       const prompt = buildReplySystemPrompt(fakeCard(), contact);
       expect(prompt).toContain('[发图：这张图的内容]');
       expect(prompt).toContain('[表情：开心/难过/害羞/惊讶/亲昵/生气]');
@@ -270,7 +306,7 @@ function mainMsg(
   extra: Partial<RPChatMessage> = {},
 ): RPChatMessage {
   mainMsgSeq += 1;
-  return { id: `m-${mainMsgSeq}`, role, content, createdAt: 0, ...extra };
+  return { id: `m-${mainMsgSeq}`, role, content, createdAt: 0,...extra};
 }
 
 describe('formatPlotProgress', () => {
@@ -289,9 +325,9 @@ describe('formatPlotProgress', () => {
   });
 
   it('只取最近 10 条，更早的不要', () => {
-    const messages = Array.from({ length: 12 }, (_, i) =>
-      mainMsg(i % 2 === 0 ? 'assistant' : 'user', `第${i + 1}条`),
-    );
+    const messages = Array.from({ length: 12}, (_, i) =>
+    mainMsg(i % 2 === 0? 'assistant': 'user', `第${i + 1}条`),
+  );
     const out = formatPlotProgress(messages, '李淑纯');
     expect(out).not.toContain('第1条');
     expect(out).not.toContain('第2条');
@@ -311,9 +347,9 @@ describe('formatPlotProgress', () => {
     const out = formatPlotProgress(
       [
         mainMsg('system', '系统：这是系统提示'),
-        mainMsg('assistant', '这是开场白', { isGreeting: true }),
-        mainMsg('assistant', '这是隐藏的消息', { hidden: true }),
-        mainMsg('user', '   '),
+        mainMsg('assistant', '这是开场白', { isGreeting: true}),
+        mainMsg('assistant', '这是隐藏的消息', { hidden: true}),
+        mainMsg('user', ' '),
         mainMsg('assistant', '这是真正的剧情'),
       ],
       '李淑纯',
@@ -324,7 +360,7 @@ describe('formatPlotProgress', () => {
   it('空列表和只有开场白时返回空字符串', () => {
     expect(formatPlotProgress([], '李淑纯')).toBe('');
     expect(
-      formatPlotProgress([mainMsg('assistant', '这是开场白', { isGreeting: true })], '李淑纯'),
+      formatPlotProgress([mainMsg('assistant', '这是开场白', { isGreeting: true})], '李淑纯'),
     ).toBe('');
   });
 });
@@ -484,7 +520,7 @@ describe('looksLikeImageRequest', () => {
     expect(looksLikeImageRequest('哈哈')).toBe(false);
     expect(looksLikeImageRequest('报到总算弄完了')).toBe(false);
     expect(looksLikeImageRequest('')).toBe(false);
-    expect(looksLikeImageRequest('   ')).toBe(false);
+    expect(looksLikeImageRequest(' ')).toBe(false);
   });
 
   it('只是提到“图”字不算要图', () => {
@@ -496,7 +532,7 @@ describe('looksLikeImageRequest', () => {
 
 describe('buildImagePromptMessages', () => {
   it('带着角色的介绍和性格，让模型提炼外貌特征', () => {
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', []);
+    const messages = buildImagePromptMessages(fakeCard(), xiaoyuContact, '小雨在花店门口招手', []);
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain('和闺蜜小雨一起开花店');
     expect(userText).toContain('蓝发蓝眼');
@@ -507,14 +543,21 @@ describe('buildImagePromptMessages', () => {
     expect(userText).toContain('穿着');
   });
 
-  it('带着用户想画的内容', () => {
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', []);
+  it('带着联系人自己的人设，让模型按这个人的样子画', () => {
+    const messages = buildImagePromptMessages(fakeCard(), xiaoyuContact, '小雨在花店门口招手', []);
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
-    expect(userText).toContain('李淑纯在花店里包花');
+    expect(userText).toContain('活泼开朗，短发，爱笑');
+    expect(userText).toContain('人设');
+  });
+
+  it('带着用户想画的内容', () => {
+    const messages = buildImagePromptMessages(fakeCard(), xiaoyuContact, '小雨在花店门口招手', []);
+    const userText = messages.find((m) => m.role === 'user')?.content ?? '';
+    expect(userText).toContain('小雨在花店门口招手');
   });
 
   it('要求只输出提示词本身，不要解释、不要 JSON', () => {
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', []);
+    const messages = buildImagePromptMessages(fakeCard(), xiaoyuContact, '小雨在花店门口招手', []);
     const systemText = messages.find((m) => m.role === 'system')?.content ?? '';
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(systemText).toContain('只返回提示词本身');
@@ -523,12 +566,12 @@ describe('buildImagePromptMessages', () => {
     expect(userText).toContain('一条详细的英文生图提示词');
   });
 
-  it('非主角：带着名字和与主角的关系', () => {
-    const messages = buildImagePromptMessages(fakeCard(), otherContact, '小雨在花店门口招手', []);
+  it('阿杰：带着名字和与主角的关系', () => {
+    const messages = buildImagePromptMessages(fakeCard(), ajieContact, '阿杰在花店门口招手', []);
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
-    expect(userText).toContain('小雨');
-    expect(userText).toContain('闺蜜');
-    expect(userText).toContain('小雨在花店门口招手');
+    expect(userText).toContain('阿杰');
+    expect(userText).toContain('哥哥');
+    expect(userText).toContain('阿杰在花店门口招手');
   });
 
   it('带着最近的聊天记录，让模型按对话里的场景画图', () => {
@@ -537,14 +580,14 @@ describe('buildImagePromptMessages', () => {
         role: 'assistant' as const,
         content: '九月的阳光从法桐树冠的缝隙间漏下来，在柏油路面上铺展出一片碎金般的光斑。',
       },
-      { role: 'user' as const, content: '今天天气真好，你在哪呢？' },
+      { role: 'user' as const, content: '今天天气真好，你在哪呢？'},
       {
         role: 'assistant' as const,
         content: '我在老街这边买凉皮呢，就在那家法桐树底下等位置。',
       },
-      { role: 'user' as const, content: '在哪呢？你给我发张图片，我去找你' },
+      { role: 'user' as const, content: '在哪呢？你给我发张图片，我去找你'},
     ];
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '在老街法桐树下买凉皮', history);
+    const messages = buildImagePromptMessages(fakeCard(), xiaoyuContact, '在老街法桐树下买凉皮', history);
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     // 场景从聊天记录里来：地点、动作、光线都在提示词的消息里。
     expect(userText).toContain('老街');
@@ -559,10 +602,10 @@ describe('buildImagePromptMessages', () => {
   });
 
   it('没有聊天记录时也能用：只有外貌和想画的内容，不带对话段', () => {
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', []);
+    const messages = buildImagePromptMessages(fakeCard(), xiaoyuContact, '小雨在花店门口招手', []);
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain('蓝发蓝眼');
-    expect(userText).toContain('李淑纯在花店里包花');
+    expect(userText).toContain('小雨在花店门口招手');
     // 没有对话段：既没有对话段的标题，也没有“用户：/角色名：”这种对话行
     // （要求里那句“先读最近的微信聊天记录”是写提示词的指令，不算对话段）。
     expect(userText).not.toContain('最近的微信聊天记录（按时间顺序');
@@ -570,7 +613,7 @@ describe('buildImagePromptMessages', () => {
   });
 
   it('不给人数默认 solo：只有角色一个人，不画其他人', () => {
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', []);
+    const messages = buildImagePromptMessages(fakeCard(), xiaoyuContact, '小雨在花店门口招手', []);
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain('人数：solo');
     expect(userText).toContain('只有这个角色一个人');
@@ -578,9 +621,9 @@ describe('buildImagePromptMessages', () => {
   });
 
   it('duo：写清楚是角色和用户两个人，用户长相不要凭空编；其他联系人不在画面里不列', () => {
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '咱俩在宿舍楼下合影', [], {
+    const messages = buildImagePromptMessages(fakeCard(), xiaoyuContact, '咱俩在宿舍楼下合影', [], {
       people: 'duo',
-      others: [otherContact],
+      others: [ajieContact],
     });
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain('人数：duo');
@@ -591,21 +634,21 @@ describe('buildImagePromptMessages', () => {
   });
 
   it('multi：写清楚是三人以上，列出其他人，只画聊天记录里提到的', () => {
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '我们几个在花店门口合影', [], {
+    const messages = buildImagePromptMessages(fakeCard(), xiaoyuContact, '我们几个在花店门口合影', [], {
       people: 'multi',
-      others: [otherContact],
+      others: [ajieContact],
     });
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain('人数：multi');
     expect(userText).toContain('三人以上');
-    expect(userText).toContain('小雨（闺蜜）');
+    expect(userText).toContain('阿杰（哥哥）');
     expect(userText).toContain('不要编场景里没有的人');
   });
 
   it('solo 时不列其他人', () => {
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '李淑纯在花店里包花', [], {
+    const messages = buildImagePromptMessages(fakeCard(), xiaoyuContact, '小雨在花店门口招手', [], {
       people: 'solo',
-      others: [otherContact],
+      others: [ajieContact],
     });
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).not.toContain('图里可能出现的其他人');
@@ -615,10 +658,10 @@ describe('buildImagePromptMessages', () => {
 describe('buildImageTagContext', () => {
   it('上下文里有场景、外貌、人数和用户想画的内容，是给转写用的自然语言描述', () => {
     const history = [
-      { role: 'assistant' as const, content: '我在老街这边买凉皮呢，就在那家法桐树底下等位置。' },
-      { role: 'user' as const, content: '在哪呢？你给我发张图片，我去找你' },
+      { role: 'assistant' as const, content: '我在老街这边买凉皮呢，就在那家法桐树底下等位置。'},
+      { role: 'user' as const, content: '在哪呢？你给我发张图片，我去找你'},
     ];
-    const context = buildImageTagContext(fakeCard(), mainContact, '在老街法桐树下买凉皮', history);
+    const context = buildImageTagContext(fakeCard(), xiaoyuContact, '在老街法桐树下买凉皮', history);
     // 场景从聊天记录里来。
     expect(context).toContain('老街');
     expect(context).toContain('法桐树');
@@ -632,8 +675,23 @@ describe('buildImageTagContext', () => {
     expect(context).toContain('在老街法桐树下买凉皮');
   });
 
+  it('上下文里有联系人自己的人设（profile），转写按这个人的样子写', () => {
+    const context = buildImageTagContext(fakeCard(), xiaoyuContact, '小雨在花店门口招手', []);
+    expect(context).toContain('人设');
+    expect(context).toContain('活泼开朗，短发，爱笑');
+  });
+
+  it('不同联系人的人设各归各的：小雨的上下文里没有阿杰的人设', () => {
+    const xiaoyu = buildImageTagContext(fakeCard(), xiaoyuContact, '小雨在花店门口招手', []);
+    const ajie = buildImageTagContext(fakeCard(), ajieContact, '阿杰在花店门口招手', []);
+    expect(xiaoyu).toContain('活泼开朗，短发，爱笑');
+    expect(xiaoyu).not.toContain('沉稳可靠');
+    expect(ajie).toContain('沉稳可靠，高个子');
+    expect(ajie).not.toContain('活泼开朗');
+  });
+
   it('不带“写一条生图提示词”的开头和“要求”那段指令——它就是正文，不是给模型写提示词的指令', () => {
-    const context = buildImageTagContext(fakeCard(), mainContact, '李淑纯在花店里包花', []);
+    const context = buildImageTagContext(fakeCard(), xiaoyuContact, '小雨在花店门口招手', []);
     expect(context).not.toContain('请为下面这个角色写一条生图提示词');
     expect(context).not.toContain('要求：先读最近的微信聊天记录');
     expect(context).not.toContain('只输出这条提示词本身');
@@ -641,38 +699,38 @@ describe('buildImageTagContext', () => {
 
   it('和 buildImagePromptMessages 共用同一份上下文：去掉开头和要求，剩下的就是它', () => {
     const history = [
-      { role: 'assistant' as const, content: '我在老街这边买凉皮呢' },
-      { role: 'user' as const, content: '发张图片我看看' },
+      { role: 'assistant' as const, content: '我在老街这边买凉皮呢'},
+      { role: 'user' as const, content: '发张图片我看看'},
     ];
-    const context = buildImageTagContext(fakeCard(), mainContact, '在老街法桐树下买凉皮', history);
-    const messages = buildImagePromptMessages(fakeCard(), mainContact, '在老街法桐树下买凉皮', history);
+    const context = buildImageTagContext(fakeCard(), xiaoyuContact, '在老街法桐树下买凉皮', history);
+    const messages = buildImagePromptMessages(fakeCard(), xiaoyuContact, '在老街法桐树下买凉皮', history);
     const userText = messages.find((m) => m.role === 'user')?.content ?? '';
     expect(userText).toContain(context);
   });
 
   it('duo/multi 时人数和写法跟 buildImagePromptMessages 一致', () => {
-    const duo = buildImageTagContext(fakeCard(), mainContact, '咱俩在宿舍楼下合影', [], {
+    const duo = buildImageTagContext(fakeCard(), xiaoyuContact, '咱俩在宿舍楼下合影', [], {
       people: 'duo',
-      others: [otherContact],
+      others: [ajieContact],
     });
     expect(duo).toContain('人数：duo');
     expect(duo).toContain('这个角色和用户两个人');
     expect(duo).toContain('不要凭空编一个精致长相');
     expect(duo).not.toContain('图里可能出现的其他人');
 
-    const multi = buildImageTagContext(fakeCard(), mainContact, '我们几个在花店门口合影', [], {
+    const multi = buildImageTagContext(fakeCard(), xiaoyuContact, '我们几个在花店门口合影', [], {
       people: 'multi',
-      others: [otherContact],
+      others: [ajieContact],
     });
     expect(multi).toContain('人数：multi');
-    expect(multi).toContain('小雨（闺蜜）');
+    expect(multi).toContain('阿杰（哥哥）');
     expect(multi).toContain('不要编场景里没有的人');
   });
 
   it('没有聊天记录时也能用：只有外貌、人数和想画的内容', () => {
-    const context = buildImageTagContext(fakeCard(), mainContact, '李淑纯在花店里包花', []);
+    const context = buildImageTagContext(fakeCard(), xiaoyuContact, '小雨在花店门口招手', []);
     expect(context).toContain('蓝发蓝眼');
-    expect(context).toContain('李淑纯在花店里包花');
+    expect(context).toContain('小雨在花店门口招手');
     expect(context).not.toContain('最近的微信聊天记录（按时间顺序');
   });
 });

@@ -271,10 +271,14 @@ const TOOLS =
  * 回复用的 system prompt。
  *
  * 第一句就把 role play 的架子定死：我们现在在进行角色扮演，你要扮演
- * 这个角色，正在一个叫微信的地方和用户聊天——角色的设定（名字、性格、
- * 介绍）和联系人的关系都留在这里，模型按这个身份回。
+ * 这个联系人（卡里提到的其他人物，不是卡的主角本人），正在一个叫微信
+ * 的地方和用户聊天——联系人自己的人设（profile：性格、长相、关键
+ * 特点）写在【人设】一节，模型按这个身份回，不 OOC；卡的设定、世界书、
+ * 开场白和主聊天的预设都按这个顺序排在后面。
  *
  * 和主聊天共享的素材（按这个顺序排，越往后离聊天记录越近、越显眼）：
+ *   【人设】联系人自己的人设——性格、长相、关键特点（初始化时按卡里 /
+ *     世界书里写到的提炼的，没提到的不写这一节）；
  *   【设定】卡的 scenario——世界/场景设定（介绍和性格已经在身份那一段，
  *     这里不重复）；【世界书】按主聊天同一套 activate() 选出来的条目；
  *   【开场白】卡的 first_mes——只当说话方式和开场语气的参考，绝不当
@@ -286,6 +290,7 @@ const TOOLS =
  * 正文包裹格式（比如 <game> / <summary> / <options> 这类标签）。
  *
  * extras 全是可选的：没传的那一节整个不写，提示词不会出现空章节。
+ * 联系人没有 profile 时，【人设】一节也不写（老缓存里没有这个字段）。
  */
 export interface ReplyPromptExtras {
   /** 主线聊天的最近进展（formatPlotProgress 压出来的），只做了解。 */
@@ -305,19 +310,18 @@ export function buildReplySystemPrompt(
   extras: ReplyPromptExtras = {},
 ): string {
   const d = card.data;
-  const framing = contact.isMain
-    ? `我们现在在进行 role play（角色扮演）。你要扮演「${d.name}」，正在一个叫微信的地方，和用户聊天。`
-    : `我们现在在进行 role play（角色扮演）。你要扮演「${contact.name}」，是「${d.name}」的${contact.relation}，正在一个叫微信的地方，和用户聊天。`;
-  const identity = contact.isMain
-    ? [
-        `你是「${d.name}」，正在微信上和用户聊天。`,
-        d.description ? `角色介绍：${d.description}` : '',
-        d.personality ? `性格：${d.personality}` : '',
-      ]
-    : [
-        `你是「${contact.name}」，是「${d.name}」的${contact.relation}，正在微信上和用户聊天。`,
-        d.description ? `角色卡介绍：${d.description}` : '',
-      ];
+  // 联系人都是卡里提到的其他人物（卡的主角本人不是联系人），所以
+  // framing 和身份一律按“扮演这个联系人，是主角的某某”写。
+  const framing = `我们现在在进行 role play（角色扮演）。你要扮演「${contact.name}」，是「${d.name}」的${contact.relation}，正在一个叫微信的地方，和用户聊天。`;
+  const identity = [
+    `你是「${contact.name}」，是「${d.name}」的${contact.relation}，正在微信上和用户聊天。`,
+    d.description ? `角色卡介绍：${d.description}` : '',
+  ];
+  // 联系人自己的人设：性格、长相、关键特点——模型扮演的就是这个人，
+  // 人设写在这里它才不会 OOC；老缓存里没有 profile 时不写这一节。
+  const profileSection = contact.profile?.trim()
+    ? `【人设】\n${contact.name}的人设：${contact.profile.trim()}`
+    : '';
   const settingsSection = d.scenario?.trim() ? `【设定】\n${d.scenario.trim()}` : '';
   const lorebookSection = extras.lorebookText?.trim()
     ? `【世界书】\n${extras.lorebookText.trim()}`
@@ -345,6 +349,7 @@ export function buildReplySystemPrompt(
   return [
     framing,
     ...identity,
+    profileSection,
     settingsSection,
     lorebookSection,
     firstMesSection,
@@ -421,7 +426,7 @@ export function buildImagePromptMessages(
       content: [
         '请为下面这个角色写一条生图提示词：',
         buildImageTagContext(card, contact, userRequest, recentMessages, options),
-        '要求：先读最近的微信聊天记录，弄清楚现在的场景：角色现在在哪里、在做什么、周围有什么、光线和气氛怎么样（比如老街、法桐树下、买凉皮、九月的阳光从树叶缝隙漏下来）；再从角色介绍和性格里提炼出这个角色的外貌特征（头发、眼睛、穿着、标志性特点），让画出来的人一眼就能认出是这个角色；用户和其他人按上面“人数”里说的办法写，不要编场景里没有的人；最后按上面定的人数，把这些人放进这个场景里、正在做这件事，写成一条详细的英文生图提示词（Danbooru 风格标签，逗号分隔，写在一行里）。要的是一张有场景的图，不是白底人像——场景从聊天记录里来，不要只按用户那句短话画，更不要只画一张人像。只输出这条提示词本身，不要解释。',
+        '要求：先读最近的微信聊天记录，弄清楚现在的场景：角色现在在哪里、在做什么、周围有什么、光线和气氛怎么样（比如老街、法桐树下、买凉皮、九月的阳光从树叶缝隙漏下来）；再从这个联系人的人设（上面“人设”里写的性格、长相、关键特点，没写人设时从角色卡介绍里找）里提炼出这个角色的外貌特征（头发、眼睛、穿着、标志性特点），让画出来的人一眼就能认出是这个角色；用户和其他人按上面“人数”里说的办法写，不要编场景里没有的人；最后按上面定的人数，把这些人放进这个场景里、正在做这件事，写成一条详细的英文生图提示词（Danbooru 风格标签，逗号分隔，写在一行里）。要的是一张有场景的图，不是白底人像——场景从聊天记录里来，不要只按用户那句短话画，更不要只画一张人像。只输出这条提示词本身，不要解释。',
       ].join('\n'),
     },
   ];
@@ -449,9 +454,10 @@ export function buildImageTagContext(
   const people = options.people ?? 'solo';
   const appearance = [
     `角色名：${contact.name}`,
-    contact.isMain ? '' : `和主角「${d.name}」的关系：${contact.relation}`,
-    d.description ? `角色介绍：${d.description}` : '',
-    d.personality ? `性格：${d.personality}` : '',
+    `和主角「${d.name}」的关系：${contact.relation}`,
+    contact.profile?.trim() ? `人设：${contact.profile.trim()}` : '',
+    d.description ? `角色卡介绍（主角「${d.name}」）：${d.description}` : '',
+    d.personality ? `主角性格：${d.personality}` : '',
   ]
     .filter(Boolean)
     .join('\n');

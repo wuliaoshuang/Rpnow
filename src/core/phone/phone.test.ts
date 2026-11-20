@@ -55,15 +55,14 @@ describe('pickSticker', () => {
 describe('greetingMessage', () => {
   it('用联系人的开场白当第一条消息', () => {
     const msg = greetingMessage({
-      id: 'card-1',
-      name: '小橘',
-      relation: '本人',
-      openingMessage: '你好呀，今天想聊点什么？',
-      isMain: true,
+      id: 'c_xiaoyu',
+      name: '小雨',
+      relation: '闺蜜',
+      openingMessage: '在吗在吗，出来玩呀',
     });
     expect(msg.role).toBe('assistant');
     expect(msg.type).toBe('text');
-    expect(msg.content).toBe('你好呀，今天想聊点什么？');
+    expect(msg.content).toBe('在吗在吗，出来玩呀');
     expect(msg.id).toMatch(/^m/);
     expect(msg.createdAt).toBeGreaterThan(0);
   });

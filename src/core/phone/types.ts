@@ -2,11 +2,13 @@
  * Phone types — the "小手机" (Mini Phone) simulation.
  *
  * The phone is a fake phone inside the app: a home screen with app icons
- * （微信、相册）. A WeChat contact is a person who appears in the current
- * chat's card — the main character plus anyone the card mentions — found
- * once by the model when the phone is first opened for that chat, then
- * cached per chat. Each contact keeps its own chat history, persisted in
- * IndexedDB so closing the phone (or the app) keeps it.
+ * （微信、相册）. A WeChat contact is a person mentioned in the current
+ * chat's card — found in the card's lorebook / settings (never the card's
+ * own main character), once by the model when the phone is first opened
+ * for that chat, then cached per chat. Each contact keeps its own chat
+ * history, persisted in IndexedDB so closing the phone (or the app) keeps
+ * it. Each contact also carries its own profile （人设：性格、长相、关键
+ * 特点）, so the model knows exactly who it is playing and does not go OOC.
  */
 
 /** Image shape options (same values as ImageRequest.size, minus 'auto'). */
@@ -40,23 +42,28 @@ export type ImagePeople = 'solo' | 'duo' | 'multi';
  */
 export type PhoneContactGender = 'female' | 'male' | 'unknown';
 
-/** One WeChat contact — a person who appears in the current chat's card. */
+/** One WeChat contact — a person mentioned in the current chat's card. */
 export interface PhoneContact {
   /**
-   * Stable id. The main character uses the card id (so the chat history
-   * saved before this change keeps working); other people use `c_<uid>`.
+   * Stable id. Contacts are the other people mentioned in the card's
+   * lorebook / settings — the card's own main character is never a
+   * contact, so ids are always `c_<uid>`.
    */
   id: string;
   name: string;
-  /** 和主角的关系，如“本人”“闺蜜”“哥哥”。 */
+  /** 和主角的关系，如“闺蜜”“哥哥”。 */
   relation: string;
   /**
    * 它发来的第一条消息（微信口吻），由模型按剧情写的短消息；
-   * 主角也一样，不再直接用卡的 first_mes。
+   * 不再直接用卡的 first_mes。
    */
   openingMessage: string;
-  /** 是否主角（卡本身）。 */
-  isMain: boolean;
+  /**
+   * 这个人的人设（一两句）：性格、长相、关键特点，按卡里 / 世界书里
+   * 写到的来。初始化时模型按卡的内容给的；老缓存里没有这个字段，
+   * 读的时候按没有处理（提示词里不写这一节）。
+   */
+  profile?: string;
   /**
    * 性别：初始化时模型按卡的内容给的（female / male / unknown）。
    * 可选——老缓存里没有这个字段，读的时候按 'unknown' 处理。
@@ -67,7 +74,7 @@ export interface PhoneContact {
 /** One WeChat conversation — one per contact. */
 export interface WeChatChat {
   cardId: string;
-  /** 哪个联系人的会话：主角就是 cardId，其他人是联系人 id。 */
+  /** 哪个联系人的会话：联系人 id（卡的主角本人不是联系人）。 */
   contactId: string;
   messages: PhoneMessage[];
   updatedAt: number;
