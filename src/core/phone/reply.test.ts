@@ -13,6 +13,7 @@ import {
   buildImagePromptMessages,
   buildImageTagContext,
   buildReplySystemPrompt,
+  buildReplySystemPromptSections,
   enforceComposition,
   enforceSoloPrompt,
   formatPlotProgress,
@@ -819,5 +820,77 @@ describe('buildImageTagContext', () => {
     expect(context).toContain('蓝发蓝眼');
     expect(context).toContain('小雨在花店门口招手');
     expect(context).not.toContain('最近的微信聊天记录（按时间顺序');
+  });
+});
+
+describe('buildReplySystemPromptSections', () => {
+  const SECTION_LABELS = [
+    '角色扮演开场',
+    '身份',
+    '人设',
+    '设定',
+    '世界书',
+    '开场白',
+    '剧情进度',
+    '独立系统',
+    '先想一想',
+    '不跳出角色',
+    '短聊格式',
+    '工具说明',
+    '预设',
+  ];
+
+  it('小雨（全量）：13 节按顺序出现，拼起来和 buildReplySystemPrompt 一字不差', () => {
+    const extras = {
+      plotProgress: 'PLOT_军训集合',
+      lorebookText: 'LORE_王阿姨收租',
+      presetText: 'PRESET_写短句',
+    };
+    const sections = buildReplySystemPromptSections(fakeCard(), xiaoyuContact, extras);
+    expect(sections.map((s) => s.label)).toEqual(SECTION_LABELS);
+    expect(sections.every((s) => s.content.length > 0)).toBe(true);
+    expect(
+      sections
+        .map((s) => s.content)
+        .filter(Boolean)
+        .join('\n'),
+    ).toBe(buildReplySystemPrompt(fakeCard(), xiaoyuContact, extras));
+    // 每节的内容就是提示词里那一节。
+    expect(sections[0].content).toContain('你要扮演「小雨」');
+    expect(sections[1].content).toContain('是用户的闺蜜');
+    expect(sections[2].content).toContain('活泼开朗');
+    expect(sections[3].content).toContain(SCENARIO_MARKER);
+    expect(sections[4].content).toContain('LORE_王阿姨收租');
+    expect(sections[5].content).toContain(FIRST_MES_MARKER);
+    expect(sections[6].content).toContain('PLOT_军训集合');
+    expect(sections[7].content).toContain('独立的微信聊天');
+    expect(sections[12].content).toContain('PRESET_写短句');
+  });
+
+  it('可选内容全缺时，对应节是空的（查看器里标“未包含”），拼出来的字符串里没有这些节', () => {
+    const bare: PhoneContact = { id: 'c_bare', name: '路人', relation: '', openingMessage: '嗨' };
+    const card = fakeCard({ description: '', scenario: '', first_mes: '' });
+    const sections = buildReplySystemPromptSections(card, bare);
+    const omitted = sections.filter((s) => !s.content).map((s) => s.label);
+    expect(omitted).toEqual(['人设', '设定', '世界书', '开场白', '剧情进度', '预设']);
+    const joined = sections
+      .map((s) => s.content)
+      .filter(Boolean)
+      .join('\n');
+    expect(joined).toBe(buildReplySystemPrompt(card, bare));
+    expect(joined).not.toContain(SCENARIO_MARKER);
+    expect(joined).not.toContain(FIRST_MES_MARKER);
+    // 两边关系都没写：不写关系这一句，也不写“不要自己编”。
+    expect(joined).not.toContain('卡里没写');
+    // 固定节一节不少。
+    expect(sections.filter((s) => s.content).map((s) => s.label)).toEqual([
+      '角色扮演开场',
+      '身份',
+      '独立系统',
+      '先想一想',
+      '不跳出角色',
+      '短聊格式',
+      '工具说明',
+    ]);
   });
 });
