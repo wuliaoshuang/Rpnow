@@ -11,13 +11,12 @@
  *     最近消息 + 卡字段匹配，命中的条目才进提示词（和主聊天一样的
  *     相关性选择）。不传 snapshot——小手机不持久化激活状态（粘性/冷却
  *     是主聊天的回合状态），每次回复都重新算一遍，简单且可预测。
- *   - 联系人初始化里的世界书：初始化时还没什么对话可匹配，key 匹配
- *     会漏人；所以直接把卡的角色书 + 该聊天选中的世界书里已启用的条目
- *     内容按字符预算截断后交给模型找人（设定和开场白已经在初始化输入
- *     里了，世界书补上同一份来源）。
+ *   - 联系人初始化不读世界书：联系人从主聊天的对话记录里来（contacts.ts
+ *     的 buildInitMessages），只在世界书里出现、还没在主聊天里露过面的
+ *     人，不进联系人列表。回复提示词里的世界书一节不受影响，还是每次
+ *     回复按 activate() 现算。
  *
- * 预算：回复提示词里的世界书最多 2000 字，初始化输入里的世界书最多
- * 4000 字——世界书再大也不会把提示词撑爆。
+ * 预算：回复提示词里的世界书最多 2000 字——世界书再大也不会把提示词撑爆。
  */
 import { activate } from '@/core/lorebook/engine.js';
 import type { LorebookDefaults, RPLorebook } from '@/core/types/lorebook.js';
@@ -27,8 +26,6 @@ import { substituteMacros } from '@/core/prompt/macros.js';
 
 /** 回复提示词里世界书一节最多占多少字。 */
 export const LOREBOOK_REPLY_BUDGET_CHARS = 2000;
-/** 联系人初始化输入里世界书最多占多少字。 */
-export const LOREBOOK_INIT_BUDGET_CHARS = 4000;
 
 /** 小手机用到的聊天字段：只读世界书选择需要的三个。 */
 export interface PhoneLorebookChat {
@@ -127,34 +124,6 @@ export function selectLorebookText(
     .map((e) => e.content.trim())
     .filter(Boolean)
     .join('\n');
-  if (!text) return '';
-  return truncateToBudget(text, budgetChars);
-}
-
-/**
- * 联系人初始化用的世界书文本：不靠 key 匹配（初始化时还没对话可匹配，
- * 会漏人），直接把已启用条目的内容按预算交给模型找人。
- *
- * 卡的角色书在先，再接该聊天选中的用户世界书；每条只取 content，
- * 空的跳过，总量超预算截断。没内容返回 ''。
- */
-export function lorebookTextForInit(
-  card: RPCard,
-  chat: PhoneLorebookChat,
-  userBooks: RPLorebook[],
-  budgetChars: number = LOREBOOK_INIT_BUDGET_CHARS,
-): string {
-  const books = getPhoneBooks(card, chat, userBooks);
-  const chunks: string[] = [];
-  for (const book of books) {
-    for (const entry of book.entries ?? []) {
-      if (entry.enabled === false) continue;
-      const content = (entry.content ?? '').trim();
-      if (!content) continue;
-      chunks.push(content);
-    }
-  }
-  const text = chunks.join('\n');
   if (!text) return '';
   return truncateToBudget(text, budgetChars);
 }

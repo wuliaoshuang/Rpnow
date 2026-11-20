@@ -60,7 +60,7 @@ import {
   isPrivatePhotoUnlocked,
   resolvePhoneUser,
 } from '@/core/phone/contacts.js';
-import { lorebookTextForInit } from '@/core/phone/lorebook.js';
+import { currentMessages } from '@/core/branch/engine.js';
 import { computeReplyExtras, historyEntries } from '@/core/phone/replyExtras.js';
 import {
   addGroupMember,
@@ -214,14 +214,13 @@ export function WeChat({
         if (llm && connection) {
           try {
             const model = phone.chatModel || connection.defaultModel || '';
-            // 初始化找人也要看世界书：只在世界书里出现的人物不能漏。
-            // 初始化时还没对话可匹配，key 匹配会漏人，所以直接把世界书
-            // 条目内容交给模型（lorebookTextForInit 按预算截断过）。
+            // 联系人从主聊天里来：初始化只读主聊天的消息记录，让模型从
+            // 对话里找出出现过的人物（最近 30 条，buildInitMessages 里
+            // 压成对话记录）。世界书、预设、卡的字段一律不读——只在世界书
+            // 里出现、还没在主聊天里露过面的人，不进联系人列表。
             const state = useApp.getState();
             const chatForInit = state.chats.find((c) => c.id === chatId);
-            const initLorebookText = chatForInit
-              ? lorebookTextForInit(card, chatForInit, state.lorebooks)
-              : '';
+            const initMessages = chatForInit ? currentMessages(chatForInit) : [];
             // User 的身份：主聊天里 {{user}} 就是这么定的（聊天的 persona，
             // 没有就第一个人设）。初始化要告诉模型 User 是谁，联系人的
             // relation 才能按 User 来算，而不是只按主角来算、搞不清关系。
@@ -233,7 +232,7 @@ export function WeChat({
               llm,
               connectionId,
               model,
-              initLorebookText,
+              initMessages,
               initUser,
             );
             if (cancelled) return;
