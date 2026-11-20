@@ -20,11 +20,14 @@ import {
 } from './phonePresetStore.js';
 import {
   PHONE_DATA_MESSAGE_DEDUP_WINDOW,
+  buildKnownNames,
   buildPhonePresetText,
+  extractFallbackDataFromMessage,
   extractHiddenCharacters,
   extractHiddenCharactersFromMessages,
   extractHiddenData,
   extractHiddenDataFromMessages,
+  extractHiddenDataWithFallback,
   extractHiddenMessages,
   mergeHiddenCharacters,
   mergeHiddenData,
@@ -150,7 +153,7 @@ describe('extractHiddenCharacters', () => {
 });
 
 describe('extractHiddenCharactersFromMessages', () => {
-  it('按时间顺序扫多条消息，同名只留第一次', () => {
+  it('按时间顺序扫多条消息，同名只留第一次出现的人；后一次带来的人设补上空字段', () => {
     const out = extractHiddenCharactersFromMessages(
       [
         { content: `小雨来了。${block(person('{"name":"小雨","relation":"朋友"}'))}` },
@@ -161,7 +164,8 @@ describe('extractHiddenCharactersFromMessages', () => {
       MAIN,
     );
     expect(out.map((c) => c.name)).toEqual(['小雨', '阿杰']);
-    expect(out[0].profile).toBeUndefined();
+    expect(out[0].relation).toBe('朋友');
+    expect(out[0].profile).toBe('新的');
   });
 });
 
@@ -305,6 +309,20 @@ describe('buildPhonePresetText', () => {
   it('写明 messages 里 character 也不要写主角的名字', () => {
     const text = buildPhonePresetText(MAIN);
     expect(text).toContain('messages 里 character 也不要写主角的名字');
+  });
+
+  it('把要求和后果顶在最前面：不输出这个块，小手机就认不出联系人', () => {
+    const text = buildPhonePresetText(MAIN);
+    expect(text).toContain('不输出这个块，小手机就认不出任何联系人');
+    // 要求在前、解释在后：第一句就是“必须做”，而不是先讲半天背景。
+    expect(text.indexOf('必须在正文末尾再追加一个隐藏数据块')).toBeLessThan(
+      text.indexOf('格式（HTML 注释'),
+    );
+  });
+
+  it('比上一版短：上一版 1539 字，这一版不到 1200 字', () => {
+    const text = buildPhonePresetText(MAIN);
+    expect(text.length).toBeLessThan(1200);
   });
 });
 
@@ -519,6 +537,9 @@ describe('extractHiddenDataFromMessages', () => {
       MAIN,
     );
     expect(out.characters.map((c) => c.name)).toEqual(['小雨']);
+    // 后一个块带来的、第一个块没有的人设补上；第一个块已有的关系不被覆盖。
+    expect(out.characters[0].profile).toBe('新的');
+    expect(out.characters[0].relation).toBe('朋友');
     expect(out.messages).toEqual([
       { character: '小雨', role: 'character', content: '在吗' },
       { character: '小雨', role: 'user', content: '好呀' },
@@ -732,5 +753,280 @@ describe('mergeHiddenData', () => {
     );
     expect(existing).toEqual([]);
     expect(res.contacts).toHaveLength(1);
+  });
+});
+
+describe('buildKnownNames', () => {
+  const books = [
+    {
+      entries: [
+        { comment: '小雨' },
+        { comment: '阿杰' },
+        { comment: '' },
+        { comment: '这是一句很长的条目名字肯定不是人名' },
+      ],
+    },
+    { entries: [{ comment: '阿豪' }, { comment: '小雨' }] },
+  ];
+
+  it('世界书条目的名字 + 已有联系人的名字，主角排除、同名去重', () => {
+    const names = buildKnownNames(books, [existingContact({ name: '阿强' })], MAIN);
+    expect(names).toEqual(['小雨', '阿杰', '阿豪', '阿强']);
+  });
+
+  it('主角的名字不进表', () => {
+    const names = buildKnownNames([{ entries: [{ comment: MAIN }] }], [], MAIN);
+    expect(names).toEqual([]);
+  });
+
+  it('空条目和超长的 comment 不进表', () => {
+    const names = buildKnownNames(books, [], MAIN);
+    expect(names).not.toContain('');
+    expect(names).not.toContain('这是一句很长的条目名字肯定不是人名');
+  });
+
+  it('什么都没有时返回空表', () => {
+    expect(buildKnownNames([], [], MAIN)).toEqual([]);
+  });
+});
+
+describe('extractFallbackDataFromMessage', () => {
+  const names = ['小雨', '阿杰'];
+
+  it('assistant 剧情里提到小雨：建联系人，带名字的句子贴进小雨的记录', () => {
+    const out = extractFallbackDataFromMessage(
+      {
+        role: 'assistant',
+        content: '酒馆里很安静。小雨说：“我学会了一杯新的特调，明天带来给你尝尝。”阿杰放下一包茶叶，说下周再来。',
+      },
+      names,
+      MAIN,
+    );
+    expect(out.characters.map((c) => c.name)).toEqual(['小雨', '阿杰']);
+    expect(out.messages).toEqual([
+      { character: '小雨', role: 'character', content: '小雨说：“我学会了一杯新的特调，明天带来给你尝尝。”' },
+      { character: '阿杰', role: 'character', content: '阿杰放下一包茶叶，说下周再来。' },
+    ]);
+    // 开场白是这个人在剧情里第一次说话的那句短句，不是卡的 first_mes。
+    expect(out.characters[0].openingMessage).toBe('小雨说：“我学会了一杯新的特调，明天带来给你尝尝。”');
+    // 人设和关系不编：留空。
+    expect(out.characters[0].profile).toBeUndefined();
+    expect(out.characters[0].relation).toBeUndefined();
+  });
+
+  it('没提到的名字不建联系人，归不到任何人的句子跳过、不编归属', () => {
+    const out = extractFallbackDataFromMessage(
+      { role: 'assistant', content: '酒馆里很安静。小雨擦着杯子。窗外的雪下得很大。' },
+      names,
+      MAIN,
+    );
+    expect(out.characters.map((c) => c.name)).toEqual(['小雨']);
+    expect(out.messages).toEqual([
+      { character: '小雨', role: 'character', content: '小雨擦着杯子。' },
+    ]);
+  });
+
+  it('名字不在表里：不认、不编', () => {
+    const out = extractFallbackDataFromMessage(
+      { role: 'assistant', content: '阿强今天也来了，带了一篮橘子。' },
+      names,
+      MAIN,
+    );
+    expect(out).toEqual({ characters: [], messages: [] });
+  });
+
+  it('主角本人不建联系人；一句里同时提到主角和联系人时，那句归联系人', () => {
+    const out = extractFallbackDataFromMessage(
+      {
+        role: 'assistant',
+        content: `${MAIN}坐在吧台边。${MAIN}和小雨一起进了酒馆，小雨点了杯热茶。`,
+      },
+      [...names, MAIN],
+      MAIN,
+    );
+    expect(out.characters.map((c) => c.name)).toEqual(['小雨']);
+    expect(out.messages).toEqual([
+      { character: '小雨', role: 'character', content: `${MAIN}和小雨一起进了酒馆，小雨点了杯热茶。` },
+    ]);
+  });
+
+  it('user 的消息：整条贴给每个被提到的人；没提到任何人就跳过，不群发', () => {
+    const out = extractFallbackDataFromMessage(
+      { role: 'user', content: '小雨，阿杰，明天一早你们都来开门。' },
+      names,
+      MAIN,
+    );
+    expect(out.characters.map((c) => c.name)).toEqual(['小雨', '阿杰']);
+    expect(out.messages).toEqual([
+      { character: '小雨', role: 'user', content: '小雨，阿杰，明天一早你们都来开门。' },
+      { character: '阿杰', role: 'user', content: '小雨，阿杰，明天一早你们都来开门。' },
+    ]);
+    const none = extractFallbackDataFromMessage(
+      { role: 'user', content: '今天酒馆打烊早。' },
+      names,
+      MAIN,
+    );
+    expect(none).toEqual({ characters: [], messages: [] });
+  });
+
+  it('名字是另一个名字的子串时，只算长的那个', () => {
+    const out = extractFallbackDataFromMessage(
+      { role: 'assistant', content: '阿杰今天也来了。' },
+      ['阿杰', '杰'],
+      MAIN,
+    );
+    expect(out.characters.map((c) => c.name)).toEqual(['阿杰']);
+    expect(out.messages).toEqual([
+      { character: '阿杰', role: 'character', content: '阿杰今天也来了。' },
+    ]);
+  });
+
+  it('坏掉的隐藏块（没闭合）不影响兜底：块里的名字不读，正文照常认', () => {
+    const out = extractFallbackDataFromMessage(
+      {
+        role: 'assistant',
+        content: `今天聊得很开心，下次再聊。<!-- [小手机数据] {"characters":[{"name":"坏人"`,
+      },
+      names,
+      MAIN,
+    );
+    expect(out).toEqual({ characters: [], messages: [] });
+  });
+
+  it('空文本、空名字表都不崩，返回空列表', () => {
+    expect(extractFallbackDataFromMessage({ role: 'assistant', content: '' }, names, MAIN)).toEqual({
+      characters: [],
+      messages: [],
+    });
+    expect(
+      extractFallbackDataFromMessage({ role: 'assistant', content: '小雨来了。' }, [], MAIN),
+    ).toEqual({ characters: [], messages: [] });
+    expect(
+      extractFallbackDataFromMessage({ role: 'assistant', content: '   ' }, names, MAIN),
+    ).toEqual({ characters: [], messages: [] });
+  });
+});
+
+describe('extractHiddenDataWithFallback', () => {
+  const names = ['小雨', '阿杰'];
+
+  it('有隐藏块的消息只用块：块里的人和消息都按块里的来，兜底不重复贴', () => {
+    const text = `阿杰今天也来了，还带了一批新茶叶。${block(
+      person(
+        '{"name":"阿杰","profile":"常来酒馆","relation":"朋友","openingMessage":"下周带一批新茶叶过来","gender":"male"}',
+      ),
+    )}`;
+    const out = extractHiddenDataWithFallback(
+      [{ role: 'assistant', content: text }],
+      names,
+      MAIN,
+    );
+    expect(out.characters).toEqual([
+      {
+        name: '阿杰',
+        profile: '常来酒馆',
+        relation: '朋友',
+        openingMessage: '下周带一批新茶叶过来',
+        gender: 'male',
+      },
+    ]);
+    // 正文里“阿杰今天也来了”那句不另外贴一遍：块是权威的。
+    expect(out.messages).toEqual([]);
+  });
+
+  it('没隐藏块的消息跑兜底：只写剧情也认得出人', () => {
+    const out = extractHiddenDataWithFallback(
+      [{ role: 'assistant', content: '小雨说：“我明天一早就去开门。”' }],
+      names,
+      MAIN,
+    );
+    expect(out.characters.map((c) => c.name)).toEqual(['小雨']);
+    expect(out.messages).toEqual([
+      { character: '小雨', role: 'character', content: '小雨说：“我明天一早就去开门。”' },
+    ]);
+  });
+
+  it('先是 User 提了一句某人、后是剧情里他第一次说话：开场白补上，不丢', () => {
+    const out = extractHiddenDataWithFallback(
+      [
+        { role: 'user', content: '小雨，阿杰，明天一早你们都来开门。' },
+        { role: 'assistant', content: '小雨说：“我学会了一杯新的特调，明天带来给你尝尝。”阿杰放下一包茶叶，说下周再来。' },
+      ],
+      names,
+      MAIN,
+    );
+    expect(out.characters.map((c) => c.name)).toEqual(['小雨', '阿杰']);
+    expect(out.characters[0].openingMessage).toBe('小雨说：“我学会了一杯新的特调，明天带来给你尝尝。”');
+    expect(out.characters[1].openingMessage).toBe('阿杰放下一包茶叶，说下周再来。');
+  });
+
+  it('同一条消息扫两遍不重复：兜底的结果也进合并那一步的去重窗口', () => {
+    // 第一条被提到小雨的句子会变成开场白（和那条消息内容一样，合并时去重
+    // 会拦住它，不会贴两遍），所以用两句来测：第二句是真正追加的消息。
+    const messages = [
+      { role: 'assistant', content: '小雨说：“我明天一早就去开门。”小雨又补充了一句：“记得带早餐。”' },
+    ];
+    const first = extractHiddenDataWithFallback(messages, names, MAIN);
+    const res = mergeHiddenData([], first, new Map(), MAIN);
+    expect(res.messagesChanged).toBe(true);
+    const again = extractHiddenDataWithFallback(messages, names, MAIN);
+    const res2 = mergeHiddenData(res.contacts, again, res.chats, MAIN);
+    expect(res2.messagesChanged).toBe(false);
+    const xiaoyu = res2.contacts.find((c) => c.name === '小雨');
+    // 第一次合并的记录里只有开场白 + 第二句，第二遍没再贴一遍。
+    expect(res.chats.get(xiaoyu!.id)).toHaveLength(2);
+  });
+});
+
+describe('mergeHiddenCharacters 补空', () => {
+  it('兜底建的联系人（只有名字和默认问候）收到隐藏块后，人设/关系/开场白补上', () => {
+    const minimal = existingContact({
+      id: 'c_ajie',
+      name: '阿杰',
+      relation: '',
+      relationToMain: undefined,
+      openingMessage: '你好，我是阿杰。',
+      profile: undefined,
+      gender: 'unknown',
+      affection: 0,
+    });
+    const res = mergeHiddenCharacters([minimal], [
+      {
+        name: '阿杰',
+        profile: '常来酒馆，总爱带东西',
+        relation: '朋友',
+        relationToMain: '同事',
+        openingMessage: '下周带一批新茶叶过来',
+        gender: 'male',
+      },
+    ]);
+    expect(res.changed).toBe(true);
+    expect(res.added).toEqual([]);
+    const ajie = res.contacts[0];
+    expect(ajie.id).toBe('c_ajie');
+    expect(ajie.affection).toBe(0);
+    expect(ajie.profile).toBe('常来酒馆，总爱带东西');
+    expect(ajie.relation).toBe('朋友');
+    expect(ajie.relationToMain).toBe('同事');
+    expect(ajie.openingMessage).toBe('下周带一批新茶叶过来');
+    expect(ajie.gender).toBe('male');
+  });
+
+  it('已经有的人设/关系/开场白不被后来的块覆盖', () => {
+    const existing = [existingContact()];
+    const res = mergeHiddenCharacters(existing, [
+      {
+        name: '小雨',
+        profile: '另一个人设',
+        relation: '同事',
+        openingMessage: '另一个开场白',
+        gender: 'male',
+      },
+    ]);
+    expect(res.changed).toBe(false);
+    expect(res.contacts[0].profile).toBe('在酒馆帮忙，手很稳');
+    expect(res.contacts[0].relation).toBe('朋友');
+    expect(res.contacts[0].openingMessage).toBe('在吗在吗，明天一早我就去开门');
+    expect(res.contacts[0].gender).toBe('female');
   });
 });
