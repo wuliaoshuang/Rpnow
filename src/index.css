@@ -518,6 +518,13 @@ body {
 }
 /* The frame's height is set by the card bridge (core/render/cardFrameHost.ts)
    to the page's real content height, so there is no inner scrollbar. */
+/* 页面脚本没跑起来时，写在卡片下面的一行说明（见 cardFrameHost.ts）。 */
+.rp-md .rp-card-dead {
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--rp-fg-muted);
+}
 .rp-md .rp-html-card > iframe {
   display: block;
   width: 100%;

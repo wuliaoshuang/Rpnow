@@ -1396,28 +1396,47 @@ export function ChatView({
    * 发消息、花模型额度。输入框里已经有字就另起一行接在后面，不覆盖。
    */
   const lastCardText = React.useRef('');
+  /** 监听只装一次，发送函数每次渲染都是新的：用 ref 拿最新的那个。返回是否真的发出去了。 */
+  const sendRef = React.useRef<(text: string) => boolean>(() => false);
+  sendRef.current = (text: string) => {
+    if (busy || !text.trim()) return false;
+    send(text);
+    return true;
+  };
+  /** 程序往输入框里写了字：等这次写入真的落到页面上以后，再聚焦、重算高度。 */
+  const fitComposer = React.useRef(false);
+  React.useLayoutEffect(() => {
+    if (!fitComposer.current) return;
+    fitComposer.current = false;
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    el.setSelectionRange(el.value.length, el.value.length);
+    // 输入框只在用户打字（onInput）时才重算高度；这里是程序写入，手动算一次，
+    // 规则和 onInput 里的一样：最多 5 行。
+    el.style.height = 'auto';
+    const cs = getComputedStyle(el);
+    const line = parseFloat(cs.lineHeight) || 25.5;
+    const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    el.style.height = `${Math.min(el.scrollHeight, Math.round(line * 5 + pad))}px`;
+    el.scrollTop = el.scrollHeight;
+  }, [input]);
   React.useEffect(() => {
     const onCardSlash = (event: Event) => {
-      const text = (event as CustomEvent<{ text?: string }>).detail?.text;
+      const detail = (event as CustomEvent<{ text?: string; send?: boolean }>).detail;
+      const text = detail?.text;
       if (typeof text !== 'string' || !text.trim()) return;
+      // 卡片自己的「确认」按钮（用户刚点的）：直接当成一条用户消息发出去。
+      // 正在生成时发不出去，就退回成放进输入框，不让这次点击白点。
+      if (detail?.send && sendRef.current(text)) {
+        lastCardText.current = '';
+        return;
+      }
       // 卡片连着交回两次（换了个选项再点）：后一次替换前一次，不叠在一起。
       const previous = lastCardText.current;
       lastCardText.current = text;
       setInput((v) => (!v.trim() || v === previous ? text : `${v.replace(/\s+$/, '')}\n${text}`));
-      requestAnimationFrame(() => {
-        const el = inputRef.current;
-        if (!el) return;
-        el.focus({ preventScroll: true });
-        el.setSelectionRange(el.value.length, el.value.length);
-        // 输入框只在用户打字（onInput）时才重算高度；这里是程序写入，手动算一次，
-        // 规则和 onInput 里的一样：最多 5 行。
-        el.style.height = 'auto';
-        const cs = getComputedStyle(el);
-        const line = parseFloat(cs.lineHeight) || 25.5;
-        const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-        el.style.height = `${Math.min(el.scrollHeight, Math.round(line * 5 + pad))}px`;
-        el.scrollTop = el.scrollHeight;
-      });
+      fitComposer.current = true;
     };
     document.addEventListener(CARD_SLASH_EVENT, onCardSlash);
     return () => document.removeEventListener(CARD_SLASH_EVENT, onCardSlash);
