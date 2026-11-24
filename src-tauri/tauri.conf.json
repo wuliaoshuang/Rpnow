@@ -26,6 +26,7 @@
       }
     ],
     "security": {
+      "dangerousDisableAssetCspModification": ["script-src", "style-src"],
       "csp": {
         "default-src": "'self'",
         "img-src": "'self' data: blob: https: http: asset: http://asset.localhost",

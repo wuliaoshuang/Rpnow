@@ -7,6 +7,8 @@
  * 开场白的聊天逐项相同）；
  * - 页面前后的正文照常显示；切换开场白正常；
  * - 「确认开局」把文字放进输入框（不自动发送），用户点发送后正常发出；
+ * - 卡片正则把自定义标签换成整页（真卡的写法）：每种写法都整页进 iframe，
+ *   酒馆式的「确认」在用户点击时直接发出，页面自己偷偷调用时只放进输入框；
  * - 卡片脚本碰不到应用页面、本地存储、IndexedDB；
  * - 关掉「沙箱 HTML」走内联渲染时，样式同样漏不出去。
  *
@@ -17,6 +19,7 @@ import { createServer } from 'node:http';
 import { mkdirSync } from 'node:fs';
 import { BASE, launch } from './e2e-helpers.mjs';
 import { PROSE_AFTER, PROSE_BEFORE, SETUP_DOC, VARIANTS } from './fixtures/html-greeting.mjs';
+import { DETECT_KINDS, OPENING_TAG, SEND_KINDS, openingPage, openingRegexScript, openingShapes } from './fixtures/attr-tag-opening.mjs';
 
 const PORT = 59981;
 const SHOTS = process.env.RPNOW_E2E_SHOTS ?? '';
@@ -400,23 +403,29 @@ const appended = await page.locator(COMPOSER).inputValue();
 check('输入框里已有的字不会被覆盖', appended.startsWith('我先写了一句\n\u3010开局\u3011'), appended.slice(0, 40));
 
 // 酒馆卡片的老写法：直接去改上层页面的 #send_textarea 再点 #send_but。
-// 沙箱里够不到真的页面，桥接脚本给了一个替身，效果一样是把字放进输入框、不自动发。
+// 沙箱里够不到真的页面，桥接脚本给了一个替身。这里是脚本自己调用的（等用户上一次
+// 点击过去 5 秒以上，浏览器不再认为「用户刚点过」）：只把字放进输入框、不自动发。
 await page.locator(COMPOSER).fill('');
-const stIdiom = await frame.locator('body').evaluate(() => {
-  const doc = window.parent.document;
-  const ta = doc.getElementById('send_textarea');
-  ta.value = '酒馆写法：走过去';
-  ta.dispatchEvent(new Event('input', { bubbles: true }));
-  doc.querySelector('#send_but').click();
-  window.parent.postMessage({ type: 'resizeIframe', height: 5 }, '*');
-  let top = 'reachable';
-  try {
-    void window.top.document.body;
-  } catch {
-    top = 'blocked';
-  }
-  return { top, hasBody: Boolean(doc.body), other: doc.getElementById('root') };
+// （测试工具的 evaluate 自带「用户手势」，所以让页面自己用定时器在 5.6 秒后调用。）
+await frame.locator('body').evaluate(() => {
+  setTimeout(() => {
+    const doc = window.parent.document;
+    const ta = doc.getElementById('send_textarea');
+    ta.value = '酒馆写法：走过去';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    doc.querySelector('#send_but').click();
+    window.parent.postMessage({ type: 'resizeIframe', height: 5 }, '*');
+    let top = 'reachable';
+    try {
+      void window.top.document.body;
+    } catch {
+      top = 'blocked';
+    }
+    window.__stIdiom = { top, hasBody: Boolean(doc.body && (doc.body.isConnected || doc.body.children.length)), other: doc.getElementById('root') };
+  }, 5600);
 });
+await page.waitForTimeout(6300);
+const stIdiom = await frame.locator('body').evaluate(() => window.__stIdiom);
 await page.waitForTimeout(400);
 check(
   '酒馆写法（parent.document 的 #send_textarea）：字进了输入框',
@@ -424,7 +433,7 @@ check(
   await page.locator(COMPOSER).inputValue(),
 );
 check(
-  '酒馆写法：点 #send_but 也不会自动发送',
+  '酒馆写法：不是用户刚点的，#send_but 不会自动发送',
   (await page.evaluate(() => window.__rpnowStore.getState().chats.find((c) => c.id === 'chat_prose').messages.length)) === 1 && llmCalls === callsBefore,
 );
 check('替身只认输入框和发送键，拿不到真的页面（top 仍被拦）', stIdiom.top === 'blocked' && !stIdiom.hasBody && stIdiom.other === null, JSON.stringify(stIdiom));
@@ -602,15 +611,16 @@ check('fixed / 100vw 面板：应用界面样式与基准相同', diff.length ==
 await shot('06-inline-fixed');
 
 /* ------------------------------------------------------------ 6. 关掉沙箱 */
-console.log('\n6. 设置里关掉「沙箱 HTML」：整页走内联渲染');
+console.log('\n6. 设置里关掉「沙箱 HTML」：整页照样进 iframe（不再依赖这个开关）');
 await page.evaluate(() => {
   const s = window.__rpnowStore.getState();
   s.setSettings({ render: { ...s.settings.render, sandboxHtml: false } });
 });
 await openChat('prose');
 b = await bubbleInfo();
-check('关掉沙箱：不用 iframe', b.frames.length === 0);
-check('关掉沙箱：表单控件和脚本被清洗掉，不会半残地留在页面上', b.inlineControls === 0, `count=${b.inlineControls}`);
+check('关掉沙箱：整页仍然装在 iframe 里', b.frames.length === 1 && b.frames[0].srcdoc && !/allow-same-origin/.test(b.frames[0].sandbox), JSON.stringify(b.frames));
+check('关掉沙箱：页面里的脚本照常跑（选项出来了）', (await frameInfo())?.chips === 5, JSON.stringify(await frameInfo()));
+check('关掉沙箱：气泡里没有半残的表单控件、没有内联样式块', b.inlineControls === 0 && b.inlineStyles === 0, `controls=${b.inlineControls} styles=${b.inlineStyles}`);
 check('关掉沙箱：控件不再显示成一串 <input …> 文字', !/<input|<textarea/.test(b.text), b.text.slice(0, 200));
 diff = diffStyles(base, await hostStyles());
 check('关掉沙箱：卡片样式仍然漏不到应用界面', diff.length === 0, diff.join(' | '));
@@ -743,7 +753,291 @@ await page.waitForTimeout(900);
 const cite = await page.evaluate(() => ({ n: document.querySelectorAll('.rp-md .rp-cite').length, t: document.querySelector('.rp-md .rp-cite')?.textContent }));
 check('正文里的 [M3] 变成可点的引用按钮（以前判断写错，永远不出现）', cite.n === 1 && cite.t === '[M3]', JSON.stringify(cite));
 
-console.log('\n11. 收尾');
+/* ------------------------------------------------------------ 11. 卡片正则产出整页 */
+console.log('\n11. 卡片正则把 <AttrTagOpening/> 换成整页（真卡的写法）');
+
+/** 建一张「开场白只有一个标签、正则把它换成整页」的卡并打开。 */
+async function openRegexCard(key, { first = OPENING_TAG, alts = [], replace, script = {} }) {
+  await page.evaluate(
+    async ([key, first, alts, regexScript]) => {
+      const s = window.__rpnowStore.getState();
+      const data = await import('/src/core/defaults/sampleData.ts');
+      const { buildGreetings } = await import('/src/features/chat/orchestrator.ts');
+      const card = structuredClone(data.SAMPLE_CARDS[2]);
+      card.id = `card_rx_${key}`;
+      card.data.name = '属性标签系统';
+      card.data.first_mes = first;
+      card.data.alternate_greetings = alts;
+      card.data.extensions = { regex_scripts: [regexScript] };
+      await s.addCard(card);
+      await s.saveChat({
+        id: `chat_rx_${key}`,
+        title: card.data.name,
+        cardId: card.id,
+        lorebookIds: [],
+        useCardLorebook: true,
+        personaId: 'persona:sample',
+        connectionId: 'conn_mock',
+        messages: buildGreetings(card),
+        variables: {},
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      s.setActiveChat(`chat_rx_${key}`);
+    },
+    [key, first, alts, openingRegexScript(replace, script)],
+  );
+  await page.waitForSelector(COMPOSER, { timeout: 20000 });
+  await page.waitForTimeout(900);
+}
+
+/** 气泡里、iframe 外面还剩什么。 */
+async function regexBubble() {
+  return page.evaluate(() => {
+    const md = document.querySelector('.rp-md.mes_text');
+    const frames = [...md.querySelectorAll('iframe')];
+    const clone = md.cloneNode(true);
+    clone.querySelectorAll('iframe').forEach((f) => f.remove());
+    return {
+      frames: frames.length,
+      frameH: frames[0] ? Math.round(frames[0].getBoundingClientRect().height) : 0,
+      frameW: frames[0] ? Math.round(frames[0].getBoundingClientRect().width) : 0,
+      isolated: frames.every((f) => f.hasAttribute('srcdoc') && !/allow-same-origin/.test(f.getAttribute('sandbox') ?? '')),
+      pre: md.querySelectorAll('pre, code').length,
+      controls: md.querySelectorAll('textarea, input, select, form, script, button').length,
+      styles: md.querySelectorAll('style').length,
+      dead: md.querySelectorAll('.rp-card-dead').length,
+      outside: clone.textContent.replace(/\s+/g, ' ').trim(),
+      mdOverflow: md.scrollWidth - md.clientWidth,
+    };
+  });
+}
+
+/** iframe 里面：脚本跑了没、选项出来没、认没认出自己在酒馆里。 */
+async function openingFrame() {
+  const f = cardFrame();
+  if (!f) return null;
+  return f.evaluate(() => {
+    const de = document.documentElement;
+    const vis = (el) => Boolean(el && el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0);
+    return {
+      ready: de.getAttribute('data-ready'),
+      inTavern: de.classList.contains('in-tavern'),
+      theme: de.getAttribute('data-theme'),
+      chips: document.querySelectorAll('.chip').length,
+      chipsVisible: [...document.querySelectorAll('.chip')].every(vis),
+      tools: document.querySelectorAll('.preview-tools').length,
+      textarea: vis(document.getElementById('extra')),
+      confirm: vis(document.getElementById('confirm')),
+      reroll: vis(document.getElementById('reroll')),
+      scene: document.getElementById('scene')?.textContent ?? '',
+      out: document.getElementById('out')?.textContent ?? '',
+      state: document.getElementById('state')?.textContent ?? '',
+      docHeight: Math.ceil(de.getBoundingClientRect().height),
+      overflowX: de.scrollWidth - de.clientWidth,
+      bodyBg: getComputedStyle(document.body).backgroundColor,
+      origin: self.origin,
+    };
+  });
+}
+
+const rxMessages = (key) =>
+  page.evaluate((id) => window.__rpnowStore.getState().chats.find((c) => c.id === id).messages.map((m) => ({ role: m.role, content: m.content })), `chat_rx_${key}`);
+
+async function waitReply(key, count) {
+  for (let i = 0; i < 50; i++) {
+    const m = await rxMessages(key);
+    if (m.length >= count && m[count - 1].role === 'assistant' && m[count - 1].content.includes('故事开始')) return m;
+    await page.waitForTimeout(300);
+  }
+  return rxMessages(key);
+}
+
+const hostDark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
+const SHAPES = openingShapes({ detect: 'context', send: 'slash' });
+const PROSE_SHAPES = new Set(['real_fence_multiline', 'real_fence_oneline', 'real_fence_oneline_newline_close', 'real_fence_first_line_glued', 'a_raw', 'i_fence_crlf', 'k_backticks_and_macros']);
+let shapeNo = 0;
+for (const [name, replace] of Object.entries(SHAPES)) {
+  shapeNo++;
+  const variants = [{ tag: '只有标签', first: OPENING_TAG, prose: '' }];
+  if (PROSE_SHAPES.has(name)) variants.push({ tag: '前后有正文', first: `欢迎来到这里。\n\n${OPENING_TAG}\n\n后面还有一句正文。`, prose: '欢迎来到这里。 后面还有一句正文。' });
+  for (const v of variants) {
+    const key = `${name}_${v.prose ? 'p' : 'o'}`;
+    await openRegexCard(key, { first: v.first, replace });
+    const rb = await regexBubble();
+    const fr = await openingFrame();
+    const label = `[${name} · ${v.tag}]`;
+    check(
+      `${label} 整页在一个隔离 iframe 里，气泡里没有代码块、没有散落的页面`,
+      rb.frames === 1 && rb.isolated && rb.pre === 0 && rb.controls === 0 && rb.styles === 0 && rb.outside === v.prose && rb.dead === 0,
+      JSON.stringify(rb),
+    );
+    check(
+      `${label} 脚本跑了：选项 8 个都在、认出在酒馆里、预览按钮已移除、输入框和按钮可见`,
+      fr && fr.ready === '1' && fr.inTavern && fr.chips === 8 && fr.chipsVisible && fr.tools === 0 && fr.textarea && fr.confirm && fr.reroll && fr.origin === 'null',
+      JSON.stringify(fr),
+    );
+    check(
+      `${label} 高度跟着内容、不横向溢出、应用界面样式没变`,
+      fr && rb.frameH >= 400 && Math.abs(rb.frameH - fr.docHeight) <= 2 && fr.overflowX <= 0 && rb.mdOverflow <= 0 && diffStyles(base, await hostStyles()).length === 0,
+      JSON.stringify({ frameH: rb.frameH, doc: fr?.docHeight, ox: fr?.overflowX, diff: diffStyles(base, await hostStyles()) }),
+    );
+    if (name === 'real_fence_multiline' || name === 'real_fence_oneline') await shot(`11-${name}-${v.prose ? 'prose' : 'only'}`);
+  }
+}
+check('形状覆盖：真卡三种写法 + a–m 全部跑到', shapeNo >= 26, `shapes=${shapeNo}`);
+
+// 主题跟着应用走、底色透明（html.in-tavern body{background:transparent}）。
+await openRegexCard('theme', { replace: SHAPES.real_fence_multiline });
+let fr = await openingFrame();
+check('页面拿到应用的主题（data-theme），底色透明', fr?.theme === (hostDark ? 'dark' : 'light') && /rgba\(0, 0, 0, 0\)|transparent/.test(fr?.bodyBg ?? ''), JSON.stringify({ theme: fr?.theme, bg: fr?.bodyBg, hostDark }));
+await page.evaluate(() => document.documentElement.classList.toggle('dark'));
+await openRegexCard('theme2', { replace: SHAPES.real_fence_multiline });
+fr = await openingFrame();
+check('应用换了深浅色，新渲染的页面跟着换', fr?.theme === (hostDark ? 'light' : 'dark'), JSON.stringify({ theme: fr?.theme }));
+await shot('11-theme-flipped');
+await page.evaluate(() => document.documentElement.classList.toggle('dark'));
+
+// 正则的几种设置：placement [1,2]、markdownOnly 关。
+await openRegexCard('placement', { replace: SHAPES.real_fence_multiline, script: { placement: [1, 2], markdownOnly: false } });
+check('placement [1,2] + markdownOnly 关：同样整页进 iframe', (await regexBubble()).frames === 1 && (await openingFrame())?.chips === 8);
+
+// 备选开场白里也是这个标签：切换过去照样是整页。
+await openRegexCard('swipe', { first: '第一个开场白，纯文字。', alts: [OPENING_TAG], replace: SHAPES.real_fence_oneline });
+await page.locator('button[aria-label="下一个版本"]').first().click();
+await page.waitForTimeout(1100);
+let rb = await regexBubble();
+check('切到带标签的备选开场白：整页进 iframe、选项在', rb.frames === 1 && rb.pre === 0 && rb.outside === '' && (await openingFrame())?.chips === 8, JSON.stringify(rb));
+await page.locator('button[aria-label="上一个版本"]').first().click();
+await page.waitForTimeout(900);
+rb = await regexBubble();
+check('切回纯文字开场白：iframe 没了、正文在', rb.frames === 0 && rb.outside.includes('第一个开场白'), JSON.stringify(rb));
+
+// 设置里关掉「沙箱 HTML」（老用户存下来的设置可能就是关的）：不影响整页隔离。
+await page.evaluate(() => {
+  const s = window.__rpnowStore.getState();
+  s.setSettings({ render: { ...s.settings.render, sandboxHtml: false } });
+});
+for (const name of ['real_fence_multiline', 'real_fence_oneline', 'a_raw', 'h_indent_spaces', 'i_fence_crlf']) {
+  await openRegexCard(`nosb_${name}`, { first: `欢迎来到这里。\n\n${OPENING_TAG}\n\n后面还有一句正文。`, replace: SHAPES[name] });
+  rb = await regexBubble();
+  fr = await openingFrame();
+  check(
+    `[${name}] 关掉「沙箱 HTML」：照样整页进 iframe、选项在、样式不外漏`,
+    rb.frames === 1 && rb.isolated && rb.pre === 0 && rb.controls === 0 && rb.styles === 0 && rb.outside === '欢迎来到这里。 后面还有一句正文。' && fr?.chips === 8 && diffStyles(base, await hostStyles()).length === 0,
+    JSON.stringify(rb),
+  );
+}
+await shot('11-sandbox-off');
+await page.evaluate(() => {
+  const s = window.__rpnowStore.getState();
+  s.setSettings({ render: { ...s.settings.render, sandboxHtml: true } });
+});
+
+// 页面里的每个控件都点得动；确认开局（用户亲手点的）直接发进聊天。
+await openRegexCard('click', { replace: SHAPES.real_fence_multiline });
+let oframe = cardFrame();
+await oframe.locator('[data-chip="tend:悬疑"]').click();
+await oframe.locator('[data-chip="mode:完整"]').click();
+const sceneBefore = (await openingFrame()).scene;
+await oframe.locator('#reroll').click();
+await oframe.locator('#extra').fill('故事在成都');
+await page.waitForTimeout(300);
+fr = await openingFrame();
+check('选项点得动、「换一张」换了情境、补充能输入', fr.out.includes('倾向：悬疑') && fr.out.includes('模式：完整') && fr.scene !== sceneBefore && fr.out.includes('补充：故事在成都'), fr.out);
+check('页面读到了用户名（SillyTavern.getContext().name1）', /我是(?!你$).+/.test(fr.out) && !fr.out.endsWith('我是你'), fr.out);
+await shot('11-before-confirm');
+let callsAt = llmCalls;
+await oframe.locator('#confirm').click();
+let sent = await waitReply('click', 3);
+check(
+  '点「确认开局」：消息直接发进聊天，内容是页面拼出来的那句',
+  sent.length >= 3 && sent[1].role === 'user' && sent[1].content.startsWith('倾向：悬疑；') && sent[1].content.includes('补充：故事在成都') && !sent[1].content.includes('/send') && !sent[1].content.includes('/trigger'),
+  JSON.stringify(sent[1] ?? null),
+);
+check('模型回复出现、输入框是空的', sent[2]?.role === 'assistant' && llmCalls > callsAt && (await page.locator(COMPOSER).inputValue()) === '', `calls=${llmCalls - callsAt}`);
+check('发出之后页面还在、显示「已发出」', (await openingFrame())?.state === '已发出' && (await regexBubble()).frames === 1);
+await shot('11-after-confirm');
+
+// 酒馆卡常见的每一种「发消息」写法 × 每一种「我在不在酒馆里」的判断。
+let kindNo = 0;
+for (const send of SEND_KINDS) {
+  const detect = DETECT_KINDS[kindNo % DETECT_KINDS.length];
+  kindNo++;
+  const key = `send_${send}`;
+  await openRegexCard(key, { replace: '```html\n' + openingPage({ detect, send }) + '\n```' });
+  fr = await openingFrame();
+  check(`[发送写法 ${send} · 判断写法 ${detect}] 页面脚本跑完、认出在酒馆里`, fr?.ready === '1' && fr.inTavern && fr.chips === 8 && fr.tools === 0, JSON.stringify(fr));
+  callsAt = llmCalls;
+  await cardFrame().locator('#confirm').click();
+  if (send === 'setinput') {
+    await page.waitForTimeout(700);
+    const staged = await page.locator(COMPOSER).inputValue();
+    check('[发送写法 setinput] /setinput 只把文字放进输入框，不发送', staged.startsWith('倾向：日常；') && (await rxMessages(key)).length === 1 && llmCalls === callsAt, staged.slice(0, 40));
+    await page.locator(COMPOSER).fill('');
+    continue;
+  }
+  sent = await waitReply(key, 3);
+  check(
+    `[发送写法 ${send}] 用户点确认：消息发进聊天、模型回复`,
+    sent.length >= 3 && sent[1].role === 'user' && sent[1].content.startsWith('倾向：日常；') && sent[2].role === 'assistant' && (await openingFrame())?.state === '已发出',
+    JSON.stringify({ n: sent.length, user: sent[1]?.content?.slice(0, 40), state: (await openingFrame())?.state }),
+  );
+}
+
+// 页面一加载就自己调用发送（没有用户点击）：只放进输入框，不替用户发。
+await page.locator(COMPOSER).fill('');
+callsAt = llmCalls;
+await openRegexCard('auto', { replace: '```html\n' + openingPage({ detect: 'context', send: 'slash', autoSend: true }) + '\n```' });
+await page.waitForTimeout(900);
+check(
+  '页面自己偷偷调用发送：只把文字放进输入框，没有发出去、没有请求模型',
+  (await page.locator(COMPOSER).inputValue()).startsWith('倾向：日常；') && (await rxMessages('auto')).length === 1 && llmCalls === callsAt,
+  `composer=${(await page.locator(COMPOSER).inputValue()).slice(0, 30)} calls=${llmCalls - callsAt}`,
+);
+await page.locator(COMPOSER).fill('');
+
+// 页面调用了桥里没有的接口：不报错、脚本照常跑完，控制台留一行记录。
+const bridgeLogs = [];
+page.on('console', (m) => {
+  if (m.text().includes('[RPNow 卡片桥]')) bridgeLogs.push(m.text());
+});
+const unknownPage = openingPage({ detect: 'context', send: 'slash' }).replace(
+  'var pools =',
+  "SillyTavern.getContext().someFutureApi(1); TavernHelper.notThere(); window.parent.somethingElse; $('#tend').fadeIn(); var pools =",
+);
+await openRegexCard('unknown', { replace: '```html\n' + unknownPage + '\n```' });
+fr = await openingFrame();
+check('调用不认识的接口：页面脚本照常跑完（选项都在）', fr?.ready === '1' && fr.chips === 8, JSON.stringify(fr));
+check(
+  '不认识的调用在控制台留下「[RPNow 卡片桥]」记录',
+  ['someFutureApi', 'notThere', 'somethingElse', 'fadeIn'].every((n) => bridgeLogs.some((l) => l.includes(n))),
+  bridgeLogs.join(' | ').slice(0, 300),
+);
+
+// 页面脚本根本没跑（被安全策略拦了）时，不能悄悄坏掉：给出说明。
+await openRegexCard('dead', { replace: SHAPES.real_fence_multiline });
+await page.evaluate(() => {
+  const holder = document.querySelector('.rp-md.mes_text .rp-html-card');
+  const f = document.createElement('iframe');
+  f.setAttribute('data-rp-card', '1');
+  f.setAttribute('sandbox', '');
+  f.setAttribute('srcdoc', '<!doctype html><html><body><p>脚本被拦的页面</p><script>parent.postMessage({__rpnowCard:1,type:"ready"},"*")</script></body></html>');
+  f.id = 'dead-probe';
+  const box = document.createElement('div');
+  box.className = 'rp-html-card';
+  box.appendChild(f);
+  holder.parentElement.appendChild(box);
+});
+await page.waitForTimeout(3400);
+const dead = await page.evaluate(() => {
+  const f = document.getElementById('dead-probe');
+  const live = document.querySelector('.rp-md.mes_text .rp-html-card iframe:not(#dead-probe)');
+  return { dead: f.dataset.rpDead, h: f.style.height, note: f.parentElement.querySelector('.rp-card-dead')?.textContent ?? '', liveDead: live.dataset.rpDead ?? '', notes: document.querySelectorAll('.rp-card-dead').length };
+});
+check('脚本没跑的页面：给固定高度并写明原因；正常的页面不受影响', dead.dead === '1' && dead.h === '480px' && dead.note.includes('脚本没有运行') && dead.liveDead === '' && dead.notes === 1, JSON.stringify(dead));
+
+console.log('\n12. 收尾');
 check('整个过程应用页面没有抛出脚本错误', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 // 每次发送除了正文回复，应用还会自己发后台请求（标题、记忆摘要之类），所以不卡死次数。
 check('模型请求全部进了假模型（没有真实接口可用）', llmCalls >= 2, `calls=${llmCalls}`);

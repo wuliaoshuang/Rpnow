@@ -24,6 +24,7 @@ import { marked } from 'marked';
 import type { RendererOptions, RendererService } from '../agent/types.js';
 import { installCardFrameHost } from './cardFrameHost.js';
 import { buildFrameDocument, extractHtmlCards, htmlCardMarkup, isFullHtmlDocument } from './htmlDocument.js';
+import type { CardFrameContext } from './htmlDocument.js';
 import { sanitizeInlineStyle, scopeCss } from './scopeCss.js';
 
 export { isFullHtmlDocument } from './htmlDocument.js';
@@ -280,9 +281,9 @@ function stripCustomTags(text: string): string {
  * also makes sure the host-side message listener is installed, so the frame
  * can report its height.
  */
-export function htmlCardFrame(innerHtml: string, css = ''): string {
+export function htmlCardFrame(innerHtml: string, css = '', ctx?: CardFrameContext): string {
   installCardFrameHost();
-  return htmlCardMarkup(css ? `<style>${css}</style>${innerHtml}` : innerHtml);
+  return htmlCardMarkup(css ? `<style>${css}</style>${innerHtml}` : innerHtml, ctx);
 }
 
 /**
@@ -293,7 +294,9 @@ export function htmlCardFrame(innerHtml: string, css = ''): string {
  * RPNow 自己做，与酒馆助手无关（兼容层已停用）。
  */
 export function isFrontendDocumentText(text: string): boolean {
-  return ['html>', '<head>', '<body'].some((s) => text.includes(s));
+  // 原口径（酒馆助手）之外再放宽：不分大小写，单独一行 doctype 也算——
+  // 页面的任何一截都不该以源码的样子留在气泡里。
+  return ['html>', '<head>', '<body'].some((s) => text.includes(s)) || /<!doctype\s+html\b|<html\b|<head\b|<body\b/i.test(text);
 }
 
 /**
@@ -303,7 +306,8 @@ export function isFrontendDocumentText(text: string): boolean {
  * ```、或被其它正则吃掉），此时 marked 只会渲染成普通代码块，页面就把
  * `<!DOCTYPE html>` 当源码文本显示出来——用户看到的正是「完全不能用」。
  */
-export function sandboxDetectedFrontendCode(html: string): string {
+export function sandboxDetectedFrontendCode(html: string, ctx?: CardFrameContext): string {
+  if (!/<pre\b/i.test(html)) return html;
   const host = document.createElement('div');
   host.innerHTML = html;
   let changed = false;
@@ -315,7 +319,7 @@ export function sandboxDetectedFrontendCode(html: string): string {
     // 已是卡片的跳过（避免二次包装）
     if (pre.closest('.rp-frontend-render')) continue;
     const card = document.createElement('div');
-    card.innerHTML = htmlCardFrame(text);
+    card.innerHTML = htmlCardFrame(text, '', ctx);
     pre.replaceWith(card.firstElementChild!);
     changed = true;
   }
@@ -323,10 +327,15 @@ export function sandboxDetectedFrontendCode(html: string): string {
 }
 
 /** Restore placeholder elements into real iframe markup. */
-function restoreHtmlCards(html: string, codes: string[]): string {
-  return html.replace(
+function restoreHtmlCards(html: string, codes: string[], ctx?: CardFrameContext): string {
+  if (codes.length === 0) return html;
+  // 占位元素万一落进了代码块（外面还剩一层没认出来的围栏），它在那里是一串转义
+  // 过的文字：连同整个代码块一起换成卡片，不让「<rp-html-card…>」露在气泡里。
+  const inPre =
+    /<pre\b[^>]*>(?:\s*<code\b[^>]*>)?\s*&lt;rp-html-card data-rp-html=(?:"|&quot;)(\d+)(?:"|&quot;)&gt;\s*&lt;\/rp-html-card&gt;\s*(?:<\/code>\s*)?<\/pre>/gi;
+  return html.replace(inPre, (_m, i: string) => htmlCardFrame(codes[Number(i)] ?? '', '', ctx)).replace(
     /<rp-html-card[^>]*\bdata-rp-html="(\d+)"[^>]*>(?:\s*<\/rp-html-card>)?/gi,
-    (_m, i: string) => htmlCardFrame(codes[Number(i)] ?? ''),
+    (_m, i: string) => htmlCardFrame(codes[Number(i)] ?? '', '', ctx),
   );
 }
 
@@ -338,7 +347,8 @@ const renderCache = new Map<string, string>();
 const RENDER_CACHE_LIMIT = 2000;
 
 function cacheKey(markdown: string, opts: RendererOptions): string {
-  return `${opts.allowExternalMedia ? 1 : 0}|${opts.styleScope ?? ''}|${opts.sandboxHtml ? 1 : 0}|${markdown.length}|${markdown}`;
+  const c = opts.cardContext;
+  return `${c?.theme ?? ''}\u0001${c?.user ?? ''}\u0001${c?.char ?? ''}\u0001${opts.allowExternalMedia ? 1 : 0}|${opts.styleScope ?? ''}|${opts.sandboxHtml ? 1 : 0}|${markdown.length}|${markdown}`;
 }
 
 /** Default renderer implementation. */
@@ -348,6 +358,13 @@ export const defaultRenderer: RendererService = {
     const allowExternal = opts.allowExternalMedia ?? false;
     const scope = opts.styleScope ?? '.rp-md';
     if (!markdown) return '';
+
+    // 交给卡片页面的上下文：名字由调用方给，主题在这里读（深色 = <html class="dark">）。
+    const ctx: CardFrameContext = {
+      ...opts.cardContext,
+      theme: opts.cardContext?.theme ?? (document.documentElement.classList.contains('dark') ? 'dark' : 'light'),
+    };
+    opts = { ...opts, cardContext: ctx };
 
     const key = cacheKey(markdown, opts);
     const cached = renderCache.get(key);
@@ -373,7 +390,11 @@ export const defaultRenderer: RendererService = {
      * that ran it through DOMPurify — scripts removed, `<head>` styles lost —
      * so an interactive greeting showed up as an empty shell.
      */
-    const cards = sandbox ? extractHtmlCards(markdown) : { text: markdown, codes: [] };
+    /*
+     * 整页和带脚本/表单控件的片段不看 `sandboxHtml` 开关，一律进 iframe：这类内容
+     * 内联渲染必坏（脚本不跑、控件被清洗、样式外漏）。开关只管纯静态的 ```html 片段。
+     */
+    const cards = extractHtmlCards(markdown, sandbox);
     const fenceCodes = cards.codes;
 
     const { text, styles } = encodeStyleTags(cards.text);
@@ -419,7 +440,7 @@ export const defaultRenderer: RendererService = {
       out = out.replace(/\sdata-rp-remote="1"/g, '');
     }
 
-    if (sandbox) out = restoreHtmlCards(out, fenceCodes);
+    out = restoreHtmlCards(out, fenceCodes, ctx);
     /*
      * 内容级兜底：命中判定的 `pre > code` 一律渲染成 RPNow 的 HTML 卡片。
      *
@@ -427,7 +448,7 @@ export const defaultRenderer: RendererService = {
      * 兼容层已停用（core/st-compat.ts），现在**总是**由 RPNow 自己渲染，
      * 保证 preset 产出的文档不会退化成源码文本。
      */
-    out = sandboxDetectedFrontendCode(out);
+    out = sandboxDetectedFrontendCode(out, ctx);
 
     renderCache.set(key, out);
     trimCache();

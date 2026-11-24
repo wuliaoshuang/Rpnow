@@ -84,6 +84,11 @@ export interface RendererOptions {
    * card ship interactive HTML panels.
    */
   sandboxHtml?: boolean;
+  /**
+   * 交给卡片页面（iframe）的只读信息：用户名、角色名、当前主题。
+   * 整页和带脚本/表单控件的片段无论 `sandboxHtml` 开没开都进 iframe。
+   */
+  cardContext?: { user?: string; char?: string; theme?: 'dark' | 'light' };
 }
 
 export interface ThemeService {

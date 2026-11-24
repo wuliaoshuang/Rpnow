@@ -295,11 +295,12 @@ export function MessageBubble({
         allowExternalMedia,
         styleScope: '.rp-md',
         sandboxHtml,
+        cardContext: { user: personaName || 'User', char: card.data.name },
       }) ?? escapeHtml(processed);
     } catch {
       return escapeHtml(processed);
     }
-  }, [styleFiltered.text, scripts, renderer, allowExternalMedia, sandboxHtml, depth]);
+  }, [styleFiltered.text, scripts, renderer, allowExternalMedia, sandboxHtml, depth, personaName, card.data.name]);
 
   const swipeCount = message.swipes?.length ?? 0;
   const swipeId = message.swipeId ?? 0;
