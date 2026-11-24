@@ -486,6 +486,12 @@ body {
      culprit (`<div style="width:600px">` on a 390px phone). */
   max-width: 100%;
   overflow-x: hidden;
+  /* Containment for card HTML that stays inline (see core/render/scopeCss.ts):
+     `position:fixed` in card CSS is rewritten to `absolute`, and this makes the
+     bubble its containing block; `isolation` keeps a card's z-index from
+     climbing over the app chrome. */
+  position: relative;
+  isolation: isolate;
 }
 .rp-md > * {
   max-width: 100%;
@@ -510,6 +516,8 @@ body {
   border: 0;
   background: transparent;
 }
+/* The frame's height is set by the card bridge (core/render/cardFrameHost.ts)
+   to the page's real content height, so there is no inner scrollbar. */
 .rp-md .rp-html-card > iframe {
   display: block;
   width: 100%;
@@ -517,6 +525,7 @@ body {
   border: 0;
   border-radius: inherit;
   background: transparent;
+  overflow: hidden;
 }
 .rp-md img,
 .rp-md video,

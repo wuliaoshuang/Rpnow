@@ -2,10 +2,11 @@
  * Sandboxed UI-template card.
  *
  * The template HTML is rendered with the current variable state and loaded into
- * an iframe. The sandbox is deliberately permissive about forms/popups (RP-Hub
- * does the same) but the document is a throwaway `srcdoc` with no access to the
- * parent origin's storage, because `allow-same-origin` is required for the
- * self-resizing script to read the document height.
+ * a sandboxed `srcdoc` iframe. The sandbox allows scripts, forms and popups but
+ * NOT `allow-same-origin`: a `srcdoc` frame with both `allow-scripts` and
+ * `allow-same-origin` runs in the app's own origin, so template script could
+ * read the app page, localStorage and IndexedDB (API keys included). Without
+ * it the frame gets an opaque origin; height and clicks travel by postMessage.
  *
  * Elements carrying `data-slash="…"` turn a click into a user message — the
  * "卡片交互" bridge.
@@ -14,6 +15,7 @@
 import * as React from 'react';
 import type { RPUITemplate } from '@/core/uitemplate/types.js';
 import { renderTemplate } from '@/core/uitemplate/engine.js';
+import { FRAME_SANDBOX } from '@/core/render/htmlDocument.js';
 
 const RESET_CSS = `
   *,*::before,*::after{box-sizing:border-box}
@@ -31,7 +33,7 @@ const RESET_CSS = `
 const BRIDGE_SCRIPT = `
 (function () {
   function post(type, payload) {
-    try { parent.postMessage(Object.assign({ __rpnowTemplate: true }, payload), '*'); } catch (e) {}
+    try { parent.postMessage(Object.assign({ __rpnowTemplate: true, type: type }, payload), '*'); } catch (e) {}
   }
   function resize() {
     var h = Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);
@@ -69,6 +71,8 @@ export function TemplateCard({
 
   React.useEffect(() => {
     const onMessage = (event: MessageEvent) => {
+      // Only this card's own frame may talk to it.
+      if (!ref.current || event.source !== ref.current.contentWindow) return;
       const data = event.data as { __rpnowTemplate?: boolean; type?: string; height?: number; text?: string };
       if (!data?.__rpnowTemplate) return;
       if (data.type === 'height' && typeof data.height === 'number') {
@@ -88,7 +92,7 @@ export function TemplateCard({
         ref={ref}
         title={template.name}
         srcDoc={doc}
-        sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-same-origin allow-downloads"
+        sandbox={FRAME_SANDBOX}
         style={{ width: '100%', height, border: 0, display: 'block' }}
       />
     </div>

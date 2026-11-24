@@ -313,8 +313,10 @@ export function MessageBubble({
 
   /** Turn `[M12]` markers into clickable badges that open the source memory. */
   const citedHtml = React.useMemo(() => {
-    if (!/[[]M\d+[]]/.test(html)) return html;
-    return html.replace(/\[M(\d+)\]/g, (_m, n: string) => {
+    if (!/\[M\d+\]/.test(html)) return html;
+    // 卡片 iframe 的源码写在 srcdoc 属性里，里面的 [M12] 不是引用标记，整段跳过。
+    return html.replace(/srcdoc="[^"]*"|\[M(\d+)\]/g, (whole, n: string | undefined) => {
+      if (n === undefined) return whole;
       const num = Number(n);
       const known = (memories ?? []).some((r) => r.no === num);
       return `<button type="button" class="rp-cite" data-cite="${num}" data-known="${known ? '1' : '0'}" title="查看判断依据">[M${num}]</button>`;
