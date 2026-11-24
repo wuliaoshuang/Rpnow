@@ -81,6 +81,7 @@ import { ChatQuickPanel } from '@/components/chat/ChatQuickPanel.js';
 import { MODEL_SLOTS, chatImmersive, slotIdForModel, slotModels } from '@/core/llm/modelSlots.js';
 import { isTouchDevice } from '@/lib/runtime.js';
 import type { Route } from '@/components/layout/AppShell.js';
+import { CARD_SLASH_EVENT } from '@/core/render/cardFrameHost.js';
 
 /**
  * A keyboard-row chip that inserts text WITHOUT dismissing the soft keyboard.
@@ -1388,6 +1389,39 @@ export function ChatView({
     if (mediaId) await deleteMediaImage(mediaId);
     toast.success('已删除');
   }
+
+  /**
+   * HTML 卡片（开场白里的开局表单之类）把文字交回来：放进输入框并聚焦，由用户
+   * 自己点发送。和 RP-Hub 一样不自动发送——卡片脚本是不可信内容，不能让它替用户
+   * 发消息、花模型额度。输入框里已经有字就另起一行接在后面，不覆盖。
+   */
+  const lastCardText = React.useRef('');
+  React.useEffect(() => {
+    const onCardSlash = (event: Event) => {
+      const text = (event as CustomEvent<{ text?: string }>).detail?.text;
+      if (typeof text !== 'string' || !text.trim()) return;
+      // 卡片连着交回两次（换了个选项再点）：后一次替换前一次，不叠在一起。
+      const previous = lastCardText.current;
+      lastCardText.current = text;
+      setInput((v) => (!v.trim() || v === previous ? text : `${v.replace(/\s+$/, '')}\n${text}`));
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus({ preventScroll: true });
+        el.setSelectionRange(el.value.length, el.value.length);
+        // 输入框只在用户打字（onInput）时才重算高度；这里是程序写入，手动算一次，
+        // 规则和 onInput 里的一样：最多 5 行。
+        el.style.height = 'auto';
+        const cs = getComputedStyle(el);
+        const line = parseFloat(cs.lineHeight) || 25.5;
+        const pad = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+        el.style.height = `${Math.min(el.scrollHeight, Math.round(line * 5 + pad))}px`;
+        el.scrollTop = el.scrollHeight;
+      });
+    };
+    document.addEventListener(CARD_SLASH_EVENT, onCardSlash);
+    return () => document.removeEventListener(CARD_SLASH_EVENT, onCardSlash);
+  }, []);
 
   /** A `data-slash` click inside a template becomes a normal user message. */
   function sendTemplateSlash(text: string) {

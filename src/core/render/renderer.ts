@@ -22,6 +22,12 @@
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import type { RendererOptions, RendererService } from '../agent/types.js';
+import { installCardFrameHost } from './cardFrameHost.js';
+import { buildFrameDocument, extractHtmlCards, htmlCardMarkup, isFullHtmlDocument } from './htmlDocument.js';
+import { sanitizeInlineStyle, scopeCss } from './scopeCss.js';
+
+export { isFullHtmlDocument } from './htmlDocument.js';
+export { scopeCss } from './scopeCss.js';
 
 /**
  * Configure `marked` once. `breaks: true` matches the ecosystem's
@@ -37,13 +43,21 @@ import type { RendererOptions, RendererService } from '../agent/types.js';
 // rejects that override (it must not lose the rest of the tokenizer), so RPNow
 // keeps indented code and cards should use fenced ```html blocks instead.
 
-const STYLE_OPEN = '<style';
-const STYLE_CLOSE = '</style>';
-
-/** Replace `<style>…</style>` with a placeholder that survives Markdown. */
+/**
+ * Replace `<style>…</style>` with a placeholder that survives Markdown.
+ *
+ * Two things the old pattern (`<style([\s\S]*?)</style>`) got wrong:
+ *   - it captured the tag's own attributes and closing `>` as CSS, so the first
+ *     rule of every sheet came out as `.rp-md >selector` and silently died;
+ *   - a `<style>` with no closing tag (truncated card, or a reply still being
+ *     streamed) was not captured at all. DOMPurify's default allow-list lets
+ *     `<style>` through, so that sheet landed in the page UNSCOPED and restyled
+ *     the whole app (`textarea{…}` hit the composer). An unclosed block now
+ *     runs to the end of the text; `</style >` with whitespace also closes it.
+ */
 export function encodeStyleTags(input: string): { text: string; styles: string[] } {
   const styles: string[] = [];
-  const text = input.replace(new RegExp(`${STYLE_OPEN}([\\s\\S]*?)${STYLE_CLOSE}`, 'gi'), (_m, css: string) => {
+  const text = input.replace(/<style\b[^>]*>([\s\S]*?)(?:<\/style\s*>|$)/gi, (_m, css: string) => {
     styles.push(css);
     return `\n\n<!--RPSTYLE:${styles.length - 1}-->\n\n`;
   });
@@ -98,6 +112,26 @@ export function namespaceClasses(root: ParentNode): void {
 }
 
 /**
+ * Apply the stylesheet rules to inline `style="…"` attributes as well.
+ *
+ * Scoping selectors does nothing for `<div style="position:fixed;inset:0">`:
+ * that panel would pin itself over the app chrome. Inline declarations go
+ * through the same filter as sheet declarations (fixed → absolute, viewport
+ * widths → percentages, remote URLs dropped unless external media is on).
+ */
+export function containInlineStyles(root: ParentNode, allowExternal: boolean): void {
+  const query = (root as Element).querySelectorAll?.bind(root as Element);
+  if (!query) return;
+  for (const el of Array.from(query('[style]'))) {
+    const raw = el.getAttribute('style') ?? '';
+    if (!/fixed|vw|\/\/|expression|javascript/i.test(raw)) continue;
+    const next = sanitizeInlineStyle(raw, allowExternal);
+    if (next) el.setAttribute('style', next);
+    else el.removeAttribute('style');
+  }
+}
+
+/**
  * Drop media elements that can never show anything.
  *
  * A `<video>` / `<audio>` with no `src` and no `<source>` child, or an
@@ -128,41 +162,6 @@ export function dropSourcelessMedia(root: ParentNode): void {
   }
 }
 
-/** Remove rules that can escape the message container or phone home. */
-export function scopeCss(css: string, scope: string, allowExternal: boolean): string {
-  // Drop @import entirely — it is remote code execution by URL.
-  let out = css.replace(/@import[^;]*;/gi, '');
-  if (!allowExternal) {
-    // Remove declarations that reference remote resources.
-    out = out.replace(/[a-z-]+\s*:\s*[^;}]*:\/\/[^;}]*;?/gi, '');
-  }
-  // Rewrite selectors: `body`, `html`, `:root` become the scope itself, and
-  // every other selector is prefixed with the scope.
-  out = out.replace(/(^|\})([^{}]+)\{/g, (_m, brace: string, selectors: string) => {
-    const rewritten = selectors
-      .split(',')
-      .map((selRaw) => {
-        const sel = selRaw.trim();
-        if (!sel) return sel;
-        if (/^(body|html|:root)\b/i.test(sel)) {
-          return sel.replace(/^(body|html|:root)/i, scope);
-        }
-        // Already namespaced classes get their prefix applied too.
-        const withCustom = sel.replace(/\.([A-Za-z_][\w-]*)/g, (_x, name: string) =>
-          CLASS_ALLOW_EXACT.includes(name) || CLASS_ALLOW_PREFIXES.some((p) => name.startsWith(p)) || name.startsWith('rp-') || name.startsWith('custom-')
-            ? `.${name}`
-            : `.custom-${name}`,
-        );
-        if (withCustom.startsWith(scope)) return withCustom;
-        if (/^(from|to|\d+%|@)/.test(withCustom)) return selRaw;
-        return `${scope} ${withCustom}`;
-      })
-      .join(', ');
-    return `${brace}${rewritten}{`;
-  });
-  return out;
-}
-
 /** Convert `<custom-style>` carriers back into scoped `<style>` elements. */
 export function decodeStyleCarriers(html: string, scope: string, allowExternal: boolean): string {
   return html.replace(
@@ -187,7 +186,10 @@ function sanitizeConfig(): Record<string, unknown> {
     ADD_TAGS: ['custom-style', 'rp-html-card'],
     ADD_ATTR: ['data-rp-style', 'data-selected', 'data-rp-html'],
     // Never allow script-capable containers to pass through.
-    FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'textarea', 'base', 'link', 'meta'],
+    // `style` is forbidden too: card styles travel as `custom-style` carriers
+    // and come back scoped. A raw `<style>` reaching this point was missed by
+    // `encodeStyleTags` and must not land in the page unscoped.
+    FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'textarea', 'base', 'link', 'meta'],
     // Keep data-* attributes (our own carriers use them).
     ALLOW_DATA_ATTR: true,
   };
@@ -221,12 +223,6 @@ function installHooks(): void {
   });
 }
 
-/** True when the message is a complete HTML document (RP-Hub's card panels). */
-export function isFullHtmlDocument(markdown: string): boolean {
-  const t = markdown.trim().toLowerCase();
-  return t.startsWith('<!doctype') || t.startsWith('<html');
-}
-
 /**
  * Tags with real rendering semantics that the layout itself consumes. Anything
  * else that looks like a tag is preset scripting (game markers, thinking
@@ -242,6 +238,12 @@ const HTML_SEMANTIC_TAGS = new Set([
   'svg', 'path', 'g', 'circle', 'rect', 'defs', 'lineargradient', 'stop', 'use',
   'iframe', 'video', 'audio', 'source', 'canvas',
   'font', 'center', 'marquee', 'ruby', 'rt', 'rp', 'wbr', 'q', 'cite', 'abbr',
+  // Form controls are real HTML, not preset markers. They used to be escaped
+  // into visible `<input type="radio" …>` text; now the sanitizer decides
+  // (inline rendering drops them, framed cards keep them working).
+  'form', 'input', 'textarea', 'select', 'option', 'optgroup', 'fieldset', 'legend', 'datalist',
+  // Our own placeholder for a framed card (see htmlDocument.ts).
+  'rp-html-card',
 ]);
 
 /**
@@ -257,23 +259,30 @@ function escapeCustomTags(text: string): string {
   });
 }
 
-/** Sandbox flags: scripts and forms are allowed, but the document is isolated. */
-const FRAME_SANDBOX =
-  'allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-same-origin allow-downloads';
-
-/** Wrap an HTML fragment in an isolated, self-contained frame document. */
-export function htmlCardFrame(innerHtml: string, css = ''): string {
-  const doc = renderSandboxedFrame(innerHtml, css);
-  const src = `data:text/html;charset=utf-8,${encodeURIComponent(doc)}`;
-  /*
-   * RPNow 自己的容器类名。过去这里叫 `TH-render` 以兼容酒馆助手，兼容层停用后
-   * 不再需要那个名字（见 core/st-compat.ts）。
-   */
-  return (
-    `<div class="rp-frontend-render">` +
-    `<div class="rp-html-card"><iframe title="HTML 卡片" sandbox="${FRAME_SANDBOX}" src="${src}" style="width:100%;height:320px;border:0;border-radius:var(--radius-md);overflow:hidden"></iframe></div>` +
-    `</div>`
+/**
+ * 去掉预设自定义标签的尖括号标记，只留里面的字。
+ *
+ * 只用在「消息以一个 HTML 页面开头」的情况（典型：Meowssiah 的思维链折叠栏
+ * 后面跟着 `<game>正文</game>`）。以前这种消息整条塞进一个 iframe，里面的
+ * `<game>` 被清洗掉、只剩正文；现在页面单独装框、正文回到气泡里，如果照常
+ * 转义，用户会突然看到一对 `<game>` `</game>` 字样。这里保持原来的观感。
+ */
+function stripCustomTags(text: string): string {
+  return text.replace(/<\/?([a-zA-Z][a-zA-Z0-9_-]*)([^>]*)>/g, (match, name: string) =>
+    HTML_SEMANTIC_TAGS.has(name.toLowerCase()) ? match : '',
   );
+}
+
+/**
+ * Wrap card HTML in an isolated, self-sizing frame.
+ *
+ * The markup, sandbox flags and bridge live in `htmlDocument.ts`. This wrapper
+ * also makes sure the host-side message listener is installed, so the frame
+ * can report its height.
+ */
+export function htmlCardFrame(innerHtml: string, css = ''): string {
+  installCardFrameHost();
+  return htmlCardMarkup(css ? `<style>${css}</style>${innerHtml}` : innerHtml);
 }
 
 /**
@@ -313,116 +322,6 @@ export function sandboxDetectedFrontendCode(html: string): string {
   return changed ? host.innerHTML : html;
 }
 
-/**
- * Replace ```` ```html ```` fences with placeholders.
- *
- * History / why this is not an HTML comment: the previous version left
- * `<!--RPHTMLCARD:n-->` markers for `restoreHtmlCards`, but DOMPurify strips
- * comments, so every fenced block silently rendered as nothing. The placeholder
- * is now a real element (`<rp-html-card data-rp-html="n">`) which survives
- * sanitisation (it is whitelisted) and is swapped for the iframe afterwards.
- *
- * The fence regex also accepts ```` ```HTML ````, an optional trailing newline
- * and EOF-without-closing-fence (models often truncate the last backticks).
- */
-function sandboxHtmlFences(markdown: string): { text: string; codes: string[] } {
-  const codes: string[] = [];
-  const card = (code: string) => {
-    codes.push(code);
-    return `\n\n<rp-html-card data-rp-html="${codes.length - 1}"></rp-html-card>\n\n`;
-  };
-  /*
-   * Fence shapes that produce an HTML card:
-   *  1. ```html / ```htm — the explicit language tag;
-   *  2. a BARE fence whose content starts with an HTML document — preset
-   *     regexes like Meowssiah's 思维链折叠 emit exactly this (``` \n <!DOCTYPE
-   *     html> …) and ST's renderer picks them up by CONTENT, not language tag.
-   *
-   * Real transcripts interleave BOTH shapes and preset regexes routinely emit
-   * an odd number of ``` markers (a closing fence with no opener), which breaks
-   * pairwise matching: marked then swallows prose + the next fence into ONE
-   * giant code block. So instead of matching `fence…fence` pairs, we scan line
-   * by line and let CONTENT decide — a fence line followed by an HTML document
-   * starts a card that ends at `</html>`, the next fence marker, or EOF.
-   */
-  const lines = markdown.split('\n');
-  const outLines: string[] = [];
-  let i = 0;
-  /*
-   * Fence lines in the wild are NOT always clean. Preset regexes glue the
-   * closing fence to the next prose tag: "```<game>正午…". A line-anchored
-   * regex misses it, so the scanner never sees the boundary and merges two
-   * documents into one card. We therefore detect a fence START anywhere in a
-   * line (``` or ```html …) and a fence CLOSE as a line that CONTAINS ```
-   * after the body has begun.
-   */
-  const startMatch = /(^|\s)```[ \t]*([a-z]*)[ \t]*$/i; // line ENDS with a fence opener
-  const containsClose = /```/; // any fence marker ends the card body
-  const docStart = /^\s*(?:<!DOCTYPE html|<html\b)/i; // bare document start
-  while (i < lines.length) {
-    const line = lines[i];
-    const m = startMatch.exec(line);
-    if (!m) {
-      /*
-       * Bare document, no fence at all: Meowssiah's 思维链折叠 replacement text
-       * can lose its opening fence (an earlier regex eats it, or the model
-       * emits the document straight after prose — on device the transcript
-       * literally starts "24 分钟前<!DOCTYPE html>"). ST renders the document
-       * by CONTENT, so we must too: a line that starts a full document opens a
-       * card ending at </html>.
-       */
-      if (docStart.test(line)) {
-        const body: string[] = [];
-        let j = i;
-        while (j < lines.length) {
-          body.push(lines[j]);
-          if (/<\/html>\s*$/i.test(lines[j])) break;
-          j++;
-        }
-        const text = body.join('\n');
-        if (isFullHtmlDocument(text)) {
-          outLines.push(card(text));
-          i = j + 1;
-          continue;
-        }
-      }
-      outLines.push(line);
-      i++;
-      continue;
-    }
-    const lang = m[2].toLowerCase();
-    if (lang && lang !== 'html' && lang !== 'htm') {
-      outLines.push(line);
-      i++;
-      continue;
-    }
-    const body: string[] = [];
-    let j = i + 1;
-    let closed = false;
-    while (j < lines.length) {
-      const l = lines[j];
-      if (containsClose.test(l)) {
-        closed = true;
-        break;
-      }
-      body.push(l);
-      if (/<\/html>\s*$/i.test(l)) break; // document complete
-      j++;
-    }
-    const text = body.join('\n');
-    const isCard =
-      lang === 'html' || lang === 'htm' || isFullHtmlDocument(text) || /^\s*<(?:html|body|div|section|style)\b/i.test(text);
-    if (!isCard) {
-      outLines.push(line);
-      i++;
-      continue;
-    }
-    outLines.push(card(text));
-    i = closed ? j + 1 : j;
-  }
-  return { text: outLines.join('\n'), codes };
-}
-
 /** Restore placeholder elements into real iframe markup. */
 function restoreHtmlCards(html: string, codes: string[]): string {
   return html.replace(
@@ -460,20 +359,24 @@ export const defaultRenderer: RendererService = {
 
     const sandbox = opts.sandboxHtml ?? false;
 
-    // Whole-document HTML (a card shipping a full panel) goes straight to a
-    // frame; prose around it is not expected.
-    if (sandbox && isFullHtmlDocument(markdown)) {
-      const inner = DOMPurify.sanitize(markdown, {
-        ADD_TAGS: ['html', 'head', 'body', 'style', 'details', 'summary', 'iframe', 'svg', 'path', 'g', 'circle', 'rect', 'defs', 'linearGradient', 'stop'],
-        FORBID_ATTR: ['onmouseover', 'onload'],
-      }) as unknown as string;
-      const framed = htmlCardFrame(inner);
-      renderCache.set(key, framed);
-      trimCache();
-      return framed;
-    }
+    /*
+     * Pull every part that must run in a frame out of the text FIRST, while it
+     * is still the card's original source: fenced HTML, a full HTML document
+     * anywhere in the message (prose before/after stays prose), and fragments
+     * that carry a script or form controls.
+     *
+     * This used to happen after `encodeStyleTags` + `escapeCustomTags`, which
+     * damaged the framed source: its `<style>` blocks were swapped for
+     * placeholders (the frame lost its styling) and `<input>` / `<textarea>`
+     * were escaped into literal text (the card script then crashed looking
+     * for them). A message that was nothing but a document took a third path
+     * that ran it through DOMPurify — scripts removed, `<head>` styles lost —
+     * so an interactive greeting showed up as an empty shell.
+     */
+    const cards = sandbox ? extractHtmlCards(markdown) : { text: markdown, codes: [] };
+    const fenceCodes = cards.codes;
 
-    const { text, styles } = encodeStyleTags(markdown);
+    const { text, styles } = encodeStyleTags(cards.text);
 
     /*
      * Escape preset-custom tags BEFORE marked sees them.
@@ -485,15 +388,9 @@ export const defaultRenderer: RendererService = {
      * structure markers vanished or turned into unintended markup ("标记被渲
      * 成整个 HTML"). The fix mirrors ST: only REAL html semantics survive into
      * the renderer; everything else is shown to the user as literal text.
-     *
-     * Fenced/bare HTML documents are exempt — they are extracted AFTER this
-     * escape, so their tags stay live inside the iframe.
      */
-    const escapedCustom = escapeCustomTags(text);
-
-    const fenceResult = sandbox ? sandboxHtmlFences(escapedCustom) : { text: escapedCustom, codes: [] };
-    const fenceCodes = fenceResult.codes;
-    const textWithoutFences = fenceResult.text;
+    const leadingDocument = cards.codes.length > 0 && isFullHtmlDocument(markdown);
+    const textWithoutFences = escapeCustomTags(leadingDocument ? stripCustomTags(text) : text);
 
     // Preserve fenced code blocks verbatim while still rendering raw HTML
     // elsewhere; `marked` passes HTML through when it looks like a block tag.
@@ -509,9 +406,19 @@ export const defaultRenderer: RendererService = {
     const container = document.createElement('div');
     container.innerHTML = clean;
     namespaceClasses(container);
+    containInlineStyles(container, allowExternal);
     dropSourcelessMedia(container);
     let out = container.innerHTML;
     out = decodeStyleCarriers(out, scope, allowExternal);
+    // Strip remote media if the user has not enabled it. This runs BEFORE the
+    // framed cards are put back, so it only ever touches inline content.
+    if (!allowExternal) {
+      out = out.replace(/<img\b[^>]*data-rp-remote="1"[^>]*>/gi, '');
+      out = out.replace(/(<img\b[^>]*\bsrc=")(https?:)?\/\/[^"]*("[^>]*>)/gi, '$1$3');
+    } else {
+      out = out.replace(/\sdata-rp-remote="1"/g, '');
+    }
+
     if (sandbox) out = restoreHtmlCards(out, fenceCodes);
     /*
      * 内容级兜底：命中判定的 `pre > code` 一律渲染成 RPNow 的 HTML 卡片。
@@ -521,14 +428,6 @@ export const defaultRenderer: RendererService = {
      * 保证 preset 产出的文档不会退化成源码文本。
      */
     out = sandboxDetectedFrontendCode(out);
-
-    // Strip remote media if the user has not enabled it.
-    if (!allowExternal) {
-      out = out.replace(/<img\b[^>]*data-rp-remote="1"[^>]*>/gi, '');
-      out = out.replace(/(<img\b[^>]*\bsrc=")(https?:)?\/\/[^"]*("[^>]*>)/gi, '$1$3');
-    } else {
-      out = out.replace(/\sdata-rp-remote="1"/g, '');
-    }
 
     renderCache.set(key, out);
     trimCache();
@@ -554,7 +453,7 @@ export function clearRenderCache(): void {
  * preview. Used for card-provided HTML the user explicitly opens.
  */
 export function renderSandboxedFrame(html: string, css = ''): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><style>${css}\nhtml,body{margin:0;padding:8px;font:14px/1.6 system-ui,sans-serif;color:#e8e3f0;background:transparent}</style></head><body>${html}</body></html>`;
+  return buildFrameDocument(css ? `<style>${css}</style>${html}` : html);
 }
 
 /** Extract ```html fences so the UI can offer an "open preview" action. */
